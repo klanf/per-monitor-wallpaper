@@ -1,0 +1,91 @@
+{
+  "name": "electron-wallpaper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows 多显示器壁纸轮播器 —— 每块屏一套目录和节奏，随机顺序不重复，缩略图胶片条能当播放历史读",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:debug": "electron . --remote-debugging-port=9222 --enable-logging",
+    "status": "node tools/status.js --app",
+    "shot": "node tools/screenshot-ui.js",
+    "shot:readme": "node tools/screenshot-readme.js",
+    "shot:new": "node tools/screenshot-new-features.js",
+    "verify:unit": "node tools/test-scheduler.js",
+    "verify:e2e": "node tools/verify-per-monitor.js",
+    "verify:features": "node tools/verify-new-features.js",
+    "verify:fixes": "node tools/verify-fixes.js",
+    "verify:ui": "node tools/verify-ui-fixes.js",
+    "sim:random": "node tools/simulate-random.js",
+    "repro:filmstrip": "node tools/repro-filmstrip-dup.js",
+    "find-dups": "node tools/find-duplicates.js",
+    "locate-annotation": "node tools/locate-annotation.js",
+    "fixtures": "node tools/make-fixtures.js",
+    "restore-wallpaper": "node tools/restore-wallpaper.js",
+    "dist": "electron-builder --win --x64",
+    "verify:order": "node tools/verify-shuffle-order.js",
+    "verify:cycle": "node tools/verify-monitor-cycle.js",
+    "verify:tray": "node tools/verify-delete-hotkeys.js",
+    "ocr": "node tools/ocr-image.js",
+    "shot:read": "node tools/screenshot-ascii.js",
+    "shot:layout": "node tools/screenshot-layout.js",
+    "shot:glyphs": "node tools/screenshot-glyphs.js",
+    "icon": "node tools/make-icon.js tools/icon-source.png --radius 48"
+  },
+  "build": {
+    "appId": "com.local.electron-wallpaper",
+    "productName": "壁纸切换器",
+    "copyright": "MIT Licensed",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "shortcutName": "壁纸切换器"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  },
+  "keywords": [
+    "wallpaper",
+    "electron"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.16.1"
+  },
+  "dependencies": {
+    "exifr": "^7.1.3",
+    "koffi": "^3.2.1"
+  },
+  "author": {
+    "name": "electron-wallpaper",
+    "email": "noreply@example.com"
+  }
+}

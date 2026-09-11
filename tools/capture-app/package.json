@@ -1,0 +1,7 @@
+{
+  "name": "wp-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "每屏壁纸的可视化验证：截取每个显示器的桌面缩略图，输出平均色与哈希",
+  "main": "main.js"
+}

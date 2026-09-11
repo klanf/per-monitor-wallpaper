@@ -1,0 +1,162 @@
+'use strict';
+
+/**
+ * 渲染进程 ←→ 主进程的安全桥。
+ * contextIsolation 开启，渲染层拿不到 Node / ipcRenderer 本体，只能调下面这些白名单方法。
+ *
+ * 多显示器改造后，轮播的调度权在主进程，所以这里多了一层「频道」概念：
+ *   一个频道 = 一路独立轮播（统一模式下 1 路；每屏模式下每台显示器 1 路）。
+ */
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+const THUMB_SCHEME = 'wpthumb';
+
+/**
+ * 磁盘路径 → 缩略图 URL。
+ * 在 preload 里算而不是走 IPC：胶片条一屏要几十个 URL，
+ * 每个都发一次 IPC 纯属浪费；这里只依赖 Buffer，是确定性的纯函数。
+ * 注意编码必须是 UTF-16LE，和主进程 thumbnails.js 的 decodePath 对应
+ * （Windows 路径里中文很常见，用 UTF-8 会错位）。
+ */
+function thumbUrl(filePath) {
+  if (!filePath) return '';
+  return `${THUMB_SCHEME}://t/${Buffer.from(String(filePath), 'utf16le').toString('base64url')}`;
+}
+
+contextBridge.exposeInMainWorld('wp', {
+  getConfig: () => ipcRenderer.invoke('config:get'),
+  setConfig: (patch) => ipcRenderer.invoke('config:set', patch),
+
+  // ---- 频道 ----
+  listChannels: () => ipcRenderer.invoke('channels:list'),
+  channelFiles: (id) => ipcRenderer.invoke('channel:files', id),
+  channelCommand: (id, command, payload) => ipcRenderer.invoke('channel:command', id, command, payload),
+  applyChannel: (id) => ipcRenderer.invoke('channel:apply', id),
+  rebuildChannels: (forgetScanCache = false) => ipcRenderer.invoke('channels:rebuild', forgetScanCache),
+
+  pickFolder: (channelId) => ipcRenderer.invoke('folder:pick', channelId),
+
+  probeImage: (imagePath) => ipcRenderer.invoke('image:probe', imagePath),
+  imageInfo: (imagePath) => ipcRenderer.invoke('image:info', imagePath),
+  revealInExplorer: (imagePath) => ipcRenderer.invoke('shell:reveal', imagePath),
+  freeMemory: () => ipcRenderer.invoke('app:free-memory'),
+
+  // ---- 缩略图 ----
+  thumbUrl,
+  thumbStats: () => ipcRenderer.invoke('thumbs:stats'),
+  thumbPrune: () => ipcRenderer.invoke('thumbs:prune'),
+  thumbClear: () => ipcRenderer.invoke('thumbs:clear'),
+
+  // ---- 文件操作（右键菜单动作，主进程菜单与自绘菜单共用）----
+  fileStats: (imagePath) => ipcRenderer.invoke('file:stats', imagePath),
+  copyImage: (imagePath) => ipcRenderer.invoke('file:copy-image', imagePath),
+  copyFile: (imagePath) => ipcRenderer.invoke('file:copy-file', imagePath),
+  copyPath: (imagePath) => ipcRenderer.invoke('file:copy-path', imagePath),
+  openExternally: (imagePath) => ipcRenderer.invoke('file:open', imagePath),
+  openContainingFolder: (imagePath) => ipcRenderer.invoke('file:open-folder', imagePath),
+  /** 「用其他程序打开」的程序列表（用户在右键子菜单里挑的 exe，存在配置里） */
+  openWithList: () => ipcRenderer.invoke('open-with:list'),
+  openWithAdd: (programPath) => ipcRenderer.invoke('open-with:add', programPath),
+  openWithRemove: (programPath) => ipcRenderer.invoke('open-with:remove', programPath),
+  openWithClear: () => ipcRenderer.invoke('open-with:clear'),
+  openWithLaunch: (programPath, imagePath) => ipcRenderer.invoke('open-with:launch', programPath, imagePath),
+  trashFile: (imagePath) => ipcRenderer.invoke('file:trash', imagePath),
+  /**
+   * 兼容旧调用点：确认逻辑已经统一进主进程的 trashWithPermission，
+   * 所以这条和 trashFile 等价（开关关掉时都不问）。
+   */
+  trashWithConfirm: (imagePath) => ipcRenderer.invoke('file:trash-confirm', imagePath),
+  transferFile: (imagePath, targetDir, mode) => ipcRenderer.invoke('file:transfer', imagePath, targetDir, mode),
+  showImageMenu: (payload) => ipcRenderer.send('context:image-menu', payload),
+  /** 取右键菜单的结构（不弹菜单），给验证脚本核对菜单项是否齐全 */
+  imageMenuTemplate: (payload) => ipcRenderer.invoke('context:image-menu-template', payload),
+
+  // ---- 预设文件夹 ----
+  listQuickFolders: () => ipcRenderer.invoke('quick:list'),
+  pickQuickFolder: () => ipcRenderer.invoke('quick:pick'),
+  addQuickFolder: (folderPath, name) => ipcRenderer.invoke('quick:add', folderPath, name),
+  removeQuickFolder: (id) => ipcRenderer.invoke('quick:remove', id),
+  renameQuickFolder: (id, name) => ipcRenderer.invoke('quick:rename', id, name),
+
+  // ---- 托盘与开机自启 ----
+  trayState: () => ipcRenderer.invoke('tray:state'),
+  setLaunchAtLogin: (enabled) => ipcRenderer.invoke('tray:set-launch-at-login', enabled),
+  /** 取托盘菜单结构（不弹菜单），给验证脚本核对菜单项 */
+  trayMenuTemplate: () => ipcRenderer.invoke('tray:menu-template'),
+
+  // ---- 全局热键 ----
+  /** 取动作表 + 当前绑定 + 上一次注册结果（哪些被别的程序占了） */
+  getHotkeys: () => ipcRenderer.invoke('hotkeys:get'),
+  /** 写入并立即重注册；patch 里给空串 = 解绑 */
+  setHotkeys: (patch) => ipcRenderer.invoke('hotkeys:set', patch),
+  /** 直接触发某个热键动作（验证用；也方便做「试一下」按钮） */
+  invokeHotkey: (action) => ipcRenderer.invoke('hotkeys:invoke', action),
+  /** 上报「现在预览的是哪一路」—— 全局热键作用在它上面 */
+  setPreviewChannel: (id) => ipcRenderer.send('preview:set', id),
+
+  // ---- 窗口 ----
+  toggleFullscreen: () => ipcRenderer.invoke('window:fullscreen'),
+  minimize: () => ipcRenderer.send('window:minimize'),
+  close: () => ipcRenderer.send('window:close'),
+  hideWindow: () => ipcRenderer.send('window:hide'),
+  showWindow: () => ipcRenderer.send('window:show'),
+
+  // ---- 事件 ----
+  onMenuAction: (cb) => {
+    ipcRenderer.on('menu:action', (_event, action) => cb(action));
+  },
+
+  onMonitorsChanged: (cb) => {
+    ipcRenderer.on('monitors:changed', (_event, payload) => cb(payload));
+  },
+
+  /** 主进程自动打开「每屏独立」之后通知一次（首次检测到多屏 + 已选目录） */
+  onAutoMonitorSetup: (cb) => {
+    ipcRenderer.on('monitors:auto-setup', (_event, payload) => cb(payload));
+  },
+
+  onChannelsChanged: (cb) => {
+    ipcRenderer.on('channels:changed', (_event, payload) => cb(payload));
+  },
+
+  /**
+   * 主进程要求切换「当前操作的显示器」（「切到下一台显示器」热键触发）。
+   * 反向通道 —— 热键是全局的，窗口可能藏在托盘里，这时候只有主进程知道该切到哪一路。
+   */
+  onPreviewSelect: (cb) => {
+    ipcRenderer.on('preview:select', (_event, payload) => cb(payload));
+  },
+
+  onChannelTick: (cb) => {
+    ipcRenderer.on('channel:tick', (_event, payload) => cb(payload));
+  },
+
+  /** 主进程主动弹提示（右键菜单操作、托盘操作的结果） */
+  onNotice: (cb) => {
+    ipcRenderer.on('notice', (_event, payload) => cb(payload));
+  },
+
+  /** 文件被移动 / 删除后的通知 */
+  onFilesChanged: (cb) => {
+    ipcRenderer.on('files:changed', (_event, payload) => cb(payload));
+  },
+
+  /** 从右键菜单打开图片信息面板 */
+  onInfoOpen: (cb) => {
+    ipcRenderer.on('info:open', (_event, payload) => cb(payload));
+  },
+
+  onQuickFoldersChanged: (cb) => {
+    ipcRenderer.on('quick-folders:changed', (_event, payload) => cb(payload));
+  },
+
+  onLaunchAtLoginChanged: (cb) => {
+    ipcRenderer.on('launch-at-login:changed', (_event, payload) => cb(payload));
+  },
+
+  /** 用户在删除确认框里勾了「不再询问」，开关被主进程关掉了 */
+  onConfirmDeleteChanged: (cb) => {
+    ipcRenderer.on('confirm-delete:changed', (_event, payload) => cb(payload));
+  },
+});

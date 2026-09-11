@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' file: data: blob: wpthumb:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>壁纸切换器 · Electron</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="stage">
+  <div class="layer" id="layerA"><img alt="" draggable="false"></div>
+  <div class="layer" id="layerB"><img alt="" draggable="false"></div>
+</div>
+
+<div id="empty" class="empty">
+  <div class="empty-card">
+    <div class="empty-title">还没有壁纸文件夹</div>
+    <div class="empty-sub">选一个目录，它会扫描里面的图片并按间隔自动轮播；开启「每屏独立」后，每台显示器可以各用一套目录和节奏</div>
+    <button class="btn primary lg" id="empty-pick">选择壁纸文件夹</button>
+    <div class="empty-hint">支持的格式：jpg · png · webp · avif · gif · bmp · tiff</div>
+  </div>
+</div>
+
+<header id="topbar" class="bar top">
+  <div class="bar-group">
+    <button class="btn" id="btn-pick" title="选择文件夹（Ctrl+O）">选择文件夹</button>
+    <button class="btn" id="btn-rescan" title="重新扫描（Ctrl+R）">重新扫描</button>
+    <span class="muted ellipsis" id="folder-label">未选择目录</span>
+  </div>
+  <div class="bar-group">
+    <button class="btn icon" id="btn-info" title="当前图片信息（Ctrl+I）">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.9v.1"/></svg>
+    </button>
+    <button class="btn icon" id="btn-filmstrip" title="显示 / 隐藏缩略图胶片条（Ctrl+B）">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="5" width="3" height="6" rx="0.8"/><rect x="6.5" y="4" width="3" height="8" rx="0.8"/><rect x="11" y="5" width="3" height="6" rx="0.8"/></svg>
+    </button>
+    <button type="button" class="badge clickable" id="preview-badge" title="点击切换窗口预览哪块屏">预览：全部</button>
+    <span class="badge" id="backend-badge" title="系统壁纸写入通道">壁纸通道：检测中…</span>
+    <button class="btn" id="btn-settings" title="设置（Ctrl+,）">设置</button>
+  </div>
+</header>
+
+<footer id="bottombar" class="bar bottom">
+  <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
+
+  <!-- 缩略图胶片条：当前 / 已看过 / 即将播放，点击直接跳转 -->
+  <div class="filmstrip" id="filmstrip">
+    <button class="film-nav" id="film-prev" title="向前翻一屏">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>
+    </button>
+    <div class="film-track" id="film-track" tabindex="-1"></div>
+    <button class="film-nav" id="film-next" title="向后翻一屏">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>
+    </button>
+    <button class="film-jump" id="film-jump" title="回到当前这张">
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3"/><path d="M8 1.6v2.2M8 12.2v2.2M1.6 8h2.2M12.2 8h2.2"/></svg>
+    </button>
+  </div>
+
+  <div class="bar-row">
+    <div class="bar-group hud">
+      <div class="hud-title ellipsis" id="hud-title">—</div>
+      <div class="hud-meta" id="hud-meta">—</div>
+    </div>
+    <div class="bar-group controls">
+      <button class="btn icon" id="btn-prev" title="上一张（←）">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>
+      </button>
+      <button class="btn icon" id="btn-play" title="暂停 / 继续（空格）">
+        <svg id="icon-pause" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 3v10M10 3v10"/></svg>
+        <svg id="icon-play" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="display:none"><path d="M4.5 2.8l8.2 5.2-8.2 5.2z"/></svg>
+      </button>
+      <button class="btn icon" id="btn-next" title="下一张（→）">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>
+      </button>
+      <button class="btn" id="btn-apply" title="立即写入当前预览屏幕（Ctrl+S）">设为壁纸</button>
+      <span class="counter" id="counter">0 / 0</span>
+    </div>
+  </div>
+</footer>
+
+<!-- ------------------------------------------------------------------ 图片信息 -->
+<aside id="info" class="info" aria-hidden="true">
+  <div class="settings-head">
+    <div class="settings-title">图片信息</div>
+    <div class="head-actions">
+      <button class="btn sm" id="btn-info-copy" title="把全部字段复制为文本">复制全部</button>
+      <button class="btn icon" id="btn-info-close" title="关闭（Esc）">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="info-hero">
+    <img id="info-thumb" alt="">
+    <div class="info-hero-text">
+      <div class="info-name" id="info-name">—</div>
+      <div class="info-sub" id="info-sub">—</div>
+    </div>
+  </div>
+
+  <div class="info-actions">
+    <button class="btn sm" id="btn-info-reveal">在资源管理器中显示</button>
+    <button class="btn sm" id="btn-info-open">用默认程序打开</button>
+  </div>
+
+  <div class="info-groups" id="info-groups"></div>
+</aside>
+
+<!-- ------------------------------------------------------------------ 设置 -->
+<aside id="settings" class="settings" aria-hidden="true">
+  <div class="settings-head">
+    <div class="settings-title">设置</div>
+    <button class="btn icon" id="btn-settings-close" title="关闭（Esc）">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+    </button>
+  </div>
+
+  <div class="field">
+    <label class="field-label">轮播模式</label>
+    <div class="seg" id="cfg-mode">
+      <button data-value="unified" class="seg-item">统一配置</button>
+      <button data-value="per-monitor" class="seg-item">每屏独立</button>
+    </div>
+    <div class="field-hint" id="mode-hint">统一配置：所有显示器共用一套目录与节奏。</div>
+  </div>
+
+  <!-- 每屏模式：每台显示器一张卡片 -->
+  <div class="field per-monitor-only">
+    <label class="field-label">显示器</label>
+    <div class="monitor-list" id="monitor-cards"></div>
+    <div class="field-hint" id="monitor-hint">点卡片右上角的眼睛图标，可把窗口预览切到那块屏。</div>
+  </div>
+
+  <!-- 统一模式的字段 -->
+  <div class="field unified-only">
+    <label class="field-label">轮播间隔</label>
+    <div class="field-row">
+      <input type="range" id="cfg-interval" min="3" max="3600" step="1">
+      <output class="field-value" id="cfg-interval-out">60 秒</output>
+    </div>
+  </div>
+
+  <div class="field unified-only">
+    <label class="field-label">过渡动画</label>
+    <div class="seg" id="cfg-animation">
+      <button data-value="slide" class="seg-item">滑动</button>
+      <button data-value="fade" class="seg-item">淡入</button>
+      <button data-value="zoom" class="seg-item">缩放</button>
+    </div>
+  </div>
+
+  <div class="field unified-only">
+    <label class="field-label">动画时长</label>
+    <div class="field-row">
+      <input type="range" id="cfg-duration" min="120" max="1500" step="20">
+      <output class="field-value" id="cfg-duration-out">520 ms</output>
+    </div>
+  </div>
+
+  <div class="field unified-only">
+    <label class="field-label">图片填充方式</label>
+    <div class="seg" id="cfg-fit">
+      <button data-value="cover" class="seg-item">铺满裁切</button>
+      <button data-value="contain" class="seg-item">完整显示</button>
+    </div>
+  </div>
+
+  <div class="field unified-only">
+    <label class="field-label">播放顺序</label>
+    <div class="seg" id="cfg-shuffle">
+      <button data-value="order" class="seg-item">按名称顺序</button>
+      <button data-value="random" class="seg-item">随机不重复</button>
+    </div>
+  </div>
+
+  <div class="field unified-only">
+    <label class="field-label">扫描</label>
+    <label class="check"><input type="checkbox" id="cfg-recursive"><span>包含子文件夹</span></label>
+  </div>
+
+  <div class="field unified-only">
+    <label class="field-label">写入目标显示器</label>
+    <select class="select" id="cfg-monitor">
+      <option value="all">全部显示器</option>
+      <option value="window">程序窗口所在的显示器</option>
+      <option value="primary">主显示器</option>
+    </select>
+    <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。</div>
+  </div>
+
+  <div class="field">
+    <label class="field-label">系统集成</label>
+    <label class="check"><input type="checkbox" id="cfg-apply"><span>真正写入系统壁纸</span></label>
+    <label class="check"><input type="checkbox" id="cfg-apply-on-start"><span>启动时立即接管所选屏幕</span></label>
+    <div class="field-hint">关闭第一项后只在本窗口预览，不修改桌面。</div>
+  </div>
+
+  <!-- ---------------------------------------------------------- 后台驻留 -->
+  <div class="field">
+    <label class="field-label">后台驻留</label>
+    <label class="check"><input type="checkbox" id="cfg-tray"><span>显示托盘图标</span></label>
+    <label class="check"><input type="checkbox" id="cfg-close-to-tray"><span>关闭窗口时隐藏到托盘（不退出）</span></label>
+    <label class="check"><input type="checkbox" id="cfg-launch-at-login"><span>开机自动启动</span></label>
+    <label class="check"><input type="checkbox" id="cfg-start-hidden"><span>启动时不显示窗口</span></label>
+    <div class="field-hint">托盘开启后，关掉窗口不影响桌面继续轮播；右键托盘图标可以逐屏控制。</div>
+    <div class="field-hint mono" id="login-hint"></div>
+  </div>
+
+  <!-- ---------------------------------------------------------- 删除 -->
+  <div class="field">
+    <label class="field-label">删除</label>
+
+    <!-- 参考 Windows 设置里的行式开关：图标 + 标题 + 说明 + 开关 -->
+    <label class="check rich" for="cfg-confirm-delete">
+      <input type="checkbox" id="cfg-confirm-delete">
+      <span class="rich-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h16"></path>
+          <path d="M9.5 7V5.6c0-.6.4-1 1-1h3c.6 0 1 .4 1 1V7"></path>
+          <path d="M6.4 7l.8 11.4c.05.9.8 1.6 1.7 1.6h6.2c.9 0 1.65-.7 1.7-1.6L17.6 7"></path>
+          <path d="M10.4 10.6v5.6M13.6 10.6v5.6"></path>
+        </svg>
+      </span>
+      <span class="rich-text">
+        <span class="rich-title">请求删除照片的权限</span>
+        <span class="rich-hint">删除项目或文件夹时显示确认对话框</span>
+      </span>
+    </label>
+
+    <div class="field-row">
+      <button class="btn sm danger" id="btn-del-current">删除当前这张到回收站</button>
+    </div>
+    <div class="field-hint">关掉开关后，右键菜单、胶片条垃圾桶、托盘和热键的删除都会直接移入回收站。</div>
+  </div>
+
+  <!-- ---------------------------------------------------------- 全局热键 -->
+  <div class="field">
+    <label class="field-label">全局热键</label>
+    <div class="hotkey-list" id="hotkey-list"></div>
+    <div class="field-row">
+      <button class="btn sm" id="btn-hotkey-clear">清空全部</button>
+    </div>
+    <div class="field-hint">
+      窗口藏在托盘里也生效，作用于「当前预览的那块屏」。想换一块屏操作，就按「切到下一台显示器」
+      —— 后面几个热键的目标会跟着它走。必须带修饰键（Ctrl / Alt / Shift / Win），
+      不带修饰键会把全系统的按键抢走。
+    </div>
+    <div class="field-hint mono" id="hotkey-hint"></div>
+  </div>
+
+  <!-- ---------------------------------------------------------- 胶片条 -->
+  <div class="field">
+    <label class="field-label">缩略图胶片条</label>
+    <label class="check"><input type="checkbox" id="cfg-filmstrip"><span>在底部显示缩略图条</span></label>
+    <label class="check"><input type="checkbox" id="cfg-filmstrip-center"><span>切换后自动回到当前这张</span></label>
+    <div class="field-row">
+      <span class="field-label" style="flex:0 0 auto">当前左右各显示</span>
+      <input type="range" id="cfg-filmstrip-range" min="8" max="200" step="1">
+      <output class="field-value" id="cfg-filmstrip-range-out">40 张</output>
+    </div>
+    <div class="field-hint">只渲染这个窗口内的缩略图 —— 两万张的目录不会因为胶片条卡住。</div>
+  </div>
+
+  <!-- ---------------------------------------------------------- 快捷文件夹 -->
+  <div class="field" id="quick-section">
+    <label class="field-label">右键菜单 · 快捷文件夹</label>
+    <div class="quick-list" id="quick-list"></div>
+    <div class="field-row">
+      <button class="btn sm" id="btn-quick-add">添加文件夹…</button>
+      <button class="btn sm" id="btn-quick-add-current">添加当前目录</button>
+    </div>
+    <div class="field-hint">用于右键菜单里的「移动到 / 复制到」，比如把不想要的图一键挪进「垃圾桶」目录。</div>
+  </div>
+
+  <!-- ---------------------------------------------------------- 右键菜单 -->
+  <div class="field">
+    <label class="field-label">右键菜单</label>
+    <label class="check"><input type="checkbox" id="cfg-context-menu"><span>在图片上启用右键菜单</span></label>
+    <label class="check"><input type="checkbox" id="cfg-info-panel"><span>启用「图片信息」面板</span></label>
+  </div>
+
+  <!-- ---------------------------------------------------------- 缓存 -->
+  <div class="field">
+    <label class="field-label">缩略图缓存</label>
+    <div class="field-row">
+      <span class="muted" id="thumb-stats">读取中…</span>
+    </div>
+    <div class="field-row">
+      <button class="btn sm" id="btn-thumb-open">打开缓存目录</button>
+      <button class="btn sm" id="btn-thumb-prune">清理超额</button>
+      <button class="btn sm" id="btn-thumb-clear">全部清空</button>
+    </div>
+    <div class="field-hint mono" id="thumb-dir"></div>
+  </div>
+
+  <div class="settings-foot">
+    <button class="btn" id="btn-free-memory">释放内存</button>
+    <span class="muted" id="mem-label"></span>
+  </div>
+</aside>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+# 构建产物
+dist/
+out/
+
+# 依赖
+node_modules/
+
+# 测试临时素材（每次跑验证脚本自动生成）
+tools/tmp/
+
+# 测试图库：120 张渐变 PNG，用 `npm run fixtures` 重新生成即可，不必进版本库
+tools/fixtures/gallery/
+
+# 纯色 BMP 测试素材，同样由 `npm run fixtures` 生成
+# （tools/fixtures/two-screen/ 不在此列 —— 它不能自动生成，是 verify:e2e 的必需输入，要进版本库）
+tools/fixtures/monitor-*.bmp
+
+# 图标源图：本人头像素材（第三方画师作品，约 2.2 MB）。
+# `npm run icon` 需要它，但仓库里不放第三方原图 —— 新克隆需自备一张源图。
+tools/icon-source.png
+
+# 图标历史备份
+tools/backup/
+
+# 日志与本机杂项
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本机壁纸状态快照 / 调试输出（含真实路径与显示器设备 ID）
+tools/wallpaper-backup.json
+tools/verify-shots/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 运行期生成的杂项（GPU 缓存之类）
+NVIDIA Corporation/
+
+# OCR 语言数据（首次跑 npm run ocr 会自动下载，约 30MB）
+tools/.ocr-cache/
+
+# 截图分析工具导出的中间图
+tools/.crops/
