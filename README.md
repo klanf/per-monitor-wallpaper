@@ -450,4 +450,6 @@ npm run dist      # 生成安装版与免安装版到 dist/
 
 ## 许可
 
-[MIT](https://opensource.org/licenses/MIT)
+[MIT](https://opensource.org/licenses/MIT)，完整文本见 [LICENSE](LICENSE)。
+
+`assets/` 下的应用图标由第三方画师作品改编而来，仅供本项目使用，不在上述授权范围内；原图未随仓库分发，如需二次分发或商用请自行替换图标。
