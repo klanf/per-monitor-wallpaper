@@ -15,8 +15,9 @@ tools/fixtures/gallery/
 # （tools/fixtures/two-screen/ 不在此列 —— 它不能自动生成，是 verify:e2e 的必需输入，要进版本库）
 tools/fixtures/monitor-*.bmp
 
-# 图标源图：本人头像素材（第三方画师作品，约 2.2 MB）。
-# `npm run icon` 需要它，但仓库里不放第三方原图 —— 新克隆需自备一张源图。
+# 图标源图（AI 生成，约 1.2 MB）。
+# `npm run icon` 需要它，但仓库里只放生成好的 assets/icon.ico 与 icon.png，
+# 不放源图 —— 新克隆想重做图标就自备一张正方形 PNG 放在这里（≥256×256 即可）。
 tools/icon-source.png
 
 # 图标历史备份

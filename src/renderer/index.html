@@ -252,6 +252,17 @@
     <div class="field-hint mono" id="hotkey-hint"></div>
   </div>
 
+  <!-- ------------------------------------------------ 工具栏自动隐藏 -->
+  <div class="field">
+    <label class="field-label">工具栏自动隐藏</label>
+    <div class="field-row">
+      <span class="field-label" style="flex:0 0 auto">无动作后</span>
+      <input type="range" id="cfg-auto-hide" min="0" max="20000" step="200">
+      <output class="field-value" id="cfg-auto-hide-out">2.4 秒</output>
+    </div>
+    <div class="field-hint">顶栏和胶片条在这段时间内没有鼠标移动或触摸之后淡出，一动就回来。拖到最左边（0）表示一直显示。设置面板或图片信息面板开着时不会隐藏。</div>
+  </div>
+
   <!-- ---------------------------------------------------------- 胶片条 -->
   <div class="field">
     <label class="field-label">缩略图胶片条</label>

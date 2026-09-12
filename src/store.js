@@ -64,6 +64,15 @@ const DEFAULTS = {
   startHidden: false,      // 启动时不显示窗口（配合开机自启）
   launchAtLogin: false,    // 开机自启（实际状态以系统为准，见 tray.getLaunchAtLogin）
 
+  // ---- 工具栏自动隐藏 ----
+  /**
+   * 顶栏与胶片条在「没有动作」多久之后淡出（毫秒）。0 = 一直显示。
+   *
+   * 之前写死 2400ms。改成可配置是因为两种用法想要完全不同：
+   * 快速翻图时希望它赶紧让开，慢悠悠挑图时又希望它多停一会儿。
+   */
+  autoHideDelay: 2400,
+
   // ---- 胶片条（缩略图导航） ----
   filmstrip: true,         // 是否显示底部缩略图条
   filmstripRange: 40,      // 当前帧左右各保留多少张（窗口化渲染，不是全部）

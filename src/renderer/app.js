@@ -1419,6 +1419,10 @@ function applyConfigToUI() {
   // ---- 删除 ----
   $('cfg-confirm-delete').checked = c.confirmDelete !== false;
 
+  // ---- 工具栏自动隐藏 ----
+  $('cfg-auto-hide').value = c.autoHideDelay;
+  $('cfg-auto-hide-out').textContent = describeAutoHide(c.autoHideDelay);
+
   // ---- 胶片条 ----
   $('cfg-filmstrip').checked = c.filmstrip !== false;
   $('cfg-filmstrip-center').checked = c.filmstripAutoCenter !== false;
@@ -1628,6 +1632,15 @@ function bindSettings() {
     }
   });
 
+  // ---- 工具栏自动隐藏 ----
+  $('cfg-auto-hide').addEventListener('input', (e) => {
+    $('cfg-auto-hide-out').textContent = describeAutoHide(Number(e.target.value));
+  });
+  $('cfg-auto-hide').addEventListener('change', async (e) => {
+    await save({ autoHideDelay: Number(e.target.value) });
+    pokeBars();          // 按新时长重新起算，松手就能感觉到差别
+  });
+
   // ---- 胶片条 ----
   $('cfg-filmstrip').addEventListener('change', async (e) => {
     await save({ filmstrip: e.target.checked });
@@ -1801,13 +1814,33 @@ function bindSettings() {
 
 /* ------------------------------------------------------------ 界面交互 */
 
+/** 把毫秒数说成人话：0 = 一直显示 */
+function describeAutoHide(ms) {
+  const v = Number(ms);
+  if (!Number.isFinite(v) || v <= 0) return '一直显示';
+  if (v < 1000) return `${Math.round(v)} ms`;
+  return `${(v / 1000).toFixed(1)} 秒`;
+}
+
 let idleTimer = null;
+
+/**
+ * 「有动作了」—— 把工具栏叫回来，并按配置的时长重新起算隐藏倒计时。
+ *
+ * 时长读的是 `autoHideDelay`（毫秒，0 = 一直显示）。以前写死 2400ms：
+ * 快速翻图时嫌它挡着、慢慢挑图时又嫌它缩太快，两种节奏不可能用一个常数同时满足。
+ * 面板开着时一律不隐藏 —— 否则一开设置面板，工具栏就缩走了。
+ */
 function pokeBars() {
   document.body.classList.remove('idle');
   clearTimeout(idleTimer);
+  idleTimer = null;
+  if (!state.config) return;                        // 配置还没到就先别藏，不拿默认值猜
+  const delay = Number(state.config.autoHideDelay);
+  if (!Number.isFinite(delay) || delay <= 0) return; // 0 = 一直显示
   idleTimer = setTimeout(() => {
     if (!state.settingsOpen && !state.infoOpen) document.body.classList.add('idle');
-  }, 2400);
+  }, delay);
 }
 
 async function refreshChannelInfo() {
@@ -1993,8 +2026,13 @@ function bindEvents() {
   });
 
   // ESC 关闭面板时打不到 input 上，这里统一放行
+  /*
+   * 唤醒工具栏。用 pointerdown 而不是 mousedown：触摸屏和触控笔不会发 mousedown，
+   * 而触摸屏上又没有「鼠标移动」这个动作 —— 只用 mousemove + mousedown 的话，
+   * 工具栏一旦自动隐藏，手指就再也叫不回来了（点一下都不行）。
+   */
   document.addEventListener('mousemove', pokeBars);
-  document.addEventListener('mousedown', pokeBars);
+  document.addEventListener('pointerdown', pokeBars);
 
   document.addEventListener('keydown', (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;

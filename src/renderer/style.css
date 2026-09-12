@@ -45,9 +45,24 @@ html, body {
 
 #stage.swiping { cursor: grabbing; }
 
+/*
+ * 触摸屏手势：只让「壁纸表面」这一个元素接管触摸。
+ *
+ * 不写这行的话，触摸屏上左右拖会被浏览器当成滚动手势接管，
+ * 接管的那一刻发 pointercancel —— 而我们的 cancel 分支是丢弃这次滑动，
+ * 于是表现就是「鼠标能拖、手指划不动，完全没反应」。
+ * 桌面端鼠标不出这个问题，因为鼠标拖动不会被浏览器抢。
+ *
+ * ⚠️ 只能写在 .layer 上，不能写在 #stage 上。
+ * touch-action 是「元素与所有祖先的**交集**」，祖先写 none 会把子孙一起锁死 ——
+ * 而 #stage 是设置面板、图片信息面板、胶片条的共同祖先，写它上面就等于
+ * 「面板在触摸屏上滚不动」。.layer 是 inset:0 铺满舞台的壁纸表面，只管显示图，
+ * 底下没有任何可滚动内容；面板也不是它的子孙，原生触摸滚动原样保留。
+ */
 .layer {
   position: absolute;
   inset: 0;
+  touch-action: none;            /* 见上：左右拖的手势由应用自己接管，别让浏览器抢 */
   will-change: transform, opacity;
   backface-visibility: hidden;
   transform: translate3d(0, 0, 0);
