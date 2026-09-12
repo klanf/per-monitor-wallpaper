@@ -171,12 +171,30 @@ function channelName(ch) {
 }
 
 /**
- * 频道指纹：目录 / 递归 / 张数 / 修订号任一变化就说明预览需要重新取图。
+ * 频道指纹：任何会让**文件顺序**或**列表内容**变化的因素都要放进来，
+ * 变了就说明预览必须重新取一次图。反过来，只是改间隔 / 动画时长这类
+ * 不影响顺序的设置，指纹不该变 —— 否则画面会被打回第一张。
+ *
+ * 这里踩过两次同一个坑，都是「顺序变了但指纹没变」：
+ *   1. 切换「播放顺序」（`profile.shuffle`）—— 调度器会把列表整个重排，
+ *      但指纹里没有这一项，于是主页面还是旧顺序，怎么切都不动；
+ *   2. 走完一轮（`rounds` 自增）—— `_startNextRound` 会重洗列表，
+ *      同样不进指纹；而 onTick 是用 `state.files[index]` 取图的，
+ *      结果就是窗口预览与桌面壁纸各显示一张不同的图。
+ *
  * rev 是文件被删除或移动后自增的 —— 只比张数的话，「移动」（张数不变）会漏掉。
  */
 function previewSignature(ch) {
   if (!ch) return 'none';
-  return [ch.id, ch.profile.folder, ch.profile.recursive ? 1 : 0, ch.count, ch.rev || 0].join('|');
+  return [
+    ch.id,
+    ch.profile.folder,
+    ch.profile.recursive ? 1 : 0,
+    ch.profile.shuffle ? 'r' : 'n',   // 播放顺序模式
+    ch.rounds || 0,                    // 走完一轮会重洗
+    ch.count,
+    ch.rev || 0,
+  ].join('|');
 }
 
 function syncProgressPlayState() {

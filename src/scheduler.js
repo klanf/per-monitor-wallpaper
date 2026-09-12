@@ -434,6 +434,16 @@ class MonitorScheduler {
      */
     if (dir > 0 && ch.profile.shuffle && (ch.index + 1) % n === 0) {
       await this._startNextRound(ch);
+      /*
+       * 一轮走完重洗了列表 —— 这是「频道的文件顺序变了」，不是普通的推进，
+       * 必须走 channels 通道告诉渲染层。
+       *
+       * 只发 tick 是不够的：渲染层判断「要不要重取文件列表」的指纹比较住在
+       * applyChannelInfo 里，而它只在 channels:changed 时才跑。只发 tick 的话
+       * 那次比较根本不会执行，于是窗口里的顺序停在上一轮 —— 而 onTick 又是用
+       * state.files[index] 取图的，结果就是窗口预览与桌面壁纸各显示一张不同的图。
+       */
+      this._emit('channels', { reason: 'new-round', channels: this.list() });
     }
     await this.goTo(ch.id, (ch.index + dir + n) % n, dir, reason);
   }
