@@ -594,6 +594,34 @@ function validateAccelerator(accel) {
   return { ok: true };
 }
 
+/**
+ * Electron 拒绝某个键名时抛的原文长这样：
+ *   Error processing argument at index 0, conversion failure from Ctrl+Period
+ * 对着用户念「conversion failure」等于什么都没说。这里翻成人话，并给出替代写法。
+ *
+ * 表里的名字都是 DOM 的 KeyboardEvent.code 名，不是 Electron 的 accelerator 名 ——
+ * 录制代码如果误用它们（旧版本就会把 `.` 写成 `Period`），注册必失败。
+ */
+const ACCEL_NAME_HINTS = {
+  period: '.', comma: ',', slash: '/', semicolon: ';', quote: "'",
+  bracketleft: '[', bracketright: ']', backslash: '\\', backquote: '`',
+  minus: '-', equal: '=', plus: 'Plus', spacebar: 'Space',
+};
+
+function explainAcceleratorError(message, accel) {
+  const text = String(message || '');
+  if (!/conversion failure/i.test(text)) return text;
+  const bad = String(accel).split('+').pop().trim();
+  const low = bad.toLowerCase();
+  if (/^numpad/.test(low)) {
+    return `小键盘的键（${bad}）Electron 绑不上，请改用主键盘的数字`;
+  }
+  const hint = ACCEL_NAME_HINTS[low];
+  return hint
+    ? `键名「${bad}」不是 Electron 认识的名字，改成「${hint}」就行`
+    : `键名「${bad}」不是 Electron 认识的键`;
+}
+
 /** 热键最终落在哪一路轮播上：优先当前预览，没有就用第一路 */
 function hotkeyTargetChannelId() {
   if (currentPreviewId && scheduler.channels.has(currentPreviewId)) return currentPreviewId;
@@ -737,7 +765,7 @@ function applyHotkeys() {
       if (ok) registered[action] = accel;
       else failed.push({ action, accelerator: accel, reason: '已被其它程序占用' });
     } catch (err) {
-      failed.push({ action, accelerator: accel, reason: err.message });
+      failed.push({ action, accelerator: accel, reason: explainAcceleratorError(err.message, accel) });
     }
   }
 

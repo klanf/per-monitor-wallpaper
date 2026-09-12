@@ -1189,20 +1189,65 @@ async function refreshTrayState() {
 
 /* ---------------------------------------------------------------- 热键 */
 
-/** 浏览器 KeyboardEvent → Electron accelerator 片段 */
-const KEY_NAMES = {
-  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
-  Esc: 'Esc', Escape: 'Esc', ' ': 'Space', Spacebar: 'Space',
-  Enter: 'Return', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
-  Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
-  '+': 'Plus', '=': 'Plus', '-': 'Minus', '_': 'Minus',
-  ',': 'Comma', '.': 'Period', '/': 'Slash', ';': 'Semicolon',
-  "'": 'Quote', '[': 'BracketLeft', ']': 'BracketRight', '\\': 'Backslash',
-  '`': 'Backquote', '~': 'Backquote', '!': '1', '@': '2', '#': '3', '$': '4',
-  '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
+/**
+ * 录制热键：把一次按键事件换算成 Electron accelerator。
+ *
+ * 这里有两条**实测出来的**硬约束，不是照文档抄的 —— 每一条都对应一个已经发生过的故障：
+ *
+ * 1. 必须优先看 `e.code`，不能只看 `e.key`。
+ *    主键盘 `0` 和小键盘 `0` 的 `e.key` 都是 `"0"`，但小键盘那个键
+ *    Electron **绑不上**：`Numpad0` 直接抛 "conversion failure"，
+ *    `num0` 能注册成功却永远不触发（已用 keybd_event 注入 + GetAsyncKeyState
+ *    做对照，确认注入本身有效，排除是注入路径的问题）。
+ *    只按 e.key 换算，用小键盘录出来的就是一个「看着对、按下去没反应」的绑定，
+ *    用户只能得出「热键失效」这一个结论。这里直接把小键盘拒掉并说清原因。
+ *
+ * 2. 标点要用**字面字符**，不能用 DOM 的 `.code` 名。
+ *    Electron 认 `.` `,` `/` `;` `'` `[` `]` `\` `` ` `` `-` `=` `~` `!` 这些字符，
+ *    但不认 `Period` `Comma` `Slash` `Semicolon` `Quote` `BracketLeft`
+ *    `BracketRight` `Backslash` `Backquote` `Minus` —— 后者会让
+ *    globalShortcut.register 抛异常。原表把 `.` 映成 `Period`，方向正好反了，
+ *    于是配置里留下了 `Ctrl+Period` 这种永远注册不上的绑定。
+ */
+
+/** 物理键（e.code）→ accelerator 主键。用 code 才能区分主键盘/小键盘，也不受输入法布局影响 */
+const CODE_KEYS = {
+  Digit0: '0', Digit1: '1', Digit2: '2', Digit3: '3', Digit4: '4',
+  Digit5: '5', Digit6: '6', Digit7: '7', Digit8: '8', Digit9: '9',
+  KeyA: 'A', KeyB: 'B', KeyC: 'C', KeyD: 'D', KeyE: 'E', KeyF: 'F',
+  KeyG: 'G', KeyH: 'H', KeyI: 'I', KeyJ: 'J', KeyK: 'K', KeyL: 'L',
+  KeyM: 'M', KeyN: 'N', KeyO: 'O', KeyP: 'P', KeyQ: 'Q', KeyR: 'R',
+  KeyS: 'S', KeyT: 'T', KeyU: 'U', KeyV: 'V', KeyW: 'W', KeyX: 'X',
+  KeyY: 'Y', KeyZ: 'Z',
+  Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+  Backslash: '\\', Semicolon: ';', Quote: "'", Backquote: '`',
+  Comma: ',', Period: '.', Slash: '/',
 };
 
-/** 从一次按键事件拼出 accelerator；返回 null 表示这次按键不能当热键 */
+/** 具名键（e.key / e.code 两种写法都收） */
+const NAMED_KEYS = {
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Up: 'Up', Down: 'Down', Left: 'Left', Right: 'Right',
+  Escape: 'Esc', Esc: 'Esc',
+  ' ': 'Space', Space: 'Space', Spacebar: 'Space',
+  Enter: 'Return', Return: 'Return', Tab: 'Tab',
+  Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
+  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+};
+
+/** Electron 认的字面标点。`+` 不在内 —— accelerator 用 `+` 当分隔符，加号只能写 `Plus` */
+const PUNCT_CHARS = new Set([
+  '`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/',
+  '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '{', '}', '|', ':', '"', '<', '>', '?',
+]);
+
+/** 按下去、但不该单独当主键的东西 */
+const DEAD_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'CapsLock', 'Dead', 'Unidentified']);
+
+/**
+ * 一次按键 → `{ accelerator }`，或 `{ error: '给用户看的原因' }`。
+ * 拿不准的一律拒绝，绝不把 Electron 不认识的字符串写进配置。
+ */
 function acceleratorFromEvent(e) {
   const mods = [];
   if (e.ctrlKey) mods.push('Ctrl');
@@ -1211,16 +1256,24 @@ function acceleratorFromEvent(e) {
   if (e.metaKey) mods.push('Super');
 
   const raw = e.key;
-  if (['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'CapsLock', 'Dead'].includes(raw)) return null;
+  const code = e.code || '';
+  if (DEAD_KEYS.has(raw)) return { error: '这只是修饰键，还得再配一个字母或数字' };
 
-  let key = KEY_NAMES[raw];
-  if (!key) {
-    if (/^F\d{1,2}$/.test(raw)) key = raw;
-    else if (raw.length === 1) key = /[a-z]/i.test(raw) ? raw.toUpperCase() : raw;
-    else key = raw;                       // 其他具名键（MediaPlayPause 之类）原样交给 Electron
+  // 小键盘：accelerator 语法表达不了，硬录下来只会得到「按了没反应」
+  if (/^Numpad/.test(code)) {
+    return { error: '小键盘的键绑不上全局热键，请改用主键盘的数字' };
   }
-  if (!mods.length) return null;          // 没修饰键：会抢掉全系统输入，不认
-  return [...mods, key].join('+');
+
+  let key = CODE_KEYS[code] || NAMED_KEYS[raw];
+  if (!key) {
+    if (/^F\d{1,2}$/.test(raw)) key = raw;                 // F1 – F24
+    else if (/^[a-z0-9]$/i.test(raw)) key = raw.toUpperCase();
+    else if (PUNCT_CHARS.has(raw)) key = raw;
+  }
+  if (!key) return { error: `「${raw || code || '这个键'}」不能当热键，换个字母或数字试试` };
+
+  if (!mods.length) return { error: '必须带修饰键（Ctrl / Alt / Shift / Win）' };  // 单键会抢掉全系统输入
+  return { accelerator: [...mods, key].join('+') };
 }
 
 const HOTKEY_ORDER = ['cycleMonitor', 'next', 'prev', 'playPause', 'delete', 'info', 'toggleWindow'];
@@ -1321,15 +1374,16 @@ function onHotkeyCaptureKey(e) {
     return;
   }
 
-  const accel = acceleratorFromEvent(e);
-  if (!accel) { toast('必须带修饰键（Ctrl / Alt / Shift / Win）', true); return; }
+  const { accelerator, error } = acceleratorFromEvent(e);
+  // 出错时不退出录制态 —— 用户多半只是按错了键，让他直接换一个再按
+  if (error) { toast(error, true); return; }
 
   const action = recordingAction;
   recordingAction = null;
-  saveHotkey(action, accel).then((r) => {
+  saveHotkey(action, accelerator).then((r) => {
     const bad = (r.failed || []).find((f) => f.action === action);
     if (bad) toast(`没注册上：${bad.reason}`, true);
-    else toast(`已绑定 ${prettyAccelerator(accel)}`);
+    else toast(`已绑定 ${prettyAccelerator(accelerator)}`);
   });
 }
 
