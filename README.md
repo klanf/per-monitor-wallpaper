@@ -477,4 +477,4 @@ npm run dist      # 生成安装版与免安装版到 dist/
 
 [MIT](https://opensource.org/licenses/MIT)，完整文本见 [LICENSE](LICENSE)。
 
-`assets/` 下的应用图标由第三方画师作品改编而来，仅供本项目使用，不在上述授权范围内；原图未随仓库分发，如需二次分发或商用请自行替换图标。
+`assets/` 下的应用图标由本项目作者自行生成，随仓库一并分发。生成所用的源图未打进仓库（见 `.gitignore` 里的 `tools/icon-source.png`）—— 如需换成自己的图标，把一张正方形 PNG（≥ 256×256）放到该路径后执行 `npm run icon` 即可，会同时重写 `assets/icon.ico` 与 `assets/icon.png`。
