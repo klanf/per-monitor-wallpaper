@@ -176,7 +176,7 @@ npm run dist               # 打包（需先 npm i -D electron-builder）
 
 ```
 用户配置里真实存在的这一行：
-  "\\?\DISPLAY#SAC2766#…#{…}": { "shuffle": "random", "interval": 5, … }
+  "\\?\DISPLAY#AAAA1234#…#{…}": { "shuffle": "random", "interval": 5, … }
   → 解析出来 shuffle=false → 卡片高亮停在「按名称」，怎么点都回不到随机
 ```
 
@@ -793,6 +793,68 @@ out[wi] = aSum > 0 ? Math.round(r / aSum) : 0;
 新增第 8 节验证（`npm run verify:tray`）：把目标目录清空 → 删除 → 必须弹出明确原因；
 换回素材 → 删除 → 提示里要说清删了哪张、张数 -1。**75 项全过**。
 
+## 第十三轮：热键「不生效」的真根因 —— 录出来的绑定本身就唤不醒
+
+上一轮修完反馈通路，用户又反馈了一次「还是没生效」。**说明第十二轮的结论只对了一半**：
+反馈缺失确实该补，但没说清「为什么按下去真的没反应」。这一轮挖到了两个真正的根因。
+
+### 根因 1：录制只看 `e.key`，小键盘录出来的绑定永远唤不醒
+
+主键盘 `0` 和小键盘 `0` 的 `KeyboardEvent.key` **都是 `"0"`**，
+而 Electron 的 accelerator 语法**根本表达不了小键盘数字**：
+`Numpad0` 直接抛 `conversion failure`；`num0` 能注册成功，却一次都不触发。
+
+只按 `e.key` 换算，用小键盘录出来的就是一个**看着对、按下去没反应**的绑定 ——
+配置里躺着 `Ctrl+0`，界面上显示「已绑定 Ctrl + 0」，用户按小键盘 0 却毫无动静。
+
+决定性实测（不是照文档抄的）：
+
+| 实验 | 结果 |
+|---|---|
+| 逐个 `try/catch` 注册候选键名 | `Numpad0` / `NumpadDecimal` / `Decimal` → **抛异常**；`num0` / `Num0` → 注册成功 |
+| 注册 `Alt+Shift+0` 与 `Alt+Shift+num0`，各注入一次真实按键 | 主键盘 0 命中 `0`；**小键盘 0 一次都没命中 `num0`** |
+| 对照：注入后 `GetAsyncKeyState(0x60)` | `0xffff8001`（高位为 1）→ **系统确认小键盘确实被按下**，排除"注入路径有问题" |
+
+### 根因 2：`KEY_NAMES` 把标点映成了 Electron 不认的 DOM 名字
+
+原表把 `.` 映成 `Period`、`,` 映成 `Comma`、`-` 映成 `Minus`……
+而实测的结论刚好相反：**Electron 认字面字符 `.`、不认 `Period`**。
+
+| 合法（实测通过） | 非法（抛 conversion failure） |
+|---|---|
+| `0`–`9`、`A`–`Z`、`F1`–`F24` | `Numpad0`、`NumpadDecimal`、`Decimal` |
+| 字面标点 `` ` `` `-` `=` `[` `]` `\` `;` `'` `,` `.` `/` `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `_` `{` `}` `\|` `:` `"` `<` `>` `?` | DOM 名 `Period` `Comma` `Slash` `Semicolon` `Quote` `BracketLeft` `BracketRight` `Backslash` `Backquote` `Minus` |
+| `Plus` `Space` `Return` `Enter` `Up` `Escape` `Delete` `Tab` | |
+
+于是录 `Ctrl+.` 会在配置里留下 `Ctrl+Period` —— 一个**永远注册不上**的绑定。
+`+` 单独注意：它是 accelerator 的分隔符，加号只能写 `Plus`。
+
+### 修法
+
+- `acceleratorFromEvent()` 改成**物理键优先**（`e.code` → `CODE_KEYS`）：用 code 才能区分
+  主键盘与小键盘，也不受输入法布局影响；
+- `Numpad*` **直接拒绝**并说清原因（「小键盘的键绑不上全局热键，请改用主键盘的数字」）——
+  与其静默存一个唤不醒的绑定，不如当场告诉用户；
+- 标点改用**字面字符**；拿不准的一律拒绝，**绝不把 Electron 不认识的字符串写进配置**；
+- 拒绝时**保持录制态**，用户只是按错了键，应该能直接换一个再按；
+- 主进程 `applyHotkeys()` 的 catch 里补 `explainAcceleratorError()`，把
+  `conversion failure from Ctrl+Period` 翻成「键名「Period」不是 Electron 认识的名字，改成「.」就行」——
+  **兜住历史遗留配置**，不用等用户再来问一次。
+
+### 验证（CDP 驱动真实录制流程，5/5）
+
+| 用例 | 期望 | 实测 |
+|---|---|---|
+| Ctrl + 小键盘 0 | 拒绝 + 保持录制态 | ✓ 提示「小键盘的键绑不上全局热键…」 |
+| Ctrl + 主键盘 0 | `Ctrl+0` 且注册成功 | ✓ |
+| Ctrl + `.` | `Ctrl+.` 且注册成功 | ✓ **旧代码在这里会存成非法的 `Ctrl+Period`** |
+| Ctrl + M | `Ctrl+M` | ✓ |
+| 单独按 5 | 拒绝 | ✓ 提示「必须带修饰键」 |
+
+顺带一提：用户自己先我一步找到了绕法 ——「之前是小键盘的 0，我换成字母上的就可以了」。
+这恰好印证了根因 1；但**绕得过去不等于没 bug**，静默存下一个唤不醒的绑定仍然是坑，
+所以还是按上面的方式修掉了。
+
 ## 每屏独立轮播（第一轮）
 
 系统自带的「幻灯片」只有一套全局配置，做不到「A 屏放这个目录、B 屏放那个目录」。
@@ -828,7 +890,7 @@ out[wi] = aSum > 0 ? Math.round(r / aSum) : 0;
   "interval": 60,
   "perMonitor": true,                // 打开每屏独立模式
   "monitors": {
-    "\\\\?\\DISPLAY#CYS1610#…#{…}": { // ← 只写与默认值不同的项
+    "\\\\?\\DISPLAY#BBBB5678#…#{…}": { // ← 只写与默认值不同的项
       "folder": "D:\\壁纸\\竖屏",
       "interval": 180
     }

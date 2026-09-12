@@ -460,8 +460,8 @@ const osCurrentOf = (device) => {
 
 /**
  * MONITOR 设备路径长得离谱，而且两块屏只有中段不同：
- *   \\?\DISPLAY#CYS1610#5&377eb0&0&UID33024#{e6f07b5f-…}
- *   \\?\DISPLAY#SAC2766#5&377eb0&0&UID33025#{e6f07b5f-…}
+ *   \\?\DISPLAY#AAAA1234#5&000000&0&UID00000#{xxxxxxxx-…}
+ *   \\?\DISPLAY#BBBB5678#5&000000&0&UID00001#{xxxxxxxx-…}
  * 简单掐头留尾（只留最后 34 字符）会把两块屏显示成同一个字符串，
  * 日志里就变成「A → A」，看不出到底切了没有。抓中段的型号 + UID 才有诊断价值。
  */

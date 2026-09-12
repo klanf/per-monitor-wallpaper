@@ -250,9 +250,10 @@ const results = [];
   /** 截一张。selector 为空则截整个视口；pad 是四周留白（CSS px）。 */
   async function shot(name, selector, pad = 0) {
     await wake();
-    // 自启命令与快捷文件夹是「面板一渲染就用真实配置重填」的，光 setConfig 不会刷新 DOM。
+    // 自启命令、快捷文件夹、缩略图目录都是「面板一渲染就用真实配置重填」的，光 setConfig 不会刷新 DOM。
     // 所以放在这里：每次截图前都先抹一遍，紧接着自检，中间不留重渲染的窗口。
     await maskSettingsPanel();
+    await maskInfoPanel();
     await assertNoLeak(name);
     const params = { format: 'png', captureBeyondViewport: false };
     if (selector) {
@@ -364,20 +365,61 @@ const results = [];
    * 设置面板里有两处会直接暴露本机信息，截图前必须抹掉：
    *   1. `#login-hint` —— 显示开机自启的完整命令，内含 process.execPath（真实 exe 路径）
    *   2. `#quick-list` —— 快捷文件夹列表，渲染的是用户真实目录
+   *   3. `#thumb-dir` —— 缩略图缓存目录，默认值是用户主目录下的真实路径
    * 面板每次打开时 app.js 都会重新填充，所以每开一次就要抹一次。
    */
   async function maskSettingsPanel() {
     const fake = '自启命令：C:\\Users\\<用户名>\\AppData\\Local\\Programs\\壁纸切换器\\壁纸切换器.exe --hidden';
     const fakeTip = '每块屏的壁纸写入通道状态';
+    const fakeThumb = 'C:\\Users\\<用户名>\\AppData\\Roaming\\壁纸切换器\\thumbs';
     return ev(`(() => {
       const hint = document.querySelector('#login-hint');
       if (hint) hint.textContent = ${JSON.stringify(fake)};
       const list = document.querySelector('#quick-list');
       if (list) list.innerHTML = '';
+      const thumb = document.querySelector('#thumb-dir');
+      if (thumb) thumb.textContent = ${JSON.stringify(fakeThumb)};
       // 顶栏徽标的 title 里塞着完整诊断串（配置路径 + 壁纸库目录），截图用不上，换成一句无害的
       const badge = document.querySelector('#backend-badge');
       if (badge) badge.setAttribute('title', ${JSON.stringify(fakeTip)});
-      return { hint: !!hint, quick: list ? list.children.length : -1, badge: !!badge };
+      return { hint: !!hint, quick: list ? list.children.length : -1, thumb: !!thumb, badge: !!badge };
+    })()`);
+  }
+
+  /**
+   * 「图片信息」面板的脱敏。
+   *
+   * 为什么光靠重渲染不够：面板**关着**的时候里面的 DOM 还留着上一次的内容，
+   * 而 assertNoLeak 扫的是 textContent（含隐藏元素，故意的 —— 截图可能把折叠内容也截进去）。
+   * 应用启动时按真实配置渲染过一次，于是顶栏图名、所在文件夹、完整路径
+   * 全是真实壁纸库路径，面板关着永远等不到重渲染。
+   * 所以这里按黑名单把这些字段里的真实串**就地替换**成演示图库路径。
+   *
+   * 面板开着时（截「图片信息」那张）内容本来就是演示素材，替换是空操作，不会失真。
+   */
+  async function maskInfoPanel() {
+    return ev(`(() => {
+      const needles = ${JSON.stringify(LEAK_NEEDLES)}.slice().sort((a, b) => b.length - a.length);
+      const demo = ${JSON.stringify(DEMO)};
+      const scrub = (s) => {
+        let out = String(s == null ? '' : s);
+        for (const n of needles) out = out.split(n).join(demo);
+        return out;
+      };
+      let touched = 0;
+      const hit = (el, attr) => {
+        const raw = attr ? el.getAttribute(attr) : el.textContent;
+        const fixed = scrub(raw);
+        if (fixed === raw) return;
+        if (attr) el.setAttribute(attr, fixed); else el.textContent = fixed;
+        touched += 1;
+      };
+      const name = document.querySelector('#info-name');
+      if (name) { hit(name, null); hit(name, 'title'); }
+      for (const el of document.querySelectorAll('#info .ig-value, #info .ig-label')) {
+        hit(el, null); hit(el, 'title');
+      }
+      return touched;
     })()`);
   }
 
