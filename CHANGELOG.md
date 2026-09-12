@@ -221,7 +221,7 @@ npm run dist               # 打包（需先 npm i -D electron-builder）
 
 ```
 #0 期望 t-02.png
-   应用侧 lastWrite: {"ok":true,"method":"com:per-monitor","monitorId":"…SAC2766…","reason":"command"}
+   应用侧 lastWrite: {"ok":true,"method":"com:per-monitor","monitorId":"…AAAA1234…","reason":"command"}
    OS 主屏: t-02.png     命中: ✓
    …6 轮全部命中
 ```
