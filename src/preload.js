@@ -72,6 +72,12 @@ contextBridge.exposeInMainWorld('wp', {
   /** 取右键菜单的结构（不弹菜单），给验证脚本核对菜单项是否齐全 */
   imageMenuTemplate: (payload) => ipcRenderer.invoke('context:image-menu-template', payload),
 
+  // ---- 桌面右键菜单（Windows 桌面背景菜单，注册表集成）----
+  /** 装在不在 + 注册的命令行（换过目录会 stale，UI 据此提示重装） */
+  desktopMenuStatus: () => ipcRenderer.invoke('shell:desktop-menu-status'),
+  /** key = 'next' | 'delete'；不传就是整组一起装卸 */
+  desktopMenuSet: (on, key = null) => ipcRenderer.invoke('shell:desktop-menu-set', on, key),
+
   // ---- 预设文件夹 ----
   listQuickFolders: () => ipcRenderer.invoke('quick:list'),
   pickQuickFolder: () => ipcRenderer.invoke('quick:pick'),

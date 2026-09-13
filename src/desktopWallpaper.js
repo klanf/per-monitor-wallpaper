@@ -323,6 +323,22 @@ function monitorIdForWindow(hwnd) {
   return monitorIdForRect(windowMonitorRect(hwnd));
 }
 
+/**
+ * 屏幕坐标点 → 显示器设备路径。
+ *
+ * 和 monitorIdForRect 的区别：那个要的是**整块屏的矩形**（拿窗口矩形去精确匹配边界），
+ * 随手传一个 1×1 的点矩形是匹配不上的（这个坑踩过：桌面右键菜单按光标找屏，
+ * 一直定位不到，删除动作就静默失败了）。
+ * 这里改成「哪个矩形包含这个点」，虚拟桌面原点右侧以及左侧副屏（x 为负）都对。
+ */
+function monitorIdForPoint(x, y) {
+  const { monitors, ok } = enumMonitors();
+  if (!ok) return null;
+  const hit = monitors.find((m) => x >= m.x && x < m.x + m.width
+    && y >= m.y && y < m.y + m.height);
+  return hit ? hit.id : null;
+}
+
 /** 主显示器（虚拟桌面原点所在的那台）的设备路径 */
 function primaryMonitorId() {
   const { monitors, ok } = enumMonitors();
@@ -366,6 +382,7 @@ module.exports = {
   describeHr,
   monitorIdForWindow,
   monitorIdForRect,
+  monitorIdForPoint,
   primaryMonitorId,
   windowMonitorRect,
   // 供测试脚本使用的内部诊断

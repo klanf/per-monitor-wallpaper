@@ -42,6 +42,7 @@ const PROTO_BUF = [
 let koffi = null;
 let spiSet = null;
 let spiGet = null;
+let getCursorPosFn = null;
 let loadError = null;
 
 function load() {
@@ -64,6 +65,33 @@ function load() {
     loadError = err;
     spiSet = null;
     spiGet = null;
+  }
+}
+
+/**
+ * 读光标位置（物理像素）。
+ *
+ * 桌面右键菜单那条命令是靠「光标在哪块屏」判断该删哪台显示器的壁纸的。
+ * 特意不用 Electron 的 `screen.getCursorScreenPoint()`：那套是 DIP 坐标，
+ * 混屏不同缩放时会和 IDesktopWallpaper 的物理矩形对不上（`monitorIdForRect`
+ * 吃的就是物理像素），一混用就会删错屏。
+ */
+function cursorPoint() {
+  load();
+  if (loadError) return null;
+  try {
+    // GetCursorPos 和结构体只注册一次（koffi 重复注册同名 struct 会抛）
+    if (!getCursorPosFn) {
+      const user32 = koffi.load('user32.dll');
+      koffi.struct('WpCursorPoint', { x: 'int32', y: 'int32' });
+      getCursorPosFn = user32.func('bool __stdcall GetCursorPos(_Out_ WpCursorPoint *pt)');
+    }
+    const buf = koffi.alloc('WpCursorPoint', 1);
+    if (!getCursorPosFn(buf)) return null;
+    const pt = koffi.decode(buf, 'WpCursorPoint');
+    return { x: pt.x, y: pt.y };
+  } catch {
+    return null;
   }
 }
 
@@ -208,6 +236,7 @@ module.exports = {
   getCurrentWallpaper,
   backendName,
   ensureNativeFormat,
+  cursorPoint,
   NATIVE_EXT,
   SPI_SETDESKWALLPAPER,
   SPIF_UPDATEINIFILE,

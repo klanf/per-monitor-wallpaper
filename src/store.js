@@ -107,6 +107,7 @@ const DEFAULTS = {
     delete: '',        // 把当前这张移入回收站
     toggleWindow: '',  // 显示 / 隐藏主窗口
     info: '',          // 当前这张的图片信息
+    reveal: '',        // 打开这张图所在的文件夹（并选中它）
   },
 
   // ---- 右键菜单 ----
@@ -162,7 +163,7 @@ const BOOL_KEYS = new Set([
 ]);
 
 /** 热键字段：值必须是非空字符串或空串，别让 undefined / 数字混进来 */
-const HOTKEY_KEYS = ['cycleMonitor', 'next', 'prev', 'playPause', 'delete', 'toggleWindow', 'info'];
+const HOTKEY_KEYS = ['cycleMonitor', 'next', 'prev', 'playPause', 'delete', 'toggleWindow', 'info', 'reveal'];
 
 function normalizeHotkeys(value) {
   if (!isPlainObject(value)) return {};

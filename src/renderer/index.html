@@ -235,6 +235,44 @@
       <button class="btn sm danger" id="btn-del-current">删除当前这张到回收站</button>
     </div>
     <div class="field-hint">关掉开关后，右键菜单、胶片条垃圾桶、托盘和热键的删除都会直接移入回收站。</div>
+
+    <!-- 桌面右键菜单：注册到 HKCU，卸载就是删掉那棵子树。两项分开开关，可以只装一个 -->
+    <label class="check rich" for="cfg-desktop-menu-next">
+      <input type="checkbox" id="cfg-desktop-menu-next">
+      <span class="rich-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4.6 10a7.6 7.6 0 0 1 12.8-4.2L20 8"></path>
+          <path d="M20 4.4V8h-3.6"></path>
+          <path d="M19.4 14a7.6 7.6 0 0 1-12.8 4.2L4 16"></path>
+          <path d="M4 19.6V16h3.6"></path>
+        </svg>
+      </span>
+      <span class="rich-text">
+        <span class="rich-title">切换到下一张壁纸</span>
+        <span class="rich-hint">桌面右键——把光标那块屏的壁纸往后拨一张</span>
+      </span>
+    </label>
+    <label class="check rich" for="cfg-desktop-menu-delete">
+      <input type="checkbox" id="cfg-desktop-menu-delete">
+      <span class="rich-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h16"></path>
+          <path d="M10 4h4"></path>
+          <path d="M6.5 7l.9 12.2h9.2L17.5 7"></path>
+          <path d="M10.2 11v5M13.8 11v5"></path>
+        </svg>
+      </span>
+      <span class="rich-text">
+        <span class="rich-title">删除当前显示器的壁纸</span>
+        <span class="rich-hint">桌面右键——把光标那块屏正在放的那张移入回收站</span>
+      </span>
+    </label>
+    <div class="field-hint" id="desktop-menu-hint">
+      两项都按光标所在的那块屏生效：光标停在哪块屏，就动哪块屏的壁纸，别的屏不碰。
+      写的是当前用户（HKCU），不需要管理员权限。Windows 11 里这两项在桌面右键的「显示更多选项」下面。
+    </div>
   </div>
 
   <!-- ---------------------------------------------------------- 全局热键 -->

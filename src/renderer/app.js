@@ -1294,7 +1294,7 @@ function acceleratorFromEvent(e) {
   return { accelerator: [...mods, key].join('+') };
 }
 
-const HOTKEY_ORDER = ['cycleMonitor', 'next', 'prev', 'playPause', 'delete', 'info', 'toggleWindow'];
+const HOTKEY_ORDER = ['cycleMonitor', 'next', 'prev', 'playPause', 'delete', 'info', 'reveal', 'toggleWindow'];
 let hotkeyState = { actions: {}, hotkeys: {}, registered: {}, failed: [] };
 let recordingAction = null;
 
@@ -1436,6 +1436,8 @@ function applyConfigToUI() {
 
   // ---- 删除 ----
   $('cfg-confirm-delete').checked = c.confirmDelete !== false;
+  // 桌面右键菜单的开关状态不在 config 里，而在注册表里 —— 以实际注册结果为准
+  refreshDesktopMenu();
 
   // ---- 工具栏自动隐藏 ----
   $('cfg-auto-hide').value = c.autoHideDelay;
@@ -1597,6 +1599,30 @@ function bindSettings() {
   });
 
   $('btn-del-current').addEventListener('click', deleteCurrentImage);
+
+  // ---- 桌面右键菜单 ----
+  // 两项（切下一张 / 删除）各自一个开关，各自读写自己那条注册表项。
+  // 不是所有人都想要「删除」摆在桌面右键上——误点的代价比多点一下大得多。
+  for (const [key, el] of [['next', $('cfg-desktop-menu-next')], ['delete', $('cfg-desktop-menu-delete')]]) {
+    el.addEventListener('change', async (e) => {
+      const on = e.target.checked;
+      e.target.disabled = true;
+      const r = await window.wp.desktopMenuSet(on, key);
+      e.target.disabled = false;
+      if (!r || !r.ok) {
+        e.target.checked = !on;   // 写注册表失败就把开关弹回去，别留一个骗人的勾
+        toast(`桌面右键菜单设置失败：${(r && r.error) || '未知错误'}`);
+        return;
+      }
+      applyDesktopMenuStatus(r.status);
+      const item = (r.status && r.status.items || []).find((x) => x.key === key);
+      toast(on
+        ? (item && item.installed
+          ? `已加上「${item.label}」：桌面右键 → 「显示更多选项」`
+          : '菜单项已写入，但回读不一致，请重试')
+        : '已从桌面右键菜单移除');
+    });
+  }
 
   // ---- 全局热键 ----
 
@@ -1831,6 +1857,52 @@ function bindSettings() {
 }
 
 /* ------------------------------------------------------------ 界面交互 */
+
+/**
+ * 桌面右键菜单的开关状态。
+ *
+ * 它不进 config.json —— 状态就在注册表里（装了就有、卸了就没了）。
+ * 另存一份到 config 只会多出一个和现实不一致的副本，
+ * 换过安装目录后「配置里关着、菜单却还在」这类鬼故事都是这么来的。
+ */
+async function refreshDesktopMenu() {
+  try {
+    applyDesktopMenuStatus(await window.wp.desktopMenuStatus());
+  } catch {
+    applyDesktopMenuStatus(null);
+  }
+}
+
+function applyDesktopMenuStatus(status) {
+  const boxes = { next: $('cfg-desktop-menu-next'), delete: $('cfg-desktop-menu-delete') };
+  const hint = $('desktop-menu-hint');
+  const list = Object.values(boxes).filter(Boolean);
+  if (!list.length) return;
+
+  if (hint && !hint.dataset.defaultText) hint.dataset.defaultText = hint.textContent.trim();
+
+  if (!status || !status.available) {
+    for (const box of list) { box.checked = false; box.disabled = true; }
+    if (hint) hint.textContent = `这台机器上用不了注册表接口：${(status && status.error) || '未知原因'}`;
+    return;
+  }
+
+  const byKey = {};
+  for (const it of status.items || []) byKey[it.key] = it;
+  for (const [key, box] of Object.entries(boxes)) {
+    if (!box) continue;
+    box.disabled = false;
+    box.checked = Boolean(byKey[key] && byKey[key].installed);
+  }
+
+  if (hint) {
+    hint.textContent = status.stale
+      ? '注册的命令行和当前程序位置对不上（多半是挪过目录）——'
+        + '关掉再打开一次这个开关就会重写。'
+        + 'Windows 11 里这两项在桌面右键的「显示更多选项」下面。'
+      : hint.dataset.defaultText;
+  }
+}
 
 /** 把毫秒数说成人话：0 = 一直显示 */
 function describeAutoHide(ms) {

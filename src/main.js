@@ -29,6 +29,7 @@ const { readImageInfo } = require('./exif');
 const { readImageSize } = require('./imageSize');
 const fileActions = require('./fileActions');
 const tray = require('./tray');
+const shellMenu = require('./shellMenu');
 
 // 自定义协议必须在 app ready 之前注册，所以放在模块顶层
 thumbnails.registerScheme();
@@ -109,7 +110,10 @@ function resolveUnifiedTarget() {
 
 function createWindow() {
   const cfg = store.get();
-  const startHidden = process.argv.includes('--hidden') || cfg.startHidden === true;
+  // 桌面右键菜单拉起来的进程也算「不该弹窗」：用户正看着桌面，
+  // 窗口糊上来正好挡住他要看的那块屏。它办完事就自己退了（见 whenReady 里那段）。
+  const fromDesktopMenu = Boolean(shellMenu.itemFromArgv(process.argv));
+  const startHidden = process.argv.includes('--hidden') || cfg.startHidden === true || fromDesktopMenu;
 
   mainWindow = new BrowserWindow({
     width: cfg.window.width,
@@ -343,6 +347,135 @@ async function trashChannelCurrent(channelId) {
   return result;
 }
 
+/**
+ * 「光标在哪块屏」要重试几次才问得出来。
+ *
+ * 桌面右键菜单点下去的那一瞬间，shell 自己正忙着（它刚把菜单收起来、又起了我们这个进程），
+ * 这时候调 IDesktopWallpaper 会被直接拒掉 —— COM 返回 0x8001010D（RPC_E_CALL_REJECTED）。
+ * 表现是「定位不到显示器」，删不掉还没提示，看着像功能没做。
+ * 隔一两百毫秒再问就好了，退避重试到两秒左右。
+ */
+async function monitorIdForPointRetry(x, y) {
+  for (let i = 0; i < 6; i += 1) {
+    const id = desktopWallpaper.monitorIdForPoint(x, y);
+    if (id) return id;
+    await new Promise((r) => setTimeout(r, 150 + i * 120));
+  }
+  console.warn('[desktop-menu] 光标定位显示器失败（COM 一直拒绝调用）');
+  return null;
+}
+
+/**
+ * 「光标在哪块屏」→ 那块屏接管的轮播频道。
+ *
+ * 菜单项是注册表里的一条命令，点下去会再起一个 App 进程；新进程拿不到单实例锁，
+ * 把参数转交给已在跑的那个（见 second-instance），于是「动哪块屏」只能自己判断：
+ * 菜单是被点在桌面空白处弹出来的，光标就在那块屏上。
+ *
+ * 切下一张和删除都要先过这一步，抽出来免得两边各写一份、各自漏掉回退分支。
+ * 每条失败路径都要给说法 —— 桌面菜单点下去无声无息的话，用户只会以为功能坏了。
+ */
+async function channelAtCursor() {
+  const pt = win32.cursorPoint();
+  if (!pt) return { ok: false, text: '读不到光标位置' };
+
+  const monitorId = await monitorIdForPointRetry(pt.x, pt.y);
+
+  let id = monitorId && scheduler.channels.has(monitorId) ? monitorId : null;
+  // 统一模式（perMonitor 关掉）只有一路频道，光标在哪块屏都归它
+  if (!id && scheduler.channels.has(UNIFIED_ID)) id = UNIFIED_ID;
+  if (!id && scheduler.channels.size === 1) id = [...scheduler.channels.keys()][0];
+
+  if (!id) {
+    const labels = scheduler.list().map((c) => c.label).join('、');
+    return {
+      ok: false,
+      text: monitorId
+        ? `光标这块屏没有接管轮播，当前接管的是：${labels || '无'}`
+        : '没识别出光标所在显示器',
+    };
+  }
+  return { ok: true, id, label: channelLabel(id), channel: scheduler.channels.get(id) };
+}
+
+/**
+ * 把「光标所在那块屏」的轮播往后拨一张 —— 桌面右键菜单「切换到下一张壁纸」。
+ *
+ * 只动这一路频道：别的屏不受影响。scheduler.step 内部会把新的一张写进系统壁纸，
+ * 所以点完菜单桌面上那块屏当场就换图。
+ */
+async function stepWallpaperAtCursor() {
+  const at = await channelAtCursor();
+  if (!at.ok) {
+    send('notice', { text: `${at.text}，切不了`, error: true });
+    return { ok: false, error: at.text };
+  }
+  if (at.channel.files.length < 2) {
+    send('notice', { text: `${at.label} 只有一张图，没得切`, error: true });
+    return { ok: false, error: '这一路只有一张图', channelId: at.id, label: at.label };
+  }
+
+  console.log(`[desktop-menu] 切到下一张：${at.label}`);
+  // step 返回的是「换完之后正在放的那张」，不是被跳过的那张
+  const entry = await scheduler.step(at.id, 1);
+  tray.refresh(scheduler.list());
+
+  // 窗口可见时界面自己会跟着刷，别重复打扰；藏进托盘才需要气泡
+  if (entry && !isWindowVisible() && store.get().tray !== false) {
+    tray.notify('壁纸切换器', `已切到下一张：${entry.name}（${at.label}）`);
+  }
+  return {
+    ok: true,
+    channelId: at.id,
+    label: at.label,
+    entry: entry ? { path: entry.path, name: entry.name } : null,
+  };
+}
+
+/**
+ * 删掉「光标所在那块屏」正在轮播的那张 —— 桌面右键菜单「删除当前显示器的壁纸」。
+ */
+async function deleteWallpaperAtCursor() {
+  const at = await channelAtCursor();
+  if (!at.ok) {
+    send('notice', { text: `${at.text}，删不掉`, error: true });
+    return { ok: false, error: at.text };
+  }
+
+  const { id, label } = at;
+  const entry = at.channel.files[at.channel.index];
+  if (!entry) {
+    send('notice', { text: `${label} 现在没有图片，没什么可删的`, error: true });
+    return { ok: false, error: '这一路没有图片' };
+  }
+
+  console.log(`[desktop-menu] 删除 ${label} 当前这张：${entry.path}`);
+  const result = await trashChannelCurrent(id);
+  tray.refresh(scheduler.list());
+
+  // 窗口可见时 performTrash 已经弹过 toast，别重复；藏进托盘才需要气泡
+  if (result.ok && !isWindowVisible() && store.get().tray !== false) {
+    tray.notify('壁纸切换器', `已移入回收站：${result.name}（${label}）`);
+  }
+  return { ...result, channelId: id, label };
+}
+
+/**
+ * 桌面右键菜单点了哪一项 → 干什么。
+ * 第二实例转发（App 已经在跑）和启动补办（App 没在跑）都走这一个入口，
+ * 免得两条路径各写一份 switch、加菜单项时漏改一处。
+ */
+function runDesktopMenuAction(item) {
+  switch (item.key) {
+    case 'next': return stepWallpaperAtCursor();
+    case 'delete': return deleteWallpaperAtCursor();
+    default:
+      console.warn('[desktop-menu] 不认识的菜单项:', item.key);
+      return Promise.resolve({ ok: false, error: `不认识的菜单项：${item.key}` });
+  }
+}
+
+
 async function addQuickFolder(folderPath, name) {
   const folders = [...(store.get().quickFolders || [])];
   if (folders.some((f) => f.path.toLowerCase() === folderPath.toLowerCase())) {
@@ -570,6 +703,7 @@ const HOTKEY_ACTIONS = {
   delete: '删除当前这张到回收站',
   toggleWindow: '显示 / 隐藏主窗口',
   info: '查看当前这张的图片信息',
+  reveal: '打开所在文件夹',
 };
 
 const MODIFIER_WORDS = new Set([
@@ -732,6 +866,31 @@ function runHotkeyAction(action) {
       if (!entry) { send('notice', { text: '当前没有可查看的图片', error: true }); break; }
       showWindow();
       send('info:open', { path: entry.path, channelId: id });
+      break;
+    }
+    case 'reveal': {
+      /*
+       * 打开所在文件夹 —— 目标跟 next / delete / info 一样，是「当前操作的那块屏」。
+       *
+       * 这一条**不开主窗口**：用户想看的是文件管理器，把 App 一起翻出来只会挡路。
+       * 也正因为不开窗，托盘态下（窗口藏着）必须靠气泡回话，不然按完热键
+       * 只有资源管理器弹出来，用户不知道开的是哪块屏的那张图。
+       */
+      const ch = id ? scheduler.channels.get(id) : null;
+      const entry = ch && ch.files[ch.index];
+      if (!entry) { notifyHotkey('当前没有可打开的图片', true); break; }
+
+      const label = channelLabel(id);
+      const name = path.basename(entry.path);
+      // 目录还在但图被挪走/删掉时，showItemInFolder 只会闷头打开那个目录 —— 先自己判
+      if (!fs.existsSync(entry.path)) {
+        notifyHotkey(`这张图已经不在了：${name}${label ? `（${label}）` : ''}`, true);
+        break;
+      }
+      fileActions.openContainingFolder(entry.path).then((r) => {
+        if (r.ok) notifyHotkey(`已在文件管理器中定位：${name}${label ? `（${label}）` : ''}`);
+        else notifyHotkey(`打开失败：${r.error}`, true);
+      });
       break;
     }
     default:
@@ -1024,6 +1183,22 @@ function registerIpc() {
   ipcMain.handle('file:trash-confirm', (_e, imagePath) => trashWithPermission(imagePath));
   ipcMain.handle('file:transfer', (_e, imagePath, targetDir, mode) => performTransfer(imagePath, targetDir, mode));
 
+  /* ---- 桌面右键菜单（注册表集成）---- */
+
+  /** 现状：装在不在、命令行是不是我们期望的那条（换过安装目录会 stale） */
+  ipcMain.handle('shell:desktop-menu-status', () => shellMenu.statusAll());
+  /**
+   * 装上 / 卸掉。都是 HKCU，不需要管理员权限。
+   * 不带 key 就是整组一起动（设置面板那个总开关走这条）。
+   */
+  ipcMain.handle('shell:desktop-menu-set', (_e, on, key = null) => {
+    const result = on
+      ? (key ? shellMenu.installItem(key) : shellMenu.installAll())
+      : (key ? shellMenu.uninstallItem(key) : shellMenu.uninstallAll());
+    if (!result.ok) send('notice', { text: `桌面右键菜单设置失败：${result.error}`, error: true });
+    return { ...result, status: shellMenu.statusAll() };
+  });
+
   /** 渲染层自绘菜单时的入口（当前用原生菜单，保留以便换实现） */
   ipcMain.on('context:image-menu', (_e, payload) => showImageMenu(payload || {}));
 
@@ -1191,9 +1366,25 @@ async function setChannelProfile(channelId, patch) {
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  /*
+   * 这个进程只是「来转交一个开关的」，要立刻死掉。
+   *
+   * 用 app.exit 而不是 app.quit：桌面右键菜单那条注册表命令点一下就起一个进程，
+   * ready 之前的 quit 会走一遍正常的退出流程（实测能吊住 30 秒不退出，
+   * 每次点菜单都留一个僵尸进程），exit 是直接终止，这里没有需要收尾的东西。
+   */
+  app.exit(0);
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (_event, argv) => {
+    // 桌面右键菜单那条注册表命令：第二个进程只为转交一个开关，
+    // 别把窗口翻出来打断用户（他正在看桌面）。
+    const item = shellMenu.itemFromArgv(argv);
+    if (item) {
+      runDesktopMenuAction(item).catch((err) => console.error('[desktop-menu]', err.message));
+      return;
+    }
+    showWindow();
+  });
 
   app.whenReady().then(async () => {
     store = new Store(path.join(app.getPath('userData'), 'config.json'));
@@ -1252,6 +1443,24 @@ if (!gotLock) {
     await scheduler.rebuild('startup');
     announceAutoSetup(autoAtStartup, true);
     thumbnails.pruneCache().catch(() => {});
+
+    /*
+     * 桌面右键菜单点下去时 App 可能没在跑（比如开机后还没启动过）。
+     * 那条注册表命令会把这个进程拉起来，起来之后得把事补办 ——
+     * 否则用户点完菜单，程序是开了，图没换，比不装还费解。
+     *
+     * 这一趟是「替菜单跑腿」，不是用户想开这个程序：窗口不显示（见 createWindow
+     * 的 startHidden），办完就退，别留一个谁也没叫它起的常驻进程。
+     * 延迟一下等频道扫描完（动作要知道那块屏现在放的是哪张）。
+     */
+    const startupItem = shellMenu.itemFromArgv(process.argv);
+    if (startupItem) {
+      setTimeout(() => {
+        runDesktopMenuAction(startupItem)
+          .catch((err) => console.error('[desktop-menu]', err.message))
+          .finally(() => app.quit());
+      }, 800);
+    }
 
     // 插拔显示器 / 改分辨率后要重建频道；派发事件很密集，节流一下
     let settle = null;
