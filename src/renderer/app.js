@@ -944,7 +944,7 @@ function openPreviewMenu() {
     menu.appendChild(item);
   }
 
-  // 挂在预览徽章自己身上（徽章 position:relative）：菜单右缘对着徽章右缘弹出来，
+  // 挂在预览徽章自己身上（徽章 position:relative）：菜单左缘对齐徽章左缘，
   // 以前挂在整组按钮的容器上，菜单会飘到「壁纸通道 / 相簿 / 设置」那边去，看着没对齐
   els.previewBadge.appendChild(menu);
 
@@ -1093,7 +1093,7 @@ function updateBadges() {
       `相簿：${album ? album.name : '（未选择）'}`,
       album ? `目录 ${album.folders.length} 个（启用 ${album.folders.filter((f) => f.enabled).length} 个）` : '',
       `共 ${ch.count} 张，当前第 ${ch.count ? ch.index + 1 : 0} 张`,
-      `间隔 ${ch.profile.interval} 秒`,
+      `间隔 ${formatInterval(ch.profile.interval)}`,
       `接管：${ch.profile.enabled ? '是' : '否'}`,
     ].filter(Boolean).join('\n');
     els.folderLabel.textContent = album
@@ -1188,7 +1188,10 @@ function cardHtml(ch) {
       <label class="field-label">轮播间隔</label>
       <div class="field-row">
         <input type="range" data-field="interval" min="3" max="3600" step="1" value="${p.interval}">
-        <output class="field-value" data-out="interval">${p.interval} 秒</output>
+        <output class="field-value" data-out="interval">${formatInterval(p.interval)}</output>
+      </div>
+      <div class="preset-row">
+        ${[30, 60, 300, 1800].map((s) => `<button type="button" class="preset-chip${p.interval === s ? ' active' : ''}" data-sec="${s}">${formatInterval(s)}</button>`).join('')}
       </div>
     </div>
     <details class="mc-more"${ch._open ? ' open' : ''}>
@@ -1745,11 +1748,25 @@ async function deleteCurrentImage() {
   else toast(`删除失败：${result.error}`, true);
 }
 
+// 间隔秒数 → 展示文案：不满一分钟显示秒，否则显示分钟（30/60/300/1800 预设也是这个口径）
+function formatInterval(sec) {
+  return sec < 60 ? `${sec} 秒` : `${sec % 60 === 0 ? sec / 60 : (sec / 60).toFixed(1)} 分钟`;
+}
+
+// 高亮与当前间隔一致的预设 chip
+function syncIntervalPresetActive(container, value) {
+  if (!container) return;
+  for (const chip of container.querySelectorAll('.preset-chip')) {
+    chip.classList.toggle('active', Number(chip.dataset.sec) === value);
+  }
+}
+
 function applyConfigToUI() {
   const c = state.config;
 
   $('cfg-interval').value = c.interval;
-  $('cfg-interval-out').textContent = `${c.interval} 秒`;
+  $('cfg-interval-out').textContent = formatInterval(c.interval);
+  syncIntervalPresetActive($('cfg-interval-presets'), c.interval);
   $('cfg-duration').value = c.duration;
   $('cfg-duration-out').textContent = `${c.duration} ms`;
   $('cfg-recursive').checked = c.recursive;
@@ -1864,9 +1881,21 @@ function bindSettings() {
 
   // ---- 统一模式的字段 ----
   $('cfg-interval').addEventListener('input', (e) => {
-    $('cfg-interval-out').textContent = `${e.target.value} 秒`;
+    $('cfg-interval-out').textContent = formatInterval(Number(e.target.value));
+    syncIntervalPresetActive($('cfg-interval-presets'), Number(e.target.value));
   });
   $('cfg-interval').addEventListener('change', (e) => save({ interval: Number(e.target.value) }));
+
+  // 预设间隔：点 chip 直接落值（复用滑条的 change 保存路径）
+  $('cfg-interval-presets').addEventListener('click', (e) => {
+    const chip = e.target.closest('.preset-chip');
+    if (!chip) return;
+    const slider = $('cfg-interval');
+    slider.value = chip.dataset.sec;
+    slider.dispatchEvent(new Event('change'));
+    $('cfg-interval-out').textContent = formatInterval(Number(chip.dataset.sec));
+    syncIntervalPresetActive($('cfg-interval-presets'), Number(chip.dataset.sec));
+  });
 
   $('cfg-duration').addEventListener('input', (e) => {
     $('cfg-duration-out').textContent = `${e.target.value} ms`;
@@ -2126,7 +2155,21 @@ function bindSettings() {
     if (input.type !== 'range') return;
     const out = input.parentElement.querySelector(`output[data-out="${input.dataset.field}"]`);
     if (!out) return;
-    out.textContent = input.dataset.field === 'interval' ? `${input.value} 秒` : `${input.value} ms`;
+    out.textContent = input.dataset.field === 'interval' ? formatInterval(Number(input.value)) : `${input.value} ms`;
+    if (input.dataset.field === 'interval') syncIntervalPresetActive(input.closest('.mc-block'), Number(input.value));
+  });
+
+  // 每屏卡片上的预设间隔 chip：落值后走滑条同款 change 保存路径
+  els.monitorCards.addEventListener('click', async (e) => {
+    const chip = e.target.closest('.preset-chip');
+    if (!chip) return;
+    const slider = chip.closest('.mc-block').querySelector('input[data-field="interval"]');
+    if (!slider) return;
+    slider.value = chip.dataset.sec;
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+    const out = slider.parentElement.querySelector('output[data-out="interval"]');
+    if (out) out.textContent = formatInterval(Number(chip.dataset.sec));
+    syncIntervalPresetActive(chip.closest('.mc-block'), Number(chip.dataset.sec));
   });
 
   els.monitorCards.addEventListener('change', async (e) => {
