@@ -180,6 +180,7 @@ body.idle { cursor: none; }
 /* 点得动的徽标（目前只有「预览：xxx」） */
 .badge.clickable { cursor: pointer; }
 .badge.clickable:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.26); }
+#preview-badge { position: relative; }   /* 预览切换菜单的定位锚点 */
 
 /* 点「预览：xxx」弹出的目标选择 */
 .preview-menu {
@@ -214,7 +215,8 @@ body.idle { cursor: none; }
 }
 .pm-item:hover { background: rgba(255, 255, 255, 0.07); }
 .pm-item.active { color: var(--accent); }
-.pm-meta { color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pm-item > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-meta { color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; flex: none; }
 
 .counter { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; min-width: 68px; text-align: right; }
 

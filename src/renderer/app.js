@@ -944,7 +944,9 @@ function openPreviewMenu() {
     menu.appendChild(item);
   }
 
-  els.previewBadge.parentElement.appendChild(menu);
+  // 挂在预览徽章自己身上（徽章 position:relative）：菜单右缘对着徽章右缘弹出来，
+  // 以前挂在整组按钮的容器上，菜单会飘到「壁纸通道 / 相簿 / 设置」那边去，看着没对齐
+  els.previewBadge.appendChild(menu);
 
   // 点别处关掉（捕获阶段，免得先被别的处理吃掉）
   setTimeout(() => {
@@ -1285,6 +1287,14 @@ async function refreshAlbums() {
   state.albums = await window.wp.listAlbums();
   renderAlbums();
   syncAlbumSelect();
+  /*
+   * 相簿列表是频道推送之后才就位的（init 顺序 / albums:changed 时机都可能晚半拍），
+   * 而卡片上的相簿下拉、顶栏的相簿状态都是渲染频道时画的 —— 不补这一脚，
+   * 启动后的头几秒它们全停留在「未选择相簿」占位，等下一次频道推送才自愈，
+   * 看上去就是「设置时好时坏」。列表一变，凡引用它的界面全部重画。
+   */
+  renderCards();
+  updateBadges();
 }
 
 /** 统一模式的相簿下拉与卡片里的下拉共用这一份选项 */
@@ -2293,7 +2303,7 @@ async function refreshChannelInfo() {
 function bindEvents() {
   $('btn-pick').addEventListener('click', async () => {
     const folder = await window.wp.pickFolder(state.previewId);
-    if (folder) toast(`已载入 ${folder}`);
+    if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
   });
   $('empty-pick').addEventListener('click', () => $('btn-pick').click());
   $('btn-rescan').addEventListener('click', async () => {
