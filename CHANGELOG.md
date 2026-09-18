@@ -1079,7 +1079,17 @@ electron-wallpaper = "...\electron-wallpaper\node_modules\electron\dist\electron
 
 ---
 
-## 第二十轮续（QA 反馈续）：预览菜单左对齐；轮播间隔预设
+## 第二十轮续（QA 反馈续）：预览菜单左对齐；轮播间隔预设；选目录记忆上次路径
+
+### 3. 选目录对话框不记忆上次选择
+
+**现象**：相簿页「添加目录」每次打开都落在系统默认位置；顶栏「添加目录」虽定位到
+当前相簿的第一个目录，但那不是用户上次选的地方。
+
+**修复**：加「上次选择的目录」记忆 —— 选完目录后把路径写进 userData 下的
+`last-pick.json`（独立小文件，不进带 schema 的 config.json —— 纯 UI 便利状态）；
+两个选目录框（`folder:pick` / `album:pick-dirs`）打开时用它做 `defaultPath`，
+选中后回写。目录已不存在（盘被拔了）时静默失效回退默认位置。
 
 ### 1. 预览切换菜单改左对齐
 

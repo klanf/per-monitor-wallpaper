@@ -1113,6 +1113,19 @@ function registerIpc() {
 
   // ---- 目录与文件 ----
 
+  // 「上次选择的目录」记忆：选完目录记下来，下次打开选目录框直接落在原地。
+  // 存独立小文件而不进 config.json —— 纯 UI 便利状态，不值得进带 schema 的配置
+  const lastPickFile = () => path.join(app.getPath('userData'), 'last-pick.json');
+  function readLastPickDir() {
+    try {
+      const d = JSON.parse(fs.readFileSync(lastPickFile(), 'utf8')).dir;
+      return typeof d === 'string' && fs.existsSync(d) ? d : null;   // 目录没了（盘被拔了）就当没记过
+    } catch { return null; }
+  }
+  function saveLastPickDir(dir) {
+    try { fs.writeFileSync(lastPickFile(), JSON.stringify({ dir, at: Date.now() })); } catch { /* 记不住不影响主流程 */ }
+  }
+
   /**
    * 为某一路频道选目录：选中的目录**加入该频道绑定的相簿**（没有相簿就建一个）。
    * 支持多选 —— 一次勾几个目录全部收进相簿，正是相簿功能的日常用法。
@@ -1124,10 +1137,12 @@ function registerIpc() {
     const currentAlbum = findAlbum(cfg, ch ? ch.profile.albumId : cfg.albumId);
     const result = await dialog.showOpenDialog(mainWindow, {
       title: ch ? `为「${ch.label}」添加图片目录` : '添加图片目录',
-      defaultPath: (currentAlbum && currentAlbum.folders.length ? currentAlbum.folders[0].path : undefined),
+      defaultPath: readLastPickDir()
+        || (currentAlbum && currentAlbum.folders.length ? currentAlbum.folders[0].path : undefined),
       properties: ['openDirectory', 'multiSelections'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
+    saveLastPickDir(result.filePaths[0]);
 
     let album = currentAlbum;
     if (!album) {
@@ -1193,9 +1208,11 @@ function registerIpc() {
   ipcMain.handle('album:pick-dirs', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '选择要加入相簿的图片目录',
+      defaultPath: readLastPickDir() || undefined,
       properties: ['openDirectory', 'multiSelections'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
+    saveLastPickDir(result.filePaths[0]);
     return result.filePaths;
   });
 
