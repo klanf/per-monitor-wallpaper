@@ -784,6 +784,24 @@ function infoAsText() {
 
 let loadingChain = Promise.resolve();
 
+/*
+ * 补载定时器：fetch 期间签名又变了（首跑选目录 → 自动切每屏 → 双重建是最典型的
+ * 交错）时，本次结果按设计丢弃；丢弃后如果再没有新的 channels 推送来触发
+ * applyChannelInfo 末尾的补载（推送停了），预览就会永久搁浅在空态。
+ * 所以每次丢弃都挂一个去抖定时器，触发时签名仍和已加载不符就再来一次 ——
+ * 最多多花一次 21ms 的缓存取列表，换来这类时序竞态的自愈。
+ */
+let previewRetryTimer = null;
+
+function schedulePreviewRetry() {
+  if (previewRetryTimer) clearTimeout(previewRetryTimer);
+  previewRetryTimer = setTimeout(() => {
+    previewRetryTimer = null;
+    const ch = channelById(state.previewId);
+    if (ch && previewSignature(ch) !== state.loadedSignature) loadPreviewChannel();
+  }, 300);
+}
+
 function loadPreviewChannel() {
   loadingChain = loadingChain.then(doLoadPreviewChannel).catch((err) => {
     console.error('[preview] 载入频道失败:', err);
@@ -809,8 +827,11 @@ async function doLoadPreviewChannel() {
   const signature = previewSignature(ch);
   const result = await window.wp.channelFiles(id);
 
-  // 取文件期间用户又切了频道 / 配置变了，丢弃这次结果
-  if (state.previewId !== id || previewSignature(channelById(id)) !== signature) return;
+  // 取文件期间用户又切了频道 / 配置变了，丢弃这次结果；并安排补载兜底（见上）
+  if (state.previewId !== id || previewSignature(channelById(id)) !== signature) {
+    schedulePreviewRetry();
+    return;
+  }
 
   state.loadedSignature = signature;
   state.files = result.files || [];
