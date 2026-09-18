@@ -35,6 +35,7 @@ const els = {
   counter: $('counter'),
   progressFill: $('progress-fill'),
   settings: $('settings'),
+  albums: $('albums'),
   toast: $('toast'),
   iconPlay: $('icon-play'),
   iconPause: $('icon-pause'),
@@ -83,6 +84,7 @@ const state = {
   firstPaintDone: false,
   metaCache: new Map(),
   settingsOpen: false,
+  albumsPageOpen: false,
   infoOpen: false,
   infoPath: null,
   infoToken: 0,
@@ -1439,10 +1441,10 @@ function openSettings() {
   els.settings.classList.add('open');
   els.settings.setAttribute('aria-hidden', 'false');
   document.body.classList.remove('idle');
+  closeAlbumsPage();              // 两个覆盖层互斥，别叠在一起
   refreshThumbStats();
   refreshTrayState();
   refreshHotkeys();
-  refreshAlbums();
 }
 
 function closeSettings() {
@@ -1454,6 +1456,28 @@ function closeSettings() {
 
 function toggleSettings() {
   if (state.settingsOpen) closeSettings(); else openSettings();
+}
+
+/* ------------------------------------------------------------ 相簿页交互 */
+
+function openAlbumsPage() {
+  state.albumsPageOpen = true;
+  els.albums.classList.add('open');
+  els.albums.setAttribute('aria-hidden', 'false');
+  document.body.classList.remove('idle');
+  if (state.settingsOpen) closeSettings();
+  refreshAlbums();
+}
+
+function closeAlbumsPage() {
+  if (!state.albumsPageOpen) return;
+  state.albumsPageOpen = false;
+  els.albums.classList.remove('open');
+  els.albums.setAttribute('aria-hidden', 'true');
+}
+
+function toggleAlbumsPage() {
+  if (state.albumsPageOpen) closeAlbumsPage(); else openAlbumsPage();
 }
 
 async function refreshThumbStats() {
@@ -1793,12 +1817,6 @@ function bindSettings() {
     await save({ albumId: e.target.value });
     const album = state.albums.find((a) => a.id === e.target.value);
     toast(album ? `统一模式已切换到相簿「${album.name}」` : '已清空统一模式的相簿');
-  });
-
-  $('cfg-album-add-dir').addEventListener('click', async () => {
-    const id = $('cfg-album').value;
-    if (!id) { toast('先选择一个相簿，或先新建一个', true); return; }
-    await addDirsToAlbum(id);
   });
 
   // ---- 模式切换 ----
@@ -2264,6 +2282,12 @@ function bindEvents() {
     toast('已重新扫描', false);
   });
   $('btn-settings').addEventListener('click', toggleSettings);
+  $('btn-albums').addEventListener('click', toggleAlbumsPage);
+  $('btn-albums-close').addEventListener('click', closeAlbumsPage);
+  // 点页面空隙（内容栏以外）也返回 —— 页面铺满全窗，总得有个「点一下就走」的地方
+  els.albums.addEventListener('click', (e) => {
+    if (!e.target.closest('.page-inner') && !e.target.closest('.page-head-inner')) closeAlbumsPage();
+  });
   $('btn-info').addEventListener('click', toggleInfo);
 
   /*
@@ -2454,6 +2478,7 @@ function bindEvents() {
         window.wp.toggleFullscreen();
         break;
       case 'Escape':
+        closeAlbumsPage();
         closeSettings();
         closeInfo();
         break;

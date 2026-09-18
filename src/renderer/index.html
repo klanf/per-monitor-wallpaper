@@ -38,6 +38,7 @@
     </button>
     <button type="button" class="badge clickable" id="preview-badge" title="点击切换窗口预览哪块屏">预览：全部</button>
     <span class="badge" id="backend-badge" title="系统壁纸写入通道">壁纸通道：检测中…</span>
+    <button class="btn" id="btn-albums" title="相簿管理">相簿</button>
     <button class="btn" id="btn-settings" title="设置（Ctrl+,）">设置</button>
   </div>
 </header>
@@ -129,11 +130,7 @@
 
   <div class="field">
     <label class="field-label">相簿</label>
-    <div class="field-hint">相簿 = 多个图片目录的自由组合：一个相簿里可放多个目录，每块屏选择一个相簿来轮播。</div>
-    <div class="album-list" id="album-list"></div>
-    <div class="field-row">
-      <button class="btn sm" id="btn-album-create">新建相簿</button>
-    </div>
+    <div class="field-hint" id="album-bind-hint">每块屏轮播哪个相簿，在下面「显示器」的卡片上选；管理相簿请点顶栏的「相簿」。</div>
   </div>
 
   <!-- 每屏模式：每台显示器一张卡片 -->
@@ -146,11 +143,8 @@
   <!-- 统一模式的字段 -->
   <div class="field unified-only">
     <label class="field-label">相簿</label>
-    <div class="field-row">
-      <select class="select" id="cfg-album"></select>
-      <button class="btn sm" id="cfg-album-add-dir">添加目录…</button>
-    </div>
-    <div class="field-hint" id="cfg-album-hint">选中的相簿决定统一模式播哪些图。</div>
+    <select class="select" id="cfg-album"></select>
+    <div class="field-hint" id="cfg-album-hint">选中的相簿决定统一模式播哪些图；新建相簿、加减目录请点顶栏的「相簿」。</div>
   </div>
 
   <div class="field unified-only">
@@ -368,6 +362,34 @@
   <div class="settings-foot">
     <button class="btn" id="btn-free-memory">释放内存</button>
     <span class="muted" id="mem-label"></span>
+  </div>
+</aside>
+
+<!-- ------------------------------------------------------------------ 相簿页 -->
+<!--
+  相簿管理单独占一个页面：设置面板已经塞了十几个字段，相簿的目录列表、
+  排序按钮、停用开关挤在里面既放不开也难找。顶栏「相簿」进来，Esc 或「返回」出去。
+-->
+<aside id="albums" class="page" aria-hidden="true">
+  <div class="page-head">
+    <div class="page-head-inner">
+      <button class="btn" id="btn-albums-close" title="返回（Esc）">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>
+        返回
+      </button>
+      <div class="page-title">相簿</div>
+      <button class="btn primary sm" id="btn-album-create">新建相簿</button>
+    </div>
+  </div>
+  <div class="page-body">
+    <div class="page-inner">
+      <div class="page-lede">
+        相簿 = 多个图片目录的自由组合。目录顺序即播放顺序（顺序模式下排在前面的目录先播）；
+        目录可临时停用、可上下调整；目录之间有嵌套或重叠时同一张图只收一次。
+        每块屏轮播哪个相簿，在设置面板的显示器卡片上选。
+      </div>
+      <div class="album-list" id="album-list"></div>
+    </div>
   </div>
 </aside>
 
