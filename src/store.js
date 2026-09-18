@@ -50,6 +50,16 @@ const DEFAULTS = {
   monitors: {},            // { [IDesktopWallpaper 设备路径]: Partial<Profile> }
 
   /**
+   * 记住上一次停在哪张 —— 重启（含开机自启）后从那张接着播，而不是回到第一张。
+   *
+   * 记录落在 userData/playback.json，**不写进这份配置**：它是每次换图都要写的高频状态，
+   * 混进配置文件只会让 diff 全是噪声，还会和用户手改配置撞车（见 playbackState.js）。
+   * 随机模式下列表每次启动都会重洗，所以记的是「路径」而不是序号 —— 详见 scheduler
+   * 的 _restoreProgress。
+   */
+  resumeLast: true,
+
+  /**
    * 「检测到多屏就自动开每屏独立」做过没有。
    *
    * 只做一次：用户要是嫌不合适、手动关掉之后，绝不能再自动打开（那会变成抢方向盘）。
@@ -156,7 +166,7 @@ function toBool(v) {
 
 /** 这几个键在配置里必须是布尔值，写盘前统一收一遍 */
 const BOOL_KEYS = new Set([
-  'shuffle', 'recursive', 'autoPlay', 'applyToSystem', 'applyOnStart',
+  'shuffle', 'recursive', 'autoPlay', 'applyToSystem', 'applyOnStart', 'resumeLast',
   'perMonitor', 'skipSizeTwin', 'confirmDelete', 'autoMonitorSetup',
   'tray', 'closeToTray', 'startHidden', 'launchAtLogin',
   'filmstrip', 'filmstripAutoCenter', 'infoPanel', 'contextMenu',

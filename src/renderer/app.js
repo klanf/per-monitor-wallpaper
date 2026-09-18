@@ -1428,6 +1428,7 @@ function applyConfigToUI() {
   $('cfg-recursive').checked = c.recursive;
   $('cfg-apply').checked = c.applyToSystem;
   $('cfg-apply-on-start').checked = c.applyOnStart !== false;
+  $('cfg-resume-last').checked = c.resumeLast !== false;
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -1562,6 +1563,11 @@ function bindSettings() {
   $('cfg-apply-on-start').addEventListener('change', async (e) => {
     await save({ applyOnStart: e.target.checked });
     toast(e.target.checked ? '下次启动会立即接管所选屏幕' : '下次启动不会主动改壁纸');
+  });
+
+  $('cfg-resume-last').addEventListener('change', async (e) => {
+    await save({ resumeLast: e.target.checked });
+    toast(e.target.checked ? '下次启动会从上次那张继续播' : '下次启动会从第一张开始');
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {

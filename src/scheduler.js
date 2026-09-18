@@ -69,8 +69,11 @@ class MonitorScheduler {
    * @param {(path:string, cacheDir:string, options:object) => Promise<object>} [deps.writeWallpaper]
    *        实际写入系统壁纸的函数。默认走 win32；测试时可注入替身，
    *        这样既能完整验证调度逻辑，又不会真的改用户的桌面。
+   * @param {import('./playbackState').PlaybackState} [deps.playback]
+   *        播放位置的磁盘存档（跨进程重启）。不传就只有内存进度，
+   *        行为跟以前一样（重启从第一张开始）—— 测试可以按需注入。
    */
-  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper }) {
+  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback }) {
     this.store = store;
     this.cacheDir = cacheDir;
     this.enumerate = enumerate;
@@ -78,6 +81,7 @@ class MonitorScheduler {
     this.onEvent = onEvent || (() => {});
     this.writeWallpaper = writeWallpaper
       || ((imagePath, cacheDir, options) => win32.setWallpaper(imagePath, cacheDir, options));
+    this.playback = playback || null;
 
     this.channels = new Map();
     /** 目录扫描结果缓存：多个频道指向同一目录时不重复扫盘 */
@@ -212,7 +216,14 @@ class MonitorScheduler {
     const takeOver = !this.tookOver && config.applyOnStart !== false;
 
     for (const item of built) {
-      const saved = this.progress.get(item.id);
+      /*
+       * 起点从哪来，优先级：
+       *   ① 本次会话已经播过 → 内存里的 progress（改个间隔不该把轮播打回第一张）
+       *   ② 磁盘上的存档 → 上一次进程（可能是昨天关机前）停在哪张
+       *   ③ 都没有 → 第一张
+       */
+      const saved = this.progress.get(item.id)
+        || this._restoreProgress(item.id, item.files, item.profile, config);
       const max = Math.max(0, item.files.length - 1);
 
       // played 集合跨 rebuild 复用；拿同一引用回写，channel 上改就等于 map 里改
@@ -234,7 +245,9 @@ class MonitorScheduler {
       const channel = {
         ...item,
         index,
-        playing: saved ? saved.playing : config.autoPlay !== false,
+        playing: saved && typeof saved.playing === 'boolean'
+          ? saved.playing
+          : config.autoPlay !== false,
         timer: null,
         lastWrite: null,
         lastError: item.error,
@@ -258,6 +271,57 @@ class MonitorScheduler {
     for (const ch of this.channels.values()) this._schedule(ch);
 
     this._emit('channels', { reason, channels: this.list() });
+  }
+
+  /**
+   * 从磁盘存档里恢复「上次停在哪张」。
+   *
+   * 为什么**先按路径找**：随机模式下列表顺序每次启动都会重洗（见 _orderFor），
+   * 序号对不上号 —— 只有路径能找回「就是这张」。
+   * 路径找不到（图被删了、改了名）才退回序号，并对齐到当前列表范围内：
+   * 少几张也不至于甩回第一张。
+   *
+   * 换过目录则整条记录不认 —— 上一次的「第 27 张」指的是另一个目录里的另一张图，
+   * 拿过来用只会莫名其妙地跳过一段。
+   */
+  _restoreProgress(id, files, profile, config) {
+    if (!this.playback || !files.length) return null;
+    if (config && config.resumeLast === false) return null;
+
+    const rec = this.playback.get(id);
+    if (!rec) return null;
+
+    const folder = profile.folder || '';
+    if (rec.folder && folder && rec.folder !== folder) return null;
+
+    let index = -1;
+    if (rec.path) index = files.findIndex((f) => f.path === rec.path);
+    if (index < 0) index = Number.isFinite(rec.index) && rec.index >= 0 ? rec.index : 0;
+    index = Math.max(0, Math.min(index, files.length - 1));
+
+    return { index, playing: rec.playing };
+  }
+
+  /**
+   * 记住这一路播到哪张。
+   *
+   * 两个去处，各管一段：
+   *   progress（内存）→ 本次会话内 rebuild 时不被重置（原有行为）
+   *   playback（磁盘）→ 下次启动时接着播（本次新增）
+   * 所有会改变「当前是哪张」的地方统一走这里，免得漏一处就出个「偶尔回到第一张」。
+   */
+  _remember(ch) {
+    this.progress.set(ch.id, { index: ch.index, playing: ch.playing });
+    if (!this.playback) return;
+    if (this.store.get().resumeLast === false) return;
+
+    const entry = ch.files[ch.index];
+    this.playback.set(ch.id, {
+      index: ch.index,
+      path: entry ? entry.path : null,
+      folder: ch.profile.folder || '',
+      playing: Boolean(ch.playing),
+    });
   }
 
   /**
@@ -516,7 +580,7 @@ class MonitorScheduler {
     const entry = ch.files[ch.index];
     ch.played.add(ch.index);   // 胶片条据此区分「看过的」和「还没到的」
 
-    this.progress.set(id, { index: ch.index, playing: ch.playing });
+    this._remember(ch);
 
     await this._write(ch, reason);
 
@@ -546,7 +610,7 @@ class MonitorScheduler {
     const ch = this.channels.get(id);
     if (!ch) return null;
     ch.playing = Boolean(playing) && ch.files.length > 1;
-    this.progress.set(id, { index: ch.index, playing: ch.playing });
+    this._remember(ch);
     this._schedule(ch);
     this._emit('channels', { reason: 'playing', channels: this.list() });
     return ch.playing;
@@ -556,7 +620,7 @@ class MonitorScheduler {
   pauseAll() {
     for (const ch of this.channels.values()) {
       ch.playing = false;
-      this.progress.set(ch.id, { index: ch.index, playing: false });
+      this._remember(ch);
       clearTimeout(ch.timer);
       ch.timer = null;
     }
@@ -622,12 +686,14 @@ class MonitorScheduler {
       /*
        * 必须把新索引写回「播放进度」。
        *
-       * rebuild 时索引是从 progress 里取的（_buildChain），而 goTo 才写 progress。
+       * rebuild 时索引是从 progress 里取的（_rebuild），而只有 goTo 会写 progress。
        * 这里只改 ch.index 不同步 progress 的话，删除之后只要发生一次重建
        * （改间隔、切每屏独立、插拔显示器都算），索引就会被那份过期进度**顶回原位** ——
        * 画面莫名其妙跳到别的图，正好把「删除不打扰正在看的这张」这件事毁掉。
+       *
+       * 磁盘存档同理：这里不同步，重启后还会回到那张已经删掉的图的位置。
        */
-      this.progress.set(ch.id, { index: ch.index, playing: ch.playing });
+      this._remember(ch);
 
       // played 序号跟着列表一起位移：被删掉的那个丢掉，其后的整体前移一格
       if (sameFolder) {
@@ -703,6 +769,8 @@ class MonitorScheduler {
   stop() {
     for (const ch of this.channels.values()) clearTimeout(ch.timer);
     this.channels.clear();
+    // 退出前把最后那张的位置落盘 —— 否则「刚换完图就关程序」会丢掉这一步
+    if (this.playback) this.playback.flush();
   }
 
   /* ------------------------------------------------------------ 查询 */

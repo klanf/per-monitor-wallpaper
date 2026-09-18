@@ -1,0 +1,1 @@
+const e=require("electron");console.log("TYPE="+typeof e);console.log("ISSTR="+(typeof e==="string"));if(typeof e==="object"){console.log("hasProtocol="+(typeof e.protocol));console.log("hasApp="+(typeof e.app));}if(typeof e==="string")console.log("VAL="+e);

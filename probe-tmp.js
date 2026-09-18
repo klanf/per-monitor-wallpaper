@@ -1,0 +1,1 @@
+console.log("RAN="+JSON.stringify(process.env.ELECTRON_RUN_AS_NODE));console.log("ELECTRON="+JSON.stringify(!!process.versions.electron));

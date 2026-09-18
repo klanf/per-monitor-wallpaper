@@ -46,3 +46,6 @@ tools/.ocr-cache/
 
 # 截图分析工具导出的中间图
 tools/.crops/
+
+# Python 工具（tools/build-exe.py 等）的字节码缓存
+__pycache__/

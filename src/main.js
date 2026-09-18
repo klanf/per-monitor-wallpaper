@@ -39,12 +39,15 @@ const { probeFile } = require('./scanner');
 const win32 = require('./win32');
 const desktopWallpaper = require('./desktopWallpaper');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
+const { PlaybackState } = require('./playbackState');
 
 const CACHE_DIR = path.join(os.tmpdir(), 'electron-wallpaper-cache');
 
 let store = null;
 let mainWindow = null;
 let scheduler = null;
+/** 播放位置的磁盘存档（跨进程重启「接着上次那张播」，见 playbackState.js） */
+let playback = null;
 let quitting = false;
 let hideNoticeShown = false;
 
@@ -1389,6 +1392,13 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     store = new Store(path.join(app.getPath('userData'), 'config.json'));
 
+    /*
+     * 播放位置存档：跟配置文件放同一个目录，但**是独立文件**。
+     * 它每次换图都要写（间隔可能只有几秒），而 config.json 是「配置」——
+     * 高频状态混进配置会让 diff 全是噪声，也容易跟用户手改配置撞车。
+     */
+    playback = new PlaybackState(path.join(app.getPath('userData'), 'playback.json'));
+
     // 缩略图缓存目录可配置（用户想把缓存放到别的盘就用 thumbCacheDir）
     thumbnails.configure({
       dir: store.get().thumbCacheDir || undefined,
@@ -1399,6 +1409,7 @@ if (!gotLock) {
     scheduler = new MonitorScheduler({
       store,
       cacheDir: CACHE_DIR,
+      playback,
       enumerate: () => {
         const info = listMonitors();
         return { ok: info.ok, error: info.error, monitors: info.monitors };
