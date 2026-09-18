@@ -90,6 +90,7 @@ const state = {
   previewErrors: new Set(),   // 已经提示过错误的频道，避免每次 tick 都弹
   played: new Set(),          // 本次会话播放过的序号（胶片条用来标灰）
   quickFolders: [],
+  albums: [],                 // 相簿列表（config.albums 的镜像，主进程改了会推过来）
 };
 
 /* ------------------------------------------------------------ 胶片条状态 */
@@ -157,7 +158,7 @@ function profileOf(id) {
   const ch = channelById(id);
   return (ch && ch.profile) || {
     interval: 60, duration: 520, animation: 'slide', shuffle: false, fit: 'cover',
-    folder: '', recursive: true, enabled: true,
+    albumId: '', recursive: true, enabled: true,
   };
 }
 
@@ -168,6 +169,28 @@ function channelName(ch) {
     return `显示器 ${(ch.monitorIndex || 0) + 1} · ${ch.width}×${ch.height}${ch.primary ? ' 主屏' : ''}`;
   }
   return ch.label === '全部显示器' ? '全部显示器' : `全部显示器 · ${ch.label}`;
+}
+
+/**
+ * 这张图属于哪个相簿的哪个目录 —— 信息面板的「来源」用。
+ * 相簿目录之间允许嵌套（父目录递归已包含子目录），所以按最长前缀取最具体的那一个。
+ * @returns {{album:object, dir:string}|null}
+ */
+function findAlbumSource(imagePath) {
+  const lower = String(imagePath || '').toLowerCase();
+  let best = null;
+  let bestLen = -1;
+  for (const album of state.albums) {
+    for (const f of album.folders) {
+      const dir = String(f.path || '').replace(/[\\/]+$/, '').toLowerCase();
+      if (!dir) continue;
+      if ((lower.startsWith(`${dir}\\`) || lower.startsWith(`${dir}/`)) && dir.length > bestLen) {
+        best = { album, dir: f.path };
+        bestLen = dir.length;
+      }
+    }
+  }
+  return best;
 }
 
 /**
@@ -186,9 +209,16 @@ function channelName(ch) {
  */
 function previewSignature(ch) {
   if (!ch) return 'none';
+  // 相簿内容（目录集合 / 启用开关）也属于「列表会变」的因素：
+  // 加目录恰好为空、或关 A 开 B 数量恰好相等时，count 不动但列表真的变了
+  const album = state.albums.find((a) => a.id === ch.profile.albumId);
+  const albumSig = album
+    ? album.folders.map((f) => `${f.path}:${f.enabled ? 1 : 0}`).join(',')
+    : '';
   return [
     ch.id,
-    ch.profile.folder,
+    ch.profile.albumId,
+    albumSig,
     ch.profile.recursive ? 1 : 0,
     ch.profile.shuffle ? 'r' : 'n',   // 播放顺序模式
     ch.rounds || 0,                    // 走完一轮会重洗
@@ -408,6 +438,18 @@ function makeFilmItem(index) {
   el.dataset.path = entry.path;
   el.title = `${index + 1} / ${state.files.length}\n${entry.name}`;
 
+  /*
+   * 目录分隔标记（顺序模式专属）：相簿把多个目录拼成一份列表，
+   * 播到「目录边界」时在缩略图上画一条线 —— 像书的章节分隔一样，
+   * 不用点开信息面板也知道现在播到了哪个目录。随机模式整个是洗过的，标了反而误导。
+   */
+  const prev = index > 0 ? state.files[index - 1] : null;
+  if (prev && entry.dir && prev.dir && entry.dir !== prev.dir
+      && !profileOf(state.previewId).shuffle) {
+    el.classList.add('seg-start');
+    el.title += `\n目录：${entry.dir}`;
+  }
+
   const img = document.createElement('img');
   img.loading = 'lazy';
   img.decoding = 'async';
@@ -595,6 +637,25 @@ function renderInfo(data) {
   els.infoName.textContent = data.name;
   els.infoName.title = data.path;
   els.infoSub.textContent = data.summary || '—';
+
+  // 相簿来源：这张图是通过哪个相簿、哪个目录进入轮播的（最长前缀匹配 —— 嵌套目录时取最具体的）
+  const source = findAlbumSource(data.path);
+  if (source) {
+    const box = document.createElement('div');
+    box.className = 'ig';
+    const title = document.createElement('div');
+    title.className = 'ig-title';
+    title.textContent = '来源';
+    box.appendChild(title);
+    const rowAlbum = document.createElement('div');
+    rowAlbum.className = 'ig-row';
+    rowAlbum.innerHTML = `<div class="ig-label">相簿</div><div class="ig-value">${escapeHtml(source.album.name)}</div>`;
+    const rowDir = document.createElement('div');
+    rowDir.className = 'ig-row';
+    rowDir.innerHTML = `<div class="ig-label">目录</div><div class="ig-value mono" title="${escapeHtml(source.dir)}">${escapeHtml(source.dir)}</div>`;
+    box.append(rowAlbum, rowDir);
+    els.infoGroups.appendChild(box);
+  }
 
   if (data.exifNote) {
     const note = document.createElement('div');
@@ -994,21 +1055,29 @@ function segHtml(field, value, options) {
   )).join('');
 }
 
+function albumOf(id) {
+  return state.albums.find((a) => a.id === id) || null;
+}
+
 function updateBadges() {
   const ch = previewChannel();
   if (ch) {
+    const album = albumOf(ch.profile.albumId);
     els.previewBadge.textContent = `预览：${channelName(ch)}`;
     els.previewBadge.title = [
-      `目录：${ch.profile.folder || '（未设置）'}`,
+      `相簿：${album ? album.name : '（未选择）'}`,
+      album ? `目录 ${album.folders.length} 个（启用 ${album.folders.filter((f) => f.enabled).length} 个）` : '',
       `共 ${ch.count} 张，当前第 ${ch.count ? ch.index + 1 : 0} 张`,
       `间隔 ${ch.profile.interval} 秒`,
       `接管：${ch.profile.enabled ? '是' : '否'}`,
-    ].join('\n');
-    els.folderLabel.textContent = ch.profile.folder ? shortPath(ch.profile.folder) : '未选择目录';
-    els.folderLabel.title = ch.profile.folder || '';
+    ].filter(Boolean).join('\n');
+    els.folderLabel.textContent = album
+      ? `${album.name} · ${album.folders.filter((f) => f.enabled).length}/${album.folders.length} 目录`
+      : '未选择相簿';
+    els.folderLabel.title = album ? album.folders.map((f) => `${f.enabled ? '●' : '○'} ${f.path}`).join('\n') : '';
   } else {
     els.previewBadge.textContent = '预览：—';
-    els.folderLabel.textContent = '未选择目录';
+    els.folderLabel.textContent = '未选择相簿';
   }
 
   const info = state.backendInfo;
@@ -1026,6 +1095,18 @@ function updateBadges() {
   ].join('\n');
 }
 
+/** 相簿下拉的公共选项（每屏卡片与统一模式共用同一份） */
+function albumOptions(selectedId, withBlank = true) {
+  const opts = [];
+  if (withBlank) opts.push('<option value="">（未选择相簿）</option>');
+  for (const album of state.albums) {
+    const dirs = album.folders.filter((f) => f.enabled).length;
+    opts.push(`<option value="${escapeHtml(album.id)}"${album.id === selectedId ? ' selected' : ''}>`
+      + `${escapeHtml(album.name)}（${dirs}/${album.folders.length} 目录）</option>`);
+  }
+  return opts.join('');
+}
+
 function cardHtml(ch) {
   const p = ch.profile;
   const previewing = ch.id === state.previewId;
@@ -1033,10 +1114,14 @@ function cardHtml(ch) {
   if (previewing) classes.push('previewing');
   if (!p.enabled) classes.push('off');
 
+  const album = albumOf(p.albumId);
+  const albumPathTitle = album ? album.folders.map((f) => `${f.enabled ? '●' : '○'} ${f.path}`).join('\n') : '';
+  const missing = (ch.missingDirs || []);
   const status = [];
   status.push(`<span>${ch.count} 张</span>`);
   status.push(`<span>第 ${ch.count ? ch.index + 1 : 0}/${ch.count}</span>`);
   if (ch.truncated) status.push('<span>已达扫描上限</span>');
+  if (missing.length) status.push(`<span class="err" title="${escapeHtml(missing.join('\n'))}">${missing.length} 个目录不可用</span>`);
   if (ch.lastError) status.push(`<span class="err">${escapeHtml(ch.lastError)}</span>`);
   else if (p.enabled && ch.count) status.push(`<span class="ok">已接管</span>`);
   else if (!p.enabled) status.push('<span>未接管</span>');
@@ -1058,10 +1143,17 @@ function cardHtml(ch) {
         </svg>${previewing ? '预览中' : '预览'}
       </button>
     </div>
-    <div class="mc-path${ch.folder ? '' : ' empty'}" title="${escapeHtml(ch.folder)}">${ch.folder ? escapeHtml(shortPath(ch.folder)) : '未选择目录'}</div>
+    <div class="mc-path${album ? '' : ' empty'}" title="${escapeHtml(albumPathTitle)}">${
+      album
+        ? `${escapeHtml(album.name)} · ${album.folders.filter((f) => f.enabled).length}/${album.folders.length} 目录`
+        : '未选择相簿'
+    }</div>
     <div class="mc-status">${status.join('')}</div>
     <div class="mc-row">
-      <button class="btn sm" data-act="pick">选择文件夹</button>
+      <select class="select sm" data-field="albumId" title="选择这块屏轮播的相簿">${albumOptions(p.albumId)}</select>
+      <button class="btn sm" data-act="pick" title="选目录加入这块屏的相簿（没有相簿会自动创建）">添加目录</button>
+    </div>
+    <div class="mc-row">
       <button class="btn sm" data-act="rescan">重新扫描</button>
       <button class="btn sm" data-act="apply">设为壁纸</button>
       <button class="btn sm" data-act="toggle-play">${ch.playing ? '暂停' : '播放'}</button>
@@ -1121,7 +1213,7 @@ function renderCards() {
   els.monitorCards.innerHTML = state.channels.map(cardHtml).join('');
 
   els.monitorHint.textContent = state.channels.length
-    ? `已检测到 ${state.channels.length} 台显示器；每台可以指向不同目录、用不同节奏。`
+    ? `已检测到 ${state.channels.length} 台显示器；每台选择一个相簿，各自定节奏。`
     : '没有检测到显示器，或每屏壁纸接口不可用。';
 }
 
@@ -1161,6 +1253,185 @@ async function refreshQuickFolders() {
   renderQuickFolders();
 }
 
+/* ------------------------------------------------------------ 相簿管理 */
+
+/** 展开的相簿卡片（重绘后保持展开状态） */
+const albumsOpen = new Set();
+
+async function refreshAlbums() {
+  state.albums = await window.wp.listAlbums();
+  renderAlbums();
+  syncAlbumSelect();
+}
+
+/** 统一模式的相簿下拉与卡片里的下拉共用这一份选项 */
+function syncAlbumSelect() {
+  const select = $('cfg-album');
+  if (select && state.config) select.innerHTML = albumOptions(state.config.albumId);
+}
+
+function renderAlbums() {
+  const list = $('album-list');
+  if (!list) return;
+
+  if (!state.albums.length) {
+    list.innerHTML = '<div class="album-empty">还没有相簿。点「新建相簿」，再把图片目录加进去。</div>';
+    return;
+  }
+
+  const usedBy = (albumId) => state.channels.filter((c) => c.profile && c.profile.albumId === albumId).length;
+
+  list.innerHTML = state.albums.map((album) => {
+    const enabledCount = album.folders.filter((f) => f.enabled).length;
+    const used = usedBy(album.id);
+    const cover = album.cover
+      ? `<img class="album-cover" src="${window.wp.thumbUrl(album.cover)}" alt="" loading="lazy">`
+      : '<div class="album-cover empty" aria-hidden="true"></div>';
+    const dirsHtml = album.folders.map((f, i) => `
+      <div class="album-dir${f.enabled ? '' : ' off'}">
+        <input type="checkbox" data-album-act="toggle" data-path="${escapeHtml(f.path)}"${f.enabled ? ' checked' : ''}
+               title="启用 / 停用这个目录（停用后不参与轮播，配置保留）">
+        <span class="album-dir-path" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>
+        <button class="btn icon sm" data-album-act="up" data-path="${escapeHtml(f.path)}" title="上移（顺序模式下排在前面的目录先播）"${i === 0 ? ' disabled' : ''}>↑</button>
+        <button class="btn icon sm" data-album-act="down" data-path="${escapeHtml(f.path)}" title="下移"${i === album.folders.length - 1 ? ' disabled' : ''}>↓</button>
+        <button class="btn icon sm" data-album-act="remove" data-path="${escapeHtml(f.path)}" title="从相簿移除这个目录（不删除图片文件）">×</button>
+      </div>`).join('');
+
+    return `
+    <div class="album-card${albumsOpen.has(album.id) ? ' open' : ''}" data-album-id="${escapeHtml(album.id)}">
+      <div class="album-head" data-album-act="toggle-open" title="点击展开 / 收起目录列表">
+        ${cover}
+        <div class="album-head-text">
+          <div class="album-name">${escapeHtml(album.name)}</div>
+          <div class="album-meta">${enabledCount}/${album.folders.length} 目录启用${used ? ` · ${used} 块屏在用` : ' · 未绑定屏幕'}</div>
+        </div>
+        <button class="btn sm" data-album-act="rename" title="重命名这个相簿">改名</button>
+        <button class="btn sm danger" data-album-act="delete" title="删除相簿（图片文件不受影响）">删除</button>
+      </div>
+      <div class="album-dirs"${albumsOpen.has(album.id) ? '' : ' hidden'}>
+        ${dirsHtml || '<div class="album-empty">还没有目录，点下面「添加目录…」。</div>'}
+        <div class="field-row">
+          <button class="btn sm" data-album-act="add">添加目录…</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/** 对某相簿的目录数组做一次变换，然后整包写回（主进程重建，界面随后被推着刷新） */
+async function mutateAlbumDirs(albumId, mutator) {
+  const album = state.albums.find((a) => a.id === albumId);
+  if (!album) return;
+  const folders = album.folders.map((f) => ({ ...f }));
+  mutator(folders);
+  await window.wp.updateAlbum(albumId, { folders });
+}
+
+/** 原生多选目录对话框 → 追加进相簿 */
+async function addDirsToAlbum(albumId) {
+  const album = state.albums.find((a) => a.id === albumId);
+  if (!album) return;
+  const dirs = await window.wp.pickDirs();
+  if (!dirs || !dirs.length) return;
+  const existing = new Set(album.folders.map((f) => f.path.toLowerCase()));
+  const fresh = dirs.filter((p) => !existing.has(p.toLowerCase()));
+  if (!fresh.length) { toast('所选目录都已在这个相簿里了'); return; }
+  await window.wp.updateAlbum(albumId, {
+    folders: [...album.folders, ...fresh.map((p) => ({ path: p, enabled: true }))],
+  });
+  toast(`已加入相簿「${album.name}」：${fresh.map(baseName).join('、')}`);
+}
+
+async function onAlbumListClick(e) {
+  const card = e.target.closest('.album-card');
+  if (!card) return;
+  const albumId = card.dataset.albumId;
+  const album = state.albums.find((a) => a.id === albumId);
+  if (!album) return;
+
+  const act = e.target.closest('[data-album-act]');
+  const kind = act ? act.dataset.albumAct : 'toggle-open';
+  // 点在目录行的按钮/勾选框上时不当成「展开/收起」
+  if (!act && e.target.closest('.album-dirs')) return;
+
+  switch (kind) {
+    case 'toggle-open':
+      if (albumsOpen.has(albumId)) albumsOpen.delete(albumId);
+      else albumsOpen.add(albumId);
+      renderAlbums();
+      break;
+    case 'add':
+      await addDirsToAlbum(albumId);
+      break;
+    case 'rename': {
+      // 行内改名：名字换成输入框，Enter 或失焦提交，Esc 取消
+      const nameEl = card.querySelector('.album-name');
+      if (!nameEl || nameEl.querySelector('input')) break;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'album-rename';
+      input.value = album.name;
+      nameEl.textContent = '';
+      nameEl.appendChild(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const commit = async () => {
+        if (done) return;
+        done = true;
+        const name = input.value.trim();
+        if (name && name !== album.name) await window.wp.updateAlbum(albumId, { name });
+        else renderAlbums();
+      };
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+        else if (ev.key === 'Escape') { done = true; renderAlbums(); }
+        ev.stopPropagation();
+      });
+      input.addEventListener('blur', commit);
+      input.addEventListener('click', (ev) => ev.stopPropagation());
+      break;
+    }
+    case 'delete':
+      await window.wp.deleteAlbum(albumId);
+      albumsOpen.delete(albumId);
+      toast(`已删除相簿「${album.name}」（图片文件不受影响）`);
+      break;
+    case 'up':
+      await mutateAlbumDirs(albumId, (folders) => {
+        const i = folders.findIndex((f) => f.path === act.dataset.path);
+        if (i > 0) [folders[i - 1], folders[i]] = [folders[i], folders[i - 1]];
+      });
+      break;
+    case 'down':
+      await mutateAlbumDirs(albumId, (folders) => {
+        const i = folders.findIndex((f) => f.path === act.dataset.path);
+        if (i >= 0 && i < folders.length - 1) [folders[i + 1], folders[i]] = [folders[i], folders[i + 1]];
+      });
+      break;
+    case 'remove':
+      await mutateAlbumDirs(albumId, (folders) => {
+        const i = folders.findIndex((f) => f.path === act.dataset.path);
+        if (i >= 0) folders.splice(i, 1);
+      });
+      break;
+    default:
+      break;
+  }
+}
+
+async function onAlbumListChange(e) {
+  const card = e.target.closest('.album-card');
+  if (!card) return;
+  if (e.target.dataset.albumAct !== 'toggle') return;
+  const albumId = card.dataset.albumId;
+  const path = e.target.dataset.path;
+  await mutateAlbumDirs(albumId, (folders) => {
+    const item = folders.find((f) => f.path === path);
+    if (item) item.enabled = e.target.checked;
+  });
+}
+
 /* ------------------------------------------------------------ 设置面板交互 */
 
 function openSettings() {
@@ -1171,6 +1442,7 @@ function openSettings() {
   refreshThumbStats();
   refreshTrayState();
   refreshHotkeys();
+  refreshAlbums();
 }
 
 function closeSettings() {
@@ -1465,6 +1737,9 @@ function applyConfigToUI() {
   select.value = c.monitor || 'all';
   if (!select.value) { select.value = 'all'; c.monitor = 'all'; }
 
+  // 统一模式的相簿下拉（选项列表来自 state.albums，见 albumOptions）
+  syncAlbumSelect();
+
   document.body.classList.toggle('mode-per-monitor', Boolean(c.perMonitor));
   document.body.classList.toggle('fit-contain', c.fit === 'contain');
   document.body.classList.toggle('filmstrip-off', c.filmstrip === false);
@@ -1504,6 +1779,27 @@ function bindSettings() {
     applyConfigToUI();
     return state.config;
   };
+
+  // ---- 相簿 ----
+  $('album-list').addEventListener('click', onAlbumListClick);
+  $('album-list').addEventListener('change', onAlbumListChange);
+  $('btn-album-create').addEventListener('click', async () => {
+    const album = await window.wp.createAlbum();
+    albumsOpen.add(album.id);
+    toast(`已创建相簿「${album.name}」—— 展开它来添加图片目录`);
+  });
+
+  $('cfg-album').addEventListener('change', async (e) => {
+    await save({ albumId: e.target.value });
+    const album = state.albums.find((a) => a.id === e.target.value);
+    toast(album ? `统一模式已切换到相簿「${album.name}」` : '已清空统一模式的相簿');
+  });
+
+  $('cfg-album-add-dir').addEventListener('click', async () => {
+    const id = $('cfg-album').value;
+    if (!id) { toast('先选择一个相簿，或先新建一个', true); return; }
+    await addDirsToAlbum(id);
+  });
 
   // ---- 模式切换 ----
   $('cfg-mode').addEventListener('click', async (event) => {
@@ -1791,7 +2087,15 @@ function bindSettings() {
     const field = e.target.dataset.field;
     if (!field) return;
 
-    if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
+    if (e.target.tagName === 'SELECT') {
+      // 换相簿：写入频道 profile 并重建。scheduler 对同一相簿会保留播放位置
+      const album = albumOf(e.target.value);
+      await pushProfile(id, { albumId: e.target.value });
+      toast(album
+        ? `已切换到相簿「${album.name}」`
+        : '已清空这块屏的相簿（不再轮播图片）');
+    }
+    else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
     else if (e.target.type === 'checkbox') await pushProfile(id, { [field]: e.target.checked });
   });
 
@@ -1815,8 +2119,9 @@ function bindSettings() {
         await setPreview(id);
         break;
       case 'pick': {
+        // folder:pick 的语义是「选目录加入这块屏的相簿」（没有相簿会自动建一个）
         const folder = await window.wp.pickFolder(id);
-        if (folder) toast(`「${channelName(channelById(id))}」已指向 ${folder}`);
+        if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
         break;
       }
       case 'rescan':
@@ -2226,6 +2531,20 @@ function bindEvents() {
     }
   });
 
+  /**
+   * 相簿被主进程改了（folder:pick 建相簿 / album:update / album:delete）。
+   * 列表、统一模式的下拉、频道卡片里的下拉都要跟着刷新；
+   * 卡片重绘有滑块焦点保护，正常改动不会打断正在进行的调整。
+   */
+  window.wp.onAlbumsChanged((payload) => {
+    if (!payload || !Array.isArray(payload.albums)) return;
+    state.albums = payload.albums;
+    renderAlbums();
+    syncAlbumSelect();
+    renderCards();
+    updateBadges();
+  });
+
   window.wp.onLaunchAtLoginChanged(() => refreshTrayState());
 
   /** 用户在删除确认框里勾了「不再询问」，把设置里的开关同步过来 */
@@ -2286,6 +2605,7 @@ async function init() {
 
   await refreshChannelInfo();
   await refreshQuickFolders();
+  await refreshAlbums();
   updatePlayIcon();
 }
 

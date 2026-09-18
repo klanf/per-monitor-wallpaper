@@ -829,3 +829,94 @@ body.filmstrip-off .filmstrip { display: none; }
 .quick-item .btn.sm { padding: 3px 7px; }
 
 .mono { font-family: ui-monospace, Consolas, "Cascadia Mono", monospace; font-size: 11px; word-break: break-all; }
+
+/* ==========================================================================
+   相簿（v18）：目录的自由组合，每屏绑一个相簿来轮播
+   ========================================================================== */
+
+.album-list { display: flex; flex-direction: column; gap: 8px; }
+
+.album-empty {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  padding: 8px 2px;
+}
+
+.album-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+.album-card.open { border-color: rgba(91, 140, 255, 0.35); }
+
+.album-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.album-head:hover { background: rgba(255, 255, 255, 0.035); }
+
+.album-cover {
+  width: 44px;
+  height: 32px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.06);
+  flex: none;
+}
+.album-cover.empty::after {
+  content: '';
+  display: block;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(135deg, transparent 46%, rgba(255, 255, 255, 0.08) 46%, rgba(255, 255, 255, 0.08) 54%, transparent 54%);
+}
+
+.album-head-text { flex: 1; min-width: 0; }
+.album-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.album-meta { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+
+.album-rename {
+  width: 100%;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 6px;
+  outline: none;
+}
+
+.album-dirs {
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.album-dir {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 11.5px;
+}
+.album-dir.off .album-dir-path { color: var(--text-faint); text-decoration: line-through; }
+.album-dir-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.album-dir .btn.icon { padding: 1px 6px; font-size: 12px; line-height: 1.4; }
+.album-dir input[type="checkbox"] { flex: none; }
+
+/* 卡片里与统一模式的相簿下拉 */
+.mc-row .select.sm { flex: 1; min-width: 0; padding: 4px 8px; }
+
+/* 胶片条：顺序模式下目录边界的那条线 */
+.film-item.seg-start { box-shadow: inset 2px 0 0 var(--accent); }

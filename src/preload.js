@@ -37,6 +37,15 @@ contextBridge.exposeInMainWorld('wp', {
 
   pickFolder: (channelId) => ipcRenderer.invoke('folder:pick', channelId),
 
+  // ---- 相簿 ----
+  listAlbums: () => ipcRenderer.invoke('album:list'),
+  createAlbum: (name) => ipcRenderer.invoke('album:create', name),
+  /** 全量更新：{ name?, folders?: [{ path, enabled }] }；folders 由界面组装好整包传上来 */
+  updateAlbum: (id, patch) => ipcRenderer.invoke('album:update', id, patch),
+  deleteAlbum: (id) => ipcRenderer.invoke('album:delete', id),
+  /** 弹原生目录多选框，只返回路径不改配置 */
+  pickDirs: () => ipcRenderer.invoke('album:pick-dirs'),
+
   probeImage: (imagePath) => ipcRenderer.invoke('image:probe', imagePath),
   imageInfo: (imagePath) => ipcRenderer.invoke('image:info', imagePath),
   revealInExplorer: (imagePath) => ipcRenderer.invoke('shell:reveal', imagePath),
@@ -155,6 +164,11 @@ contextBridge.exposeInMainWorld('wp', {
 
   onQuickFoldersChanged: (cb) => {
     ipcRenderer.on('quick-folders:changed', (_event, payload) => cb(payload));
+  },
+
+  /** 相簿列表被主进程改了（folder:pick 新建相簿 / album:update / album:delete） */
+  onAlbumsChanged: (cb) => {
+    ipcRenderer.on('albums:changed', (_event, payload) => cb(payload));
   },
 
   onLaunchAtLoginChanged: (cb) => {

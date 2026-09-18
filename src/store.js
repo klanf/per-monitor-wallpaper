@@ -7,22 +7,29 @@
  *   Python 里配置迁移要手写几百行（_normalize_config_paths + _migrate_old_configs），
  *   这里用「默认值深合并」一次性解决，写盘走 tmp + rename 保证原子性。
  *
- * 配置模型（v2 起支持每屏独立）：
+ * 配置模型（v2 起支持每屏独立，v3 起目录组织成相簿）：
  *   ┌ 顶层字段 ─────────────────────────────────────────────┐
- *   │  folder / interval / animation / …  ← 「默认配置」      │
+ *   │  albumId / interval / animation / …  ← 「默认配置」     │
+ *   ├ albums[] ─────────────────────────────────────────────┤
+ *   │  { id, name, folders: [{ path, enabled }] }  ← 全局相簿 │
  *   └───────────────────────────────────────────────────────┘
  *                     ↓ 被继承
  *   ┌ monitors[<设备路径>] ──────────────────────────────────┐
- *   │  { folder, interval, animation, enabled, … }  ← 覆盖项 │
+ *   │  { albumId, interval, animation, enabled, … }  ← 覆盖项 │
  *   └───────────────────────────────────────────────────────┘
  *   单屏只写自己关心的字段，其余自动回落到顶层默认值。
+ *
+ * 相簿是全局实体、频道只存引用：两个频道绑同一个相簿时，
+ * 扫描缓存共享、洗牌与进度各自独立（见 scheduler）。
+ * 旧版直接存目录路径（folder 字段），读入时自动包装成相簿 —— 见 migrateLegacyFolders。
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const DEFAULTS = {
-  folder: '',
+  albumId: '',             // 频道绑定的相簿 id；空 = 没绑定（无图可播）
+  albums: [],              // [{ id, name, folders: [{ path, enabled }] }]
   recursive: true,
   interval: 60,            // 秒
   animation: 'slide',      // slide | fade | zoom
@@ -139,8 +146,102 @@ const DEFAULTS = {
 
 /** 构成「一路轮播」的字段 —— 单屏覆盖只允许出现在这些键上 */
 const PROFILE_KEYS = [
-  'folder', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
+  'albumId', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
 ];
+
+/** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */
+function newAlbumId() {
+  return `alb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * 相簿数组收紧：字段补默认值、路径去重（Windows 大小写不敏感）、剔除坏条目。
+ * 配置文件是用户能直接手改的地方，这里宁可宽容修整也不能让坏数据炸掉调度器。
+ */
+function normalizeAlbums(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : newAlbumId();
+    const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : '未命名相簿';
+    const folders = [];
+    const seen = new Set();
+    for (const f of Array.isArray(raw.folders) ? raw.folders : []) {
+      if (!isPlainObject(f)) continue;
+      const p = typeof f.path === 'string' ? f.path.trim() : '';
+      if (!p) continue;
+      const key = p.toLowerCase();
+      if (seen.has(key)) continue;          // 同一目录在相簿里加两次只算一次
+      seen.add(key);
+      folders.push({ path: p, enabled: f.enabled === false ? false : true });
+    }
+    out.push({ id, name, folders });
+  }
+  return out;
+}
+
+/** 按 id 找相簿；找不到返回 null */
+function findAlbum(config, albumId) {
+  if (!albumId) return null;
+  return (Array.isArray(config.albums) ? config.albums : []).find((a) => a.id === albumId) || null;
+}
+
+/**
+ * 旧式 folder 字段的自动换算：把「频道直接绑目录」包装成相簿。
+ *
+ * 触发条件：顶层或某块屏的覆盖里躺着 folder（旧版配置文件、手改配置、
+ * 或仍按旧 API 发 { folder } 载荷的验证脚本）。已有相簿也参与复用：
+ * 恰好只含这一个目录的相簿直接绑回去，没有才另建 —— 相同目录合并成同一个相簿，
+ * 名字取目录名。绑定关系原样保留，播放进度不受影响
+ * （scheduler 里旧进度记录按 folder 匹配不到时才退序号，这里把 albumId 补上后
+ * 由 scheduler 的 folder→albumId 记录映射兜底，见 _restoreProgress）。
+ * folder 换算完即清空，函数幂等：反复跑不会重复建相簿。
+ */
+function migrateLegacyFolders(config) {
+  const monitors = isPlainObject(config.monitors) ? { ...config.monitors } : {};
+  const legacyTop = typeof config.folder === 'string' ? config.folder.trim() : '';
+  const legacyMonitors = Object.entries(monitors)
+    .filter(([, ov]) => isPlainObject(ov) && typeof ov.folder === 'string' && ov.folder.trim())
+    .map(([id, ov]) => ({ id, folder: ov.folder.trim() }));
+
+  if (!legacyTop && legacyMonitors.length === 0) return config;
+
+  const albums = Array.isArray(config.albums) ? config.albums.slice() : [];
+  const byPath = new Map();
+  const ensure = (folderPath) => {
+    const key = folderPath.toLowerCase();
+    if (byPath.has(key)) return byPath.get(key);
+    const reused = albums.find((a) => a.folders.length === 1
+      && String(a.folders[0].path).toLowerCase() === key);
+    if (reused) {
+      byPath.set(key, reused);
+      return reused;
+    }
+    const album = {
+      id: newAlbumId(),
+      name: path.basename(folderPath) || '默认相簿',
+      folders: [{ path: folderPath, enabled: true }],
+    };
+    byPath.set(key, album);
+    albums.push(album);
+    return album;
+  };
+
+  const out = { ...config, albums };
+  if (legacyTop) {
+    out.albumId = ensure(legacyTop).id;
+    out.folder = '';                       // 换算完成即清空，避免语义含混
+  }
+  for (const { id, folder } of legacyMonitors) {
+    const override = { ...monitors[id] };
+    delete override.folder;
+    override.albumId = ensure(folder).id;
+    monitors[id] = override;
+  }
+  out.monitors = monitors;
+  return out;
+}
 
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -186,11 +287,12 @@ function normalizeHotkeys(value) {
   return out;
 }
 
-/** 写盘 / 读盘前统一收一遍：布尔键收紧，热键只留字符串 */
+/** 写盘 / 读盘前统一收一遍：布尔键收紧，热键只留字符串，相簿结构收紧 */
 function normalizeConfig(obj) {
   if (!isPlainObject(obj)) return obj;
   const out = normalizeBooleans(obj);
   if ('hotkeys' in out) out.hotkeys = normalizeHotkeys(out.hotkeys);
+  if ('albums' in out) out.albums = normalizeAlbums(out.albums);
   return out;
 }
 
@@ -218,20 +320,29 @@ function deepMerge(base, patch) {
  *
  * @param {object} config
  * @param {string|null} monitorId  显示器设备路径；null = 统一频道（直接用顶层配置）
- * @returns {{folder:string, recursive:boolean, interval:number, animation:string,
+ * @returns {{albumId:string, recursive:boolean, interval:number, animation:string,
  *            duration:number, shuffle:boolean, fit:string, enabled:boolean}}
  */
 function resolveProfile(config, monitorId) {
   const base = {};
   for (const key of PROFILE_KEYS) base[key] = config[key];
 
+  // 只读派生的 folder：绑定的是单目录相簿时回填目录路径。
+  // 目的不是回退数据模型，而是让 tools/status.js 显示和旧验证脚本的断言继续可用；
+  // 多目录相簿没有单一「目录」可言，留空。
+  const legacyFolder = (albumId) => {
+    const album = findAlbum(config, albumId || '');
+    return album && album.folders.length === 1 ? album.folders[0].path : '';
+  };
+
   if (!monitorId) {
-    return { ...base, folder: config.folder || '', enabled: Boolean(config.applyToSystem) };
+    const withAlbum = { ...base, albumId: config.albumId || '', enabled: Boolean(config.applyToSystem) };
+    return { ...withAlbum, folder: legacyFolder(withAlbum.albumId) };
   }
 
   const override = isPlainObject(config.monitors) ? config.monitors[monitorId] : null;
   const merged = override ? { ...base, ...override } : { ...base };
-  if (!merged.folder) merged.folder = config.folder || '';
+  if (!merged.albumId) merged.albumId = config.albumId || '';
 
   return {
     ...merged,
@@ -241,6 +352,7 @@ function resolveProfile(config, monitorId) {
     fit: merged.fit === 'contain' ? 'contain' : 'cover',
     recursive: toBool(merged.recursive),
     shuffle: toBool(merged.shuffle),
+    folder: legacyFolder(merged.albumId),
     // 单屏是否被本程序接管；总开关 applyToSystem 仍然是一票否决
     enabled: (override && override.enabled === false) ? false : Boolean(config.applyToSystem),
   };
@@ -302,15 +414,18 @@ class Store {
 
   _read() {
     try {
-      const raw = fs.readFileSync(this.filePath, 'utf8');
-      const merged = deepMerge(DEFAULTS, JSON.parse(raw));
+      const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+      const merged = deepMerge(DEFAULTS, raw);
       if (!isPlainObject(merged.monitors)) merged.monitors = {};
+      // 旧版「频道直接绑目录」的配置在这里自动变成相簿（只做一次，见函数注释）
+      const migrated = migrateLegacyFolders(merged);
+      migrated.albums = normalizeAlbums(migrated.albums);
       // 历史配置里可能躺着 'random' / 'order' 这类字符串，读进来就顺手收干净，
       // 下次 _write 会把规范化后的值写回文件
-      for (const id of Object.keys(merged.monitors)) {
-        merged.monitors[id] = normalizeBooleans(merged.monitors[id]);
+      for (const id of Object.keys(migrated.monitors)) {
+        migrated.monitors[id] = normalizeBooleans(migrated.monitors[id]);
       }
-      return normalizeConfig(merged);
+      return normalizeConfig(migrated);
     } catch {
       return { ...DEFAULTS, monitors: {} };
     }
@@ -322,6 +437,9 @@ class Store {
 
   set(patch) {
     this.data = deepMerge(this.data, normalizeConfig(patch));
+    // 兜底迁移：patch 或旧数据里还躺着 folder 字段时（测试脚本 / 手改配置）也自动包装成相簿
+    this.data = migrateLegacyFolders(this.data);
+    this.data.albums = normalizeAlbums(this.data.albums);
     this._write();
     return this.data;
   }
@@ -329,6 +447,10 @@ class Store {
   /** 只改某一台显示器的配置；patch 里值为 null 的键表示「删掉覆盖，回落默认」 */
   setMonitorProfile(monitorId, patch) {
     this.data = { ...this.data, monitors: writeProfile(this.data, monitorId, patch || {}) };
+    // 兜底迁移与 set() 同款：旧脚本 / 旧入口还在用 { folder } 这种载荷时（set-profile），
+    // folder 会作为差异键落进 monitors[id]，这里把它包装成相簿再换算成 albumId
+    this.data = migrateLegacyFolders(this.data);
+    this.data.albums = normalizeAlbums(this.data.albums);
     this._write();
     return resolveProfile(this.data, monitorId);
   }
@@ -362,4 +484,8 @@ module.exports = {
   resolveProfile,
   writeProfile,
   clampInterval,
+  newAlbumId,
+  normalizeAlbums,
+  findAlbum,
+  migrateLegacyFolders,
 };

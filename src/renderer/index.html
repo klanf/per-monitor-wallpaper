@@ -127,6 +127,15 @@
     <div class="field-hint" id="mode-hint">统一配置：所有显示器共用一套目录与节奏。</div>
   </div>
 
+  <div class="field">
+    <label class="field-label">相簿</label>
+    <div class="field-hint">相簿 = 多个图片目录的自由组合：一个相簿里可放多个目录，每块屏选择一个相簿来轮播。</div>
+    <div class="album-list" id="album-list"></div>
+    <div class="field-row">
+      <button class="btn sm" id="btn-album-create">新建相簿</button>
+    </div>
+  </div>
+
   <!-- 每屏模式：每台显示器一张卡片 -->
   <div class="field per-monitor-only">
     <label class="field-label">显示器</label>
@@ -135,6 +144,15 @@
   </div>
 
   <!-- 统一模式的字段 -->
+  <div class="field unified-only">
+    <label class="field-label">相簿</label>
+    <div class="field-row">
+      <select class="select" id="cfg-album"></select>
+      <button class="btn sm" id="cfg-album-add-dir">添加目录…</button>
+    </div>
+    <div class="field-hint" id="cfg-album-hint">选中的相簿决定统一模式播哪些图。</div>
+  </div>
+
   <div class="field unified-only">
     <label class="field-label">轮播间隔</label>
     <div class="field-row">

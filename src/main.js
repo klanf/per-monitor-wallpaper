@@ -34,7 +34,7 @@ const shellMenu = require('./shellMenu');
 // 自定义协议必须在 app ready 之前注册，所以放在模块顶层
 thumbnails.registerScheme();
 
-const { Store, UNIFIED_MONITOR } = require('./store');
+const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
 const win32 = require('./win32');
 const desktopWallpaper = require('./desktopWallpaper');
@@ -972,7 +972,10 @@ function channelBroadcast(payload = {}) {
 function planAutoMonitorSetup() {
   const cfg = store.get();
   if (cfg.autoMonitorSetup === true) return null;
-  if (!cfg.folder) return null;                  // 还没选目录，等选了再说
+  // 还没绑任何相簿（顶层和每块屏都没有）→ 等配置好了再说
+  const boundSomewhere = Boolean(cfg.albumId)
+    || Object.values(cfg.monitors || {}).some((ov) => ov && ov.albumId);
+  if (!boundSomewhere) return null;
 
   let monitors = [];
   try {
@@ -1110,17 +1113,140 @@ function registerIpc() {
 
   // ---- 目录与文件 ----
 
+  /**
+   * 为某一路频道选目录：选中的目录**加入该频道绑定的相簿**（没有相簿就建一个）。
+   * 支持多选 —— 一次勾几个目录全部收进相簿，正是相簿功能的日常用法。
+   * 相同目录已在相簿里时会跳过并提示，不会收两份。
+   */
   ipcMain.handle('folder:pick', async (_e, channelId) => {
     const ch = channelId ? scheduler.channels.get(channelId) : null;
+    const cfg = store.get();
+    const currentAlbum = findAlbum(cfg, ch ? ch.profile.albumId : cfg.albumId);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: ch ? `为「${ch.label}」选择壁纸文件夹` : '选择壁纸文件夹',
-      defaultPath: (ch && ch.profile.folder) || store.get().folder || undefined,
-      properties: ['openDirectory'],
+      title: ch ? `为「${ch.label}」添加图片目录` : '添加图片目录',
+      defaultPath: (currentAlbum && currentAlbum.folders.length ? currentAlbum.folders[0].path : undefined),
+      properties: ['openDirectory', 'multiSelections'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
-    const folder = result.filePaths[0];
-    await setChannelProfile(channelId || UNIFIED_ID, { folder });
-    return folder;
+
+    let album = currentAlbum;
+    if (!album) {
+      // 频道还没绑相簿：建一个，名字取第一个目录名，绑上再收目录
+      album = {
+        id: newAlbumId(),
+        name: path.basename(result.filePaths[0]) || '我的相簿',
+        folders: [],
+      };
+      store.set({ albums: [...(cfg.albums || []), album] });
+      await setChannelProfile(channelId || UNIFIED_ID, { albumId: album.id });
+    }
+
+    const folders = album.folders.map((f) => f.path);
+    const added = [];
+    const skipped = [];
+    for (const p of result.filePaths) {
+      const hit = folders.some((existing) => existing.toLowerCase() === p.toLowerCase());
+      if (hit) skipped.push(p);
+      else { folders.push(p); added.push(p); }
+    }
+
+    if (added.length) {
+      album.folders = folders.map((p) => ({ path: p, enabled: true }));
+      store.set({ albums: [...(store.get().albums || []).filter((a) => a.id !== album.id), album] });
+      await scheduler.rebuild('album');
+      send('albums:changed', { albums: store.get().albums });
+    }
+
+    if (skipped.length) {
+      send('notice', {
+        text: added.length
+          ? `已加入 ${added.length} 个目录；${skipped.length} 个已在相簿里，跳过`
+          : '所选目录已经在这个相簿里了',
+      });
+    } else if (added.length) {
+      send('notice', { text: `已加入相簿「${album.name}」：${added.map((p) => path.basename(p)).join('、')}` });
+    }
+    return added[0] || null;
+  });
+
+  // ---- 相簿管理 ----
+
+  ipcMain.handle('album:list', () => (store.get().albums || []).map((a) => ({ ...a, cover: albumCoverPath(a) })));
+
+  /**
+   * 相簿封面：第一个启用目录在扫描缓存里的第一张图。
+   * 只查缓存不做额外扫盘 —— 还没被任何频道用过的相簿先没有封面，
+   * 等它被绑定并扫过一次后自然就有了。相簿选择器里的一眼可辨靠它。
+   */
+  function albumCoverPath(album) {
+    for (const f of album.folders) {
+      if (f.enabled === false) continue;
+      for (const recursive of [1, 0]) {
+        const cached = scheduler && scheduler.scanCache.get(`${f.path}::${recursive}`);
+        if (cached && cached.files.length) return cached.files[0].path;
+      }
+    }
+    return null;
+  }
+
+  /** 纯选目录对话框（不改配置）：相簿管理区「往相簿里加目录」用，支持多选 */
+  ipcMain.handle('album:pick-dirs', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择要加入相簿的图片目录',
+      properties: ['openDirectory', 'multiSelections'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths;
+  });
+
+  ipcMain.handle('album:create', (_e, name) => {
+    const album = { id: newAlbumId(), name: (name || '').trim() || '新相簿', folders: [] };
+    store.set({ albums: [...(store.get().albums || []), album] });
+    send('albums:changed', { albums: store.get().albums });
+    return album;
+  });
+
+  /**
+   * 全量更新一个相簿（name / folders）， folders 由界面组装好整包传上来。
+   * 改完重建：目录增删、启用开关、排序都会改变频道的文件列表；
+   * scheduler 对「同一相簿」会复用既有随机顺序并把新目录追加到末尾，正在看的不受影响。
+   */
+  ipcMain.handle('album:update', async (_e, id, patch) => {
+    const albums = (store.get().albums || []).map((a) => {
+      if (a.id !== id) return a;
+      const next = { ...a };
+      if (patch && typeof patch.name === 'string' && patch.name.trim()) next.name = patch.name.trim();
+      if (patch && Array.isArray(patch.folders)) {
+        next.folders = patch.folders
+          .filter((f) => f && typeof f.path === 'string' && f.path.trim())
+          .map((f) => ({ path: f.path.trim(), enabled: f.enabled !== false }));
+      }
+      return next;
+    });
+    store.set({ albums });
+    await scheduler.rebuild('album');
+    send('albums:changed', { albums: store.get().albums });
+    return { ok: true, albums: store.get().albums };
+  });
+
+  /**
+   * 删除相簿：绑在它上面的频道（顶层 + 每块屏）解绑成「未选择相簿」，
+   * 不连带删别的相簿、不碰磁盘上的图片。解绑后频道无图可播，卡片会显示空态。
+   */
+  ipcMain.handle('album:delete', async (_e, id) => {
+    const albums = (store.get().albums || []).filter((a) => a.id !== id);
+    const patch = { albums };
+    if (store.get().albumId === id) patch.albumId = '';
+    const monitors = { ...(store.get().monitors || {}) };
+    let monitorTouched = false;
+    for (const [mid, ov] of Object.entries(monitors)) {
+      if (ov && ov.albumId === id) { monitors[mid] = { ...ov, albumId: '' }; monitorTouched = true; }
+    }
+    if (monitorTouched) patch.monitors = monitors;
+    store.set(patch);
+    await scheduler.rebuild('album');
+    send('albums:changed', { albums: store.get().albums });
+    return { ok: true, albums: store.get().albums };
   });
 
   ipcMain.handle('image:probe', async (_e, imagePath) => {

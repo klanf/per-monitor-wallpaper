@@ -43,12 +43,13 @@ npm start
 ```bash
 npm run start:debug        # 带远程调试端口（9222）与日志启动
 npm run status             # 一眼看清「每块屏现在挂着什么」+ 应用侧频道状态
-npm run verify:unit        # 调度器逻辑单测（59 项，不碰桌面）
+npm run verify:unit        # 调度器逻辑单测（111 项，不碰桌面）
+npm run verify:resume      # 播放位置存档单测（28 项，模拟「关机再开机」，不碰桌面）
 npm run verify:e2e         # 每屏独立端到端验证（40 项，需要 start:debug 先跑起来）
 npm run verify:features    # 四个新功能端到端验证（106 项，需要 start:debug 先跑起来）
 npm run verify:fixes       # 第五轮四个反馈的修复（29 项，需要 start:debug 先跑起来）
 npm run verify:ui          # 第六轮交互修复（36 项，含原生确认框的完整驱动）
-npm run verify:order       # 随机顺序端到端（24 项，需要 start:debug）
+npm run verify:order       # 随机顺序端到端（25 项，需要 start:debug）
 npm run sim:random         # 两种随机策略的长跑对比（纯计算，不碰系统）
 npm run find-dups "D:\壁纸\横屏" --recursive --md 清单.md   # 找内容完全相同的重复图
 npm run fixtures           # 重新生成纯色测试图
@@ -1075,6 +1076,82 @@ electron-wallpaper = "...\electron-wallpaper\node_modules\electron\dist\electron
 
 也就是说**自启跑的就是这份源码**（不是打包版 exe）—— 所以这个修复对开机自启直接生效，
 不需要重新打包。打包版要等下次出包才带上。
+
+---
+
+## 第十八轮：相簿 —— 图片目录的自由组合
+
+用户需求：**目前查看图片是以文件夹为单位的，想以相簿为单位——项目可以自由增加或删去多个不同的图片目录，进行自由组合。**
+
+### 数据模型
+
+频道不再绑目录，改绑相簿。相簿是全局实体，频道通过 `albumId` 引用：
+
+```jsonc
+"albums": [
+  { "id": "alb_XXXX", "name": "横屏精选",
+    "folders": [ { "path": "D:\\壁纸\\横屏", "enabled": true },
+                 { "path": "D:\\壁纸\\风景", "enabled": false } ] }
+],
+"albumId": "alb_XXXX",           // 顶层默认相簿
+"monitors": { "\\\\?\\DISPLAY#...": { "albumId": "alb_YYYY" } }   // 单屏覆盖
+```
+
+四个设计决策（与用户逐项确认过）：
+
+| 决策 | 选择 | 理由 |
+|---|---|---|
+| 播放顺序 | 目录顺序即播放顺序 | 顺序模式下相簿有「章节感」：目录按列表顺序依次播，组内按名称排；随机模式拼好再整池洗，不受影响 |
+| 目录粒度控制 | 开关 + 排序 | 每个目录可临时停用（保留但不扫描）、可上下移；「临时不想看某个目录」不需要删了再加回来 |
+| 旧配置 | 自动包装成相簿 | `folder` 字段在读取/写入时自动换成「同名单目录相簿 + albumId 引用」，用户无感升级 |
+| 增值项 | 封面缩略图 + 胶片条目录分隔 + 信息面板来源 | 三个都要 |
+
+### 关键实现
+
+- **store.js**：`albums` 规范化（路径大小写不敏感去重、坏条目剔除）、`findAlbum`、
+  `migrateLegacyFolders`（旧 `folder` 字段 → 复用或新建单目录相簿，幂等，顶层与单屏覆盖都处理）。
+- **scheduler.js**：`_scanAlbum` 按目录顺序并行扫描再拼接；**完整路径去重**（同时加 `D:\图` 和
+  `D:\图\子目录` 时同一张图只收一次）；失效目录不炸相簿，标注进 `missingDirs` 给设置面板警告。
+  每个条目带 `dir` 来源字段（胶片条分隔与信息面板「来源」用，调度逻辑本身不依赖）。
+- **顺序复用**（`_orderFor`）本来就以 albumId 为键：**往相簿里加目录不会重洗**——现有路径原位保留，
+  新目录的图接在末尾，正在看的那张不跳。换绑相簿、切播放顺序、重新扫描才重洗。
+- **播放进度**：存档记录新增 `album` 字段；旧记录（只有 `folder`）按「路径在相簿内」认亲，
+  升级后接着上次那张播。
+- **main.js**：`folder:pick` 重写为多选目录（一次勾选多个目录，自动组建相簿）；
+  新增 `album:list/create/update/delete/pick-dirs` 与 `folders:pick` 多选。删除相簿时自动解绑所有频道。
+- **渲染层**：设置面板顶部新增相簿管理区（新建 / 重命名 / 增删目录 / 停用 / 排序 / 删除），
+  每屏卡片改为相簿下拉 + 「添加目录」；相簿下拉带封面缩略图（取自扫描缓存，零额外 IO）；
+  顺序模式下胶片条在目录交界处画分隔线；信息面板新增「来源」一组。
+
+### 兼容层（这轮踩到的坑）
+
+e2e 验证脚本和 `tools/status.js` 还在用旧的 `folder` 语义，直接改数据模型会大面积误报。
+处理分两层，而不是回头改数据模型：
+
+1. `set()` / `setMonitorProfile()` 的兜底迁移：旧脚本发 `setConfig({ folder })` 或
+   `set-profile { folder }` 时自动换算成相簿引用——**相簿列表非空时也换**（初版只在空表时迁移，
+   恢复过基线的脚本会静默丢载荷，实测抓出来的）。
+2. `resolveProfile` 派生只读 `folder`：绑定单目录相簿时回填目录路径，多目录相簿留空。
+   `status.js` 显示与旧断言继续可用，配置存储不受影响（`writeProfile` 只按 `PROFILE_KEYS` 落盘）。
+
+### 验证
+
+| 组 | 结果 |
+|---|---|
+| 单测 `npm run verify:unit`（新增 19-23 节：多目录拼接/去重/停用/失效目录、加目录不打断播放、旧配置迁移、旧进度认亲、兼容层） | **111/111** |
+| `npm run verify:resume`（模拟关机再开机） | **28/28** 无回归 |
+| `npm run verify:order`（真实 app + CDP，隔离 userData） | **25/25** 无回归 |
+| `node --check` 全部改动源文件 | 通过 |
+| store.js 迁移独立冒烟（node -e 断言） | 通过 |
+
+**CDP 实例跑法备注**：真实实例正在运行时占着单实例锁，调试实例会静默秒退（`app.exit(0)`）。
+绕法：`electron.exe . --remote-debugging-port=9222 --user-data-dir=<隔离目录>` 起隔离实例，
+脚本侧设同样的 `APPDATA` 对齐 testConfig 的配置路径，两端落在同一个隔离档案里——不碰用户真实配置，
+也不需要关掉正在轮播的真身。跑完用 CDP `Browser.close` 收掉。
+
+**遗留**：`verify:features` / `verify:ui` / `verify:fixes` / `verify:tray` / `verify:cycle` 里还有
+直接读 `cfg.folder` 的断言（需要逐条改成相簿语义，属于下一轮 UI 迭代一起做的事）；
+`verify:e2e` 需要预置两屏配置并真实接管桌面，与正在运行的实例抢桌面，本轮未重跑。
 
 ---
 

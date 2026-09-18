@@ -39,7 +39,7 @@ class PlaybackState {
     this.filePath = filePath;
     this.debounceMs = Number.isFinite(options.debounceMs) ? options.debounceMs : SAVE_DEBOUNCE_MS;
     this.now = options.now || (() => Date.now());
-    /** @type {Record<string, {path:string|null,index:number,folder:string,playing:boolean,at:number}>} */
+    /** @type {Record<string, {path:string|null,index:number,album:string,folder:string,playing:boolean,at:number}>} */
     this.channels = {};
     this.timer = null;
     this.dirty = false;
@@ -62,6 +62,8 @@ class PlaybackState {
         this.channels[id] = {
           path: typeof rec.path === 'string' ? rec.path : null,
           index: Number.isFinite(rec.index) ? rec.index : -1,
+          album: typeof rec.album === 'string' ? rec.album : '',
+          // 旧版记录按目录路径归属（v17 及以前）；scheduler 恢复进度时两种都认
           folder: typeof rec.folder === 'string' ? rec.folder : '',
           playing: typeof rec.playing === 'boolean' ? rec.playing : true,
           at: Number.isFinite(rec.at) ? rec.at : 0,

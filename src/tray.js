@@ -111,6 +111,8 @@ function buildMenuTemplate() {
     else status.push('已暂停');
     status.push(`${ch.count} 张`);
     if (ch.count) status.push(`第 ${ch.index + 1} 张`);
+    // 相簿名让「这块屏在播哪个池子」一眼可辨（目录集合比一路径更好认）
+    if (ch.albumName) status.push(`相簿：${ch.albumName}`);
 
     const sub = [
       { label: status.join('  ·  '), enabled: false },
@@ -124,7 +126,7 @@ function buildMenuTemplate() {
       },
       { type: 'separator' },
       { label: '立即设为壁纸', enabled: ch.count > 0, click: () => actions.applyChannel(ch.id) },
-      { label: '重新扫描', enabled: Boolean(ch.folder), click: () => actions.rescanChannel(ch.id) },
+      { label: '重新扫描', enabled: Boolean(ch.albumId), click: () => actions.rescanChannel(ch.id) },
       {
         // 删掉这一路当前正在显示的那张。和右键菜单、胶片条垃圾桶走同一套确认流程
         label: '删除到回收站',

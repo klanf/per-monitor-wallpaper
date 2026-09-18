@@ -29,7 +29,8 @@ const fsp = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
 
 const { scanFolder } = require('./scanner');
-const { resolveProfile } = require('./store');
+const { resolveProfile, findAlbum } = require('./store');
+const { probeFile } = require('./scanner');
 const win32 = require('./win32');
 
 const UNIFIED_ID = '__unified__';
@@ -94,8 +95,8 @@ class MonitorScheduler {
      * 「看过 / 没看过」标记不丢。channel.played 是这个 Set 的同一引用。
      */
     this.played = new Map();
-    /** 每个频道上次用的目录；换目录时用来判断该不该清空 played */
-    this.playedFolder = new Map();
+    /** 每个频道上次绑的相簿；换相簿时用来判断该不该清空 played */
+    this.playedAlbum = new Map();
     /** 每个频道的列表顺序（随机模式下跨 rebuild 保留，只有走完一轮才重排） */
     this.orders = new Map();
     /** 每个频道走完了几轮 —— 每走完一轮重洗一次，这个数只增不减 */
@@ -185,31 +186,16 @@ class MonitorScheduler {
       });
     }
 
-    // 并行扫描各频道的目录（同目录命中缓存）
+    // 并行扫描各频道的相簿（同目录命中缓存；相簿 = 启用目录按序拼接）
     const built = await Promise.all(specs.map(async (spec) => {
-      const folder = spec.profile.folder;
-      let files = [];
-      let truncated = false;
-      let scanMs = 0;
-      let error = null;
-
-      if (folder) {
-        try {
-          const scan = await this._scan(folder, spec.profile.recursive);
-          files = scan.files;
-          truncated = scan.truncated;
-          scanMs = scan.elapsedMs;
-        } catch (err) {
-          error = err.message;
-        }
-      }
-      return { ...spec, files, truncated, scanMs, error };
+      const scan = await this._scanAlbum(spec.profile);
+      return { ...spec, ...scan };
     }));
 
     // 逐个频道定下这一轮的顺序（随机模式在这里洗牌，见 _orderFor）
     for (const item of built) {
       if (item.files.length) {
-        item.files = await this._orderFor(item.id, item.files, item.profile, item.profile.folder);
+        item.files = await this._orderFor(item.id, item.files, item.profile, item.profile.albumId);
       }
     }
 
@@ -233,10 +219,10 @@ class MonitorScheduler {
         this.played.set(item.id, played);
       }
 
-      // 换目录了 → 旧的「看过」序号对新列表毫无意义，留着只会把没看过的标成看过
-      const prevFolder = this.playedFolder.get(item.id);
-      if (prevFolder !== undefined && prevFolder !== item.profile.folder) played.clear();
-      this.playedFolder.set(item.id, item.profile.folder);
+      // 换相簿了 → 旧的「看过」序号对新列表毫无意义，留着只会把没看过的标成看过
+      const prevAlbum = this.playedAlbum.get(item.id);
+      if (prevAlbum !== undefined && prevAlbum !== item.profile.albumId) played.clear();
+      this.playedAlbum.set(item.id, item.profile.albumId);
 
       const index = saved ? Math.min(saved.index, max) : 0;
       // 当前正在显示的这张算「看过」，否则刚开软件时胶片条会把首图标成未看
@@ -291,8 +277,18 @@ class MonitorScheduler {
     const rec = this.playback.get(id);
     if (!rec) return null;
 
-    const folder = profile.folder || '';
-    if (rec.folder && folder && rec.folder !== folder) return null;
+    /*
+     * 记录对齐：新记录存相簿 id；旧版（v17 及以前）存的是目录路径。
+     * 旧记录用「路径属于这个相簿」来认亲 —— 升级后的第一次重启还能接着播，
+     * 而不是甩回第一张。两边都对不上才判定「换源了」，整条记录不认。
+     */
+    if (rec.album) {
+      if (rec.album !== profile.albumId) return null;
+    } else if (rec.folder) {
+      const album = findAlbum(config, profile.albumId);
+      const paths = album ? album.folders.map((f) => f.path.toLowerCase()) : [];
+      if (!paths.includes(rec.folder.toLowerCase())) return null;
+    }
 
     let index = -1;
     if (rec.path) index = files.findIndex((f) => f.path === rec.path);
@@ -309,6 +305,7 @@ class MonitorScheduler {
    *   progress（内存）→ 本次会话内 rebuild 时不被重置（原有行为）
    *   playback（磁盘）→ 下次启动时接着播（本次新增）
    * 所有会改变「当前是哪张」的地方统一走这里，免得漏一处就出个「偶尔回到第一张」。
+   * 磁盘记录按相簿 id 归属（旧版存目录路径，恢复时两种都认，见 _restoreProgress）。
    */
   _remember(ch) {
     this.progress.set(ch.id, { index: ch.index, playing: ch.playing });
@@ -319,7 +316,7 @@ class MonitorScheduler {
     this.playback.set(ch.id, {
       index: ch.index,
       path: entry ? entry.path : null,
-      folder: ch.profile.folder || '',
+      album: ch.profile.albumId || '',
       playing: Boolean(ch.playing),
     });
   }
@@ -347,6 +344,71 @@ class MonitorScheduler {
   }
 
   /**
+   * 扫描一个频道的相簿 —— 相簿里每个启用的目录各扫各的，再按目录顺序拼接。
+   *
+   * 「目录顺序即播放顺序」：顺序模式（非随机）下胶片条会呈现出章节感 ——
+   * 哪个目录排在前面就先播哪个，组内保持按名称排；随机模式不受影响（拼好再全池洗）。
+   * 拼接按完整路径去重：目录之间有嵌套/重叠时同一张图只收一次。
+   * 失效目录（被删 / 改名 / 断盘）不炸整个相簿 —— 跳过并在 missingDirs 里标注，
+   * 让设置面板能给出看得见的警告。
+   */
+  async _scanAlbum(profile) {
+    const empty = { files: [], truncated: false, scanMs: 0, error: null, missingDirs: [], albumName: '', activeDirs: [] };
+    const album = findAlbum(this.store.get(), profile.albumId);
+    if (!album) {
+      return { ...empty, error: profile.albumId ? '绑定的相簿不存在（可能已被删除）' : null };
+    }
+    const active = album.folders.filter((f) => f.enabled);
+    if (!active.length) {
+      return { ...empty, albumName: album.name, error: '相簿里还没有启用的目录' };
+    }
+
+    const started = Date.now();
+    const missingDirs = [];
+    await Promise.all(active.map(async (f) => {
+      const probe = await probeFile(f.path);
+      if (!probe.exists) missingDirs.push(f.path);
+    }));
+
+    const results = await Promise.all(active.map(async (f) => {
+      try {
+        return await this._scan(f.path, profile.recursive);
+      } catch (err) {
+        return { files: [], truncated: false, elapsedMs: 0, error: err.message };
+      }
+    }));
+
+    const files = [];
+    const seen = new Set();
+    let truncated = false;
+    let error = null;
+    // results 与 active 一一对应：拼进条目的 dir 字段记录「这张图来自哪个目录」，
+    // 胶片条的目录分隔和图片信息面板的「来源」都靠它，调度逻辑本身不用
+    for (let i = 0; i < results.length; i += 1) {
+      const r = results[i];
+      const dirPath = active[i].path;
+      if (r.error && !error) error = r.error;
+      if (r.truncated) truncated = true;
+      for (const f of r.files) {
+        const key = f.path.toLowerCase();
+        if (seen.has(key)) continue;   // 嵌套目录 / 重复添加：同一张图只收一次
+        seen.add(key);
+        files.push({ ...f, dir: dirPath });
+      }
+    }
+
+    return {
+      files,
+      truncated,
+      scanMs: Date.now() - started,
+      error,
+      missingDirs,
+      albumName: album.name,
+      activeDirs: active.map((f) => f.path),
+    };
+  }
+
+  /**
    * 算出这个频道这一轮的**文件顺序** —— 随机模式的「随机」只作用在这里。
    *
    * 把列表本身摆成一个随机顺序，之后播放就是顺着列表走（见 _advance）。
@@ -355,21 +417,23 @@ class MonitorScheduler {
    * 那样胶片条的位置会乱飞，历史无从追踪。）
    *
    * 顺序跨 rebuild 保留（`this.orders`）：改个间隔、调个动画时长不会把刚熟悉起来的
-   * 顺序打乱。只有换目录、切「按名称 / 随机」、重新扫描、或**走完一轮**才会重排。
+   * 顺序打乱。只有换相簿、切「按名称 / 随机」、重新扫描、或**走完一轮**才会重排。
+   * 相簿内加目录 / 删目录**不**触发重排：现有路径原位保留，新目录的图接在末尾 ——
+   * 「往相簿里补一批图」不该把正在看的顺序搅乱。
    *
-   * 每个频道拿一份自己的副本 —— 两个屏指同一个目录时，一个频道重洗不该影响另一个。
+   * 每个频道拿一份自己的副本 —— 两个频道绑同一个相簿时，一个重洗不该影响另一个。
    */
-  async _orderFor(id, files, profile, folder) {
+  async _orderFor(id, files, profile, albumId) {
     const list = files.slice();
     const shuffled = Boolean(profile.shuffle);
     const saved = this.orders.get(id);
-    // 目录变了、或者播放顺序模式换了 —— 旧顺序都不能再用
-    const reusable = saved && saved.folder === folder && saved.shuffle === shuffled
+    // 相簿变了、或者播放顺序模式换了 —— 旧顺序都不能再用
+    const reusable = saved && saved.albumId === albumId && saved.shuffle === shuffled
       ? saved.paths
       : null;
 
     if (!shuffled) {
-      this.orders.set(id, { folder, shuffle: false, paths: list.map((f) => f.path) });
+      this.orders.set(id, { albumId, shuffle: false, paths: list.map((f) => f.path) });
       return list;
     }
 
@@ -380,14 +444,14 @@ class MonitorScheduler {
         const f = byPath.get(p);
         if (f) { out.push(f); byPath.delete(p); }
       }
-      // 目录里新增的接在后面（顺序不重排，用户刚在资源管理器里丢进来的图在末尾）
+      // 相簿里新增的接在后面（顺序不重排，用户刚丢进来的图在末尾）
       for (const f of list) if (byPath.has(f.path)) out.push(f);
-      this.orders.set(id, { folder, shuffle: true, paths: out.map((f) => f.path) });
+      this.orders.set(id, { albumId, shuffle: true, paths: out.map((f) => f.path) });
       return out;
     }
 
     await this._shuffleFiles(list, profile.skipSizeTwin !== false);
-    this.orders.set(id, { folder, shuffle: true, paths: list.map((f) => f.path) });
+    this.orders.set(id, { albumId, shuffle: true, paths: list.map((f) => f.path) });
     return list;
   }
 
@@ -418,7 +482,7 @@ class MonitorScheduler {
     ch.played.clear();
     ch.rounds = (ch.rounds || 0) + 1;
     this.rounds.set(ch.id, ch.rounds);
-    this.orders.set(ch.id, { folder: ch.profile.folder, shuffle: true, paths: ch.files.map((f) => f.path) });
+    this.orders.set(ch.id, { albumId: ch.profile.albumId, shuffle: true, paths: ch.files.map((f) => f.path) });
   }
 
   /**
@@ -657,7 +721,8 @@ class MonitorScheduler {
       if (index < 0) continue;
 
       const arr = ch.files;
-      if (ch.profile && ch.profile.folder) touchedFolders.add(ch.profile.folder);
+      // 受影响的是相簿里启用的那些目录 —— 缓存按目录建，逐个作废
+      for (const dir of (ch.activeDirs || [])) touchedFolders.add(dir);
 
       // 多个频道可以共享同一个扫描结果数组，同一数组只改一次
       if (!touchedArrays.has(arr)) {
@@ -749,12 +814,14 @@ class MonitorScheduler {
     return { affected, rewritten };
   }
 
-  /** 丢掉目录扫描缓存并重建（适配「新增了图片」；顺带重新洗一次牌） */
+  /** 丢掉相簿目录的扫描缓存并重建（适配「新增了图片」；顺带重新洗一次牌） */
   async rescan(id) {
     if (id) {
       const ch = this.channels.get(id);
-      if (ch && ch.profile.folder) {
-        this.scanCache.delete(`${ch.profile.folder}::${ch.profile.recursive ? 1 : 0}`);
+      if (ch) {
+        for (const dir of (ch.activeDirs || [])) {
+          this.scanCache.delete(`${dir}::${ch.profile.recursive ? 1 : 0}`);
+        }
       }
       this.orders.delete(id);          // 重新扫描 = 重新洗牌，别把旧顺序按回去
       this.rounds.delete(id);
@@ -788,7 +855,9 @@ class MonitorScheduler {
       height: ch.monitor ? ch.monitor.height : 0,
       x: ch.monitor ? ch.monitor.x : 0,
       y: ch.monitor ? ch.monitor.y : 0,
-      folder: ch.profile.folder || '',
+      albumId: ch.profile.albumId || '',
+      albumName: ch.albumName || '',
+      missingDirs: ch.missingDirs || [],
       count: ch.files.length,
       rev: ch.rev,
       truncated: Boolean(ch.truncated),
@@ -836,7 +905,8 @@ class MonitorScheduler {
       interval: ch.profile.interval,
       enabled: ch.profile.enabled,
       writes: ch.writes,
-      folder: ch.profile.folder,
+      album: ch.albumName || '',
+      albumId: ch.profile.albumId || '',
       lastWrite: ch.lastWrite,
     }));
   }

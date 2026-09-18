@@ -28,6 +28,11 @@ function check(label, ok, detail = '') {
   else { fail += 1; console.log(`  ✗ ${label}${detail ? '   ' + detail : ''}`); }
 }
 
+/** 造一个只含一个目录的相簿 —— 大部分测试用例需要的最小相簿 */
+function singleFolderAlbum(name, folderPath) {
+  return { id: `alb_test_${name}`, name, folders: [{ path: folderPath, enabled: true }] };
+}
+
 const FAKE_MONITORS = [
   { id: 'MON-A', index: 0, label: '3840×2160（主显示器）', width: 3840, height: 2160, x: 0, y: 0, primary: true },
   { id: 'MON-B', index: 1, label: '1600×2560', width: 1600, height: 2560, x: -1600, y: 0, primary: false },
@@ -49,14 +54,17 @@ async function main() {
   fs.copyFileSync(GREEN, path.join(dirB, 'b-2.bmp'));
 
   const store = new Store(configPath);
+  const albumA = singleFolderAlbum('A', dirA);
+  const albumB = singleFolderAlbum('B', dirB);
   store.set({
-    folder: dirA,
+    albumId: albumA.id,
+    albums: [albumA, albumB],
     perMonitor: true,
     interval: 1,
     applyToSystem: true,
     applyOnStart: false,
     recursive: false,
-    monitors: { 'MON-B': { folder: dirB, interval: 1 } },
+    monitors: { 'MON-B': { albumId: albumB.id, interval: 1 } },
   });
 
   const writes = [];
@@ -81,8 +89,9 @@ async function main() {
   check('没有出现统一频道', !list.some((c) => c.id === UNIFIED_ID));
   check('频道 0 绑定 MON-A', list[0] && list[0].monitorId === 'MON-A');
   check('频道 1 绑定 MON-B', list[1] && list[1].monitorId === 'MON-B');
-  check('频道 0 用全局目录 dirA', list[0].profile.folder === dirA);
-  check('频道 1 用单独目录 dirB', list[1].profile.folder === dirB);
+  check('频道 0 用顶层相簿 A', list[0].profile.albumId === albumA.id);
+  check('频道 1 用单独相簿 B', list[1].profile.albumId === albumB.id);
+  check('频道 0 报出相簿名', list[0].albumName === 'A');
   check('频道 0 有 2 张图', list[0].count === 2, `实际 ${list[0].count}`);
   check('频道 1 有 2 张图', list[1].count === 2, `实际 ${list[1].count}`);
 
@@ -127,17 +136,19 @@ async function main() {
   fs.copyFileSync(RED, path.join(dirC, 'c-1.bmp'));
   fs.copyFileSync(GREEN, path.join(dirC, 'c-2.bmp'));
   fs.copyFileSync(RED, path.join(dirC, 'c-3.bmp'));
+  const albumC = singleFolderAlbum('C', dirC);
+  store.set({ albums: [...store.get().albums, albumC] });
 
-  store.setMonitorProfile('MON-A', { folder: dirC, interval: 5 });
+  store.setMonitorProfile('MON-A', { albumId: albumC.id, interval: 5 });
   await scheduler.rebuild('profile');
 
   const after = scheduler.list();
   const chA = after.find((c) => c.id === 'MON-A');
   const chB = after.find((c) => c.id === 'MON-B');
-  check('MON-A 目录已换成 dirC', chA.profile.folder === dirC);
-  check('MON-A 新目录 3 张图已载入', chA.count === 3, `实际 ${chA.count}`);
+  check('MON-A 相簿已换成 C', chA.profile.albumId === albumC.id);
+  check('MON-A 新相簿 3 张图已载入', chA.count === 3, `实际 ${chA.count}`);
   check('MON-A 间隔已改为 5 秒', chA.profile.interval === 5);
-  check('MON-B 目录未被动过', chB.profile.folder === dirB);
+  check('MON-B 相簿未被动过', chB.profile.albumId === albumB.id);
   check('MON-B 间隔未被动过', chB.profile.interval === 1, `实际 ${chB.profile.interval}`);
 
   /* ================= 5. 配置继承 ================= */
@@ -174,8 +185,8 @@ async function main() {
   check('monitors 里只存了 MON-A / MON-B',
     Object.keys(saved.monitors || {}).sort().join(',') === 'MON-A,MON-B',
     JSON.stringify(Object.keys(saved.monitors || {})));
-  check('MON-B 只存了与顶层不同的 folder / interval',
-    Object.keys(saved.monitors['MON-B']).sort().join(',') === 'folder,interval',
+  check('MON-B 只存了与顶层不同的 albumId / interval',
+    Object.keys(saved.monitors['MON-B']).sort().join(',') === 'albumId,interval',
     JSON.stringify(Object.keys(saved.monitors['MON-B'])));
 
   scheduler.stop();
@@ -220,11 +231,11 @@ async function main() {
     interval: 1,
     autoPlay: true,
     applyOnStart: false,      // 不要开场接管，写入次数才可数
-    folder: dirA,
+    albumId: albumA.id,
     // 前面几节改过 MON-A 的覆盖项（含 enabled:false），这里显式给两台都重设一遍
     monitors: {
-      'MON-A': { folder: dirA, interval: 1, enabled: true, shuffle: false },
-      'MON-B': { folder: dirB, interval: 1, enabled: true, shuffle: false },
+      'MON-A': { albumId: albumA.id, interval: 1, enabled: true, shuffle: false },
+      'MON-B': { albumId: albumB.id, interval: 1, enabled: true, shuffle: false },
     },
   });
 
@@ -290,11 +301,13 @@ async function main() {
       Buffer.concat([fs.readFileSync(RED), Buffer.alloc(i + 1)]));
   }
   const nameOrder = Array.from({ length: N }, (_, i) => `s-${String(i).padStart(2, '0')}.bmp`);
+  const albumS = singleFolderAlbum('S', dirS);
 
   store.set({
     perMonitor: true,
     applyOnStart: false,
-    monitors: { 'MON-B': { folder: dirS, interval: 1, shuffle: true, skipSizeTwin: false } },
+    albums: [...store.get().albums, albumS],
+    monitors: { 'MON-B': { albumId: albumS.id, interval: 1, shuffle: true, skipSizeTwin: false } },
   });
   await scheduler.rebuild('shuffle-test');
   scheduler.setPlaying('MON-B', false);            // 不让定时器掺进来
@@ -381,6 +394,8 @@ async function main() {
    */
   const dirT = path.join(tmpDir, 'dirT');
   fs.mkdirSync(dirT, { recursive: true });
+  const albumT = singleFolderAlbum('T', dirT);
+  store.set({ albums: [...store.get().albums, albumT] });
   fs.copyFileSync(RED, path.join(dirT, 't-0.bmp'));
   fs.copyFileSync(RED, path.join(dirT, 't-1.bmp'));   // 与 t-0 字节完全相同 → 体积相同
 
@@ -413,7 +428,7 @@ async function main() {
     return n;
   };
 
-  store.set({ monitors: { 'MON-B': { folder: dirT, shuffle: true, skipSizeTwin: true } } });
+  store.set({ monitors: { 'MON-B': { albumId: albumT.id, shuffle: true, skipSizeTwin: true } } });
   await scheduler.rebuild('twin-on');
   const chTwin = scheduler.channels.get('MON-B');
   check('孪生夹具是 4 张（其中两张字节相同）', chTwin.files.length === 4, `实际 ${chTwin.files.length}`);
@@ -439,21 +454,21 @@ async function main() {
    * 但换目录时必须清 —— 序号是下标，新目录的第 3 张和旧目录的第 3 张毫无关系，
    * 留着就会把新目录里没看过的图标成「看过」。
    */
-  store.set({ monitors: { 'MON-B': { folder: dirS, interval: 1, shuffle: false, skipSizeTwin: false } } });
+  store.set({ monitors: { 'MON-B': { albumId: albumS.id, interval: 1, shuffle: false, skipSizeTwin: false } } });
   await scheduler.rebuild('played-a');
   scheduler.setPlaying('MON-B', false);
   for (let k = 0; k < 5; k += 1) await scheduler.step('MON-B', 1);
   const playedBefore = scheduler.playedIndices('MON-B').length;
   check('在 dirS 上攒下了播放记录', playedBefore >= 5, `played=${playedBefore}`);
 
-  store.set({ monitors: { 'MON-B': { folder: dirT, interval: 1, shuffle: false, skipSizeTwin: true } } });
+  store.set({ monitors: { 'MON-B': { albumId: albumT.id, interval: 1, shuffle: false, skipSizeTwin: true } } });
   await scheduler.rebuild('played-b');
   const playedAfter = scheduler.playedIndices('MON-B').length;
   check('换目录后旧的「看过」已清空（只剩当前这张）', playedAfter <= 1, `played=${playedAfter}`);
 
   /* ================= 15. 走完一轮会重洗（每轮顺序不同） ================= */
   console.log('\n===== 15. 走完一轮会重洗：每轮顺序都不一样 =====');
-  store.set({ monitors: { 'MON-B': { folder: dirS, shuffle: true, skipSizeTwin: false, interval: 1 } } });
+  store.set({ monitors: { 'MON-B': { albumId: albumS.id, shuffle: true, skipSizeTwin: false, interval: 1 } } });
   await scheduler.rebuild('round-reshuffle');
   scheduler.setPlaying('MON-B', false);
   const chR = scheduler.channels.get('MON-B');
@@ -515,8 +530,9 @@ async function main() {
   for (let i = 0; i < 5; i += 1) {
     fs.copyFileSync(RED, path.join(dirG, `g-${i}.bmp`));
   }
+  const albumG = singleFolderAlbum('G', dirG);
 
-  store.set({ perMonitor: true, autoPlay: false, folder: dirG, monitors: { 'MON-B': { folder: dirG, interval: 3600, shuffle: false } } });
+  store.set({ perMonitor: true, autoPlay: false, albumId: albumG.id, albums: [...store.get().albums, albumG], monitors: { 'MON-B': { albumId: albumG.id, interval: 3600, shuffle: false } } });
   await scheduler.rebuild('g-setup');
   scheduler.setPlaying('MON-B', false);
 
@@ -546,8 +562,9 @@ async function main() {
   const dirH = path.join(tmpDir, 'dirH');
   fs.mkdirSync(dirH, { recursive: true });
   for (let i = 0; i < 6; i += 1) fs.copyFileSync(RED, path.join(dirH, `h-${i}.bmp`));
+  const albumH = singleFolderAlbum('H', dirH);
 
-  store.set({ perMonitor: true, autoPlay: false, folder: dirH, monitors: { 'MON-B': { folder: dirH, interval: 3600, shuffle: false } } });
+  store.set({ perMonitor: true, autoPlay: false, albumId: albumH.id, albums: [...store.get().albums, albumH], monitors: { 'MON-B': { albumId: albumH.id, interval: 3600, shuffle: false } } });
   await scheduler.rebuild('h-setup');
   scheduler.setPlaying('MON-B', false);
   await scheduler.goTo('MON-B', 3, 1, 'test');          // 走到第 4 张，进度写进 progress
@@ -568,37 +585,38 @@ async function main() {
   check('重建后画面仍然是同一张', chH2.files[chH2.index].name === watching,
     `${chH2.files[chH2.index].name} vs ${watching}`);
 
-  /* ================= 18. 每屏独立：没单独配的屏回落顶层目录 ================= */
+  /* ================= 18. 每屏独立：没单独配的屏回落顶层相簿 ================= */
 
-  console.log('\n===== 18. 每屏独立：没单独配的屏回落到顶层目录 =====');
+  console.log('\n===== 18. 每屏独立：没单独配的屏回落到顶层相簿 =====');
   {
     /*
      * 这条撑着「开箱即用」：全新安装时 monitors 是空的，程序自动打开每屏独立之后，
-     * 每块屏必须都回落到顶层 folder 才有东西可播 —— 否则用户会看到一堆空频道，
+     * 每块屏必须都回落到顶层相簿才有东西可播 —— 否则用户会看到一堆空频道，
      * 还不如不自动开。端到端测不到这个状态（渲染层没有清掉单屏覆盖的接口），所以放这里。
      */
     const fresh = {
       ...DEFAULTS,
-      folder: 'D:\\pics',
+      albumId: 'alb_pics',
+      albums: [{ id: 'alb_pics', name: 'pics', folders: [{ path: 'D:\\pics', enabled: true }] }],
       perMonitor: true,
       monitors: {},
     };
-    check('全新安装：每块屏都回落顶层 folder',
-      resolveProfile(fresh, 'MON-A').folder === 'D:\\pics'
-      && resolveProfile(fresh, 'MON-B').folder === 'D:\\pics',
-      resolveProfile(fresh, 'MON-A').folder);
+    check('全新安装：每块屏都回落顶层相簿',
+      resolveProfile(fresh, 'MON-A').albumId === 'alb_pics'
+      && resolveProfile(fresh, 'MON-B').albumId === 'alb_pics',
+      resolveProfile(fresh, 'MON-A').albumId);
 
-    const withOverride = { ...fresh, monitors: { 'MON-A': { folder: 'D:\\vertical' } } };
-    check('单独配过的屏用自己的目录',
-      resolveProfile(withOverride, 'MON-A').folder === 'D:\\vertical',
-      resolveProfile(withOverride, 'MON-A').folder);
+    const withOverride = { ...fresh, monitors: { 'MON-A': { albumId: 'alb_vertical' } } };
+    check('单独配过的屏用自己的相簿',
+      resolveProfile(withOverride, 'MON-A').albumId === 'alb_vertical',
+      resolveProfile(withOverride, 'MON-A').albumId);
     check('没配的那块屏仍然回落顶层（两块屏可以一套配、一套不配）',
-      resolveProfile(withOverride, 'MON-B').folder === 'D:\\pics',
-      resolveProfile(withOverride, 'MON-B').folder);
+      resolveProfile(withOverride, 'MON-B').albumId === 'alb_pics',
+      resolveProfile(withOverride, 'MON-B').albumId);
 
-    check('顶层 folder 为空时不会瞎编一个目录',
-      resolveProfile({ ...fresh, folder: '' }, 'MON-A').folder === '',
-      JSON.stringify(resolveProfile({ ...fresh, folder: '' }, 'MON-A').folder));
+    check('顶层没绑相簿时不会瞎编一个',
+      resolveProfile({ ...fresh, albumId: '' }, 'MON-A').albumId === '',
+      JSON.stringify(resolveProfile({ ...fresh, albumId: '' }, 'MON-A').albumId));
 
     // 其它 profile 键也遵守同一套回落规则（间隔 / 动画 / 填充方式）
     const mixed = { ...fresh, interval: 60, fit: 'cover', monitors: { 'MON-A': { interval: 30 } } };
@@ -607,6 +625,268 @@ async function main() {
       `${resolveProfile(mixed, 'MON-A').interval} / ${resolveProfile(mixed, 'MON-B').interval}`);
     check('填充方式同样回落', resolveProfile(mixed, 'MON-B').fit === 'cover',
       resolveProfile(mixed, 'MON-B').fit);
+  }
+
+  /* ================= 19. 相簿 = 多目录的自由组合 ================= */
+  console.log('\n===== 19. 相簿：多目录按序拼接、来源标注、路径去重 =====');
+  {
+    const dirP = path.join(tmpDir, 'dirP');
+    const dirQ = path.join(tmpDir, 'dirQ');
+    fs.mkdirSync(dirP);
+    fs.mkdirSync(dirQ);
+    fs.copyFileSync(RED, path.join(dirP, 'p-1.bmp'));
+    fs.copyFileSync(GREEN, path.join(dirP, 'p-2.bmp'));
+    fs.copyFileSync(RED, path.join(dirQ, 'q-1.bmp'));
+    fs.copyFileSync(GREEN, path.join(dirQ, 'q-2.bmp'));
+
+    // dirQ 里塞一个与 dirP 中完全相同的路径场景不好造 —— 用嵌套目录做去重：
+    // 相簿同时包含 dirQ 和 dirQ/nested（recursive 时 nested 的图已在 dirQ 结果里）
+    const dirNested = path.join(dirQ, 'nested');
+    fs.mkdirSync(dirNested);
+    fs.copyFileSync(RED, path.join(dirNested, 'n-1.bmp'));
+
+    const albumMulti = {
+      id: 'alb_multi',
+      name: '组合相簿',
+      folders: [
+        { path: dirQ, enabled: true },      // 故意把 Q 排前面，验证「目录顺序即列表顺序」
+        { path: dirNested, enabled: true }, // 与 dirQ 的递归扫描重叠 → 验证路径级去重
+        { path: dirP, enabled: true },
+      ],
+    };
+    store.set({
+      perMonitor: true,
+      autoPlay: false,
+      applyOnStart: false,
+      albumId: albumMulti.id,
+      albums: [...store.get().albums, albumMulti],
+      recursive: true,
+      shuffle: false,
+      monitors: { 'MON-B': { albumId: albumMulti.id, interval: 3600 } },
+    });
+    await scheduler.rebuild('album-multi');
+    scheduler.setPlaying('MON-B', false);
+    const chM = scheduler.channels.get('MON-B');
+
+    check('三个目录拼出 5 张（nested 的 n-1 与 dirQ 递归结果重叠，只算一次）',
+      chM.files.length === 5, `实际 ${chM.files.length}`);
+    check('n-1 只出现一次（路径级去重生效）',
+      chM.files.filter((f) => f.name === 'n-1.bmp').length === 1,
+      chM.files.map((f) => f.name).join(' '));
+    check('目录顺序即列表顺序：Q（含 nested）在前、P 在后',
+      chM.files.slice(0, 3).every((f) => f.dir === dirQ)
+      && chM.files.slice(3).every((f) => f.dir === dirP && f.name.startsWith('p-')),
+      chM.files.map((f) => f.name).join(' '));
+    check('每个条目都带 dir 来源标注',
+      chM.files.every((f) => f.dir && [dirP, dirQ].includes(f.dir)),
+      chM.files.map((f) => path.basename(f.dir)).join(','));
+    check('list() 报出相簿名', scheduler.list().find((c) => c.id === 'MON-B').albumName === '组合相簿');
+
+    /* 停用目录：enabled=false 的目录不参与扫描 */
+    const albumPartial = {
+      id: 'alb_partial',
+      name: '部分停用',
+      folders: [
+        { path: dirP, enabled: false },     // 停用 P
+        { path: dirQ, enabled: true },
+      ],
+    };
+    store.set({
+      albums: store.get().albums.map((a) => (a.id === albumMulti.id ? albumPartial : a)),
+      monitors: { 'MON-B': { albumId: albumPartial.id } },
+    });
+    await scheduler.rebuild('album-partial');
+    const chP = scheduler.channels.get('MON-B');
+    check('停用的目录不参与轮播（只剩 Q 递归出的 3 张）', chP.files.length === 3, `实际 ${chP.files.length}`);
+    check('停用的目录不出现在列表里', !chP.files.some((f) => f.dir === dirP));
+
+    /* 缺失目录：不炸相簿，标注 missingDirs */
+    const albumMissing = {
+      id: 'alb_missing',
+      name: '带失效目录',
+      folders: [
+        { path: path.join(tmpDir, 'no-such-dir'), enabled: true },
+        { path: dirP, enabled: true },
+      ],
+    };
+    store.set({
+      albums: store.get().albums.map((a) => (a.id === 'alb_partial' ? albumMissing : a)),
+      monitors: { 'MON-B': { albumId: albumMissing.id } },
+    });
+    await scheduler.rebuild('album-missing');
+    const info = scheduler.list().find((c) => c.id === 'MON-B');
+    check('失效目录被跳过，相簿仍有图可播', info.count === 2, `实际 ${info.count}`);
+    check('失效目录被标注在 missingDirs 里',
+      info.missingDirs.length === 1 && info.missingDirs[0].endsWith('no-such-dir'),
+      JSON.stringify(info.missingDirs));
+  }
+
+  /* ================= 20. 往相簿加目录不打断播放 ================= */
+  console.log('\n===== 20. 往相簿加目录：正在看的不跳、顺序保留、新图追加 =====');
+  {
+    const dirX1 = path.join(tmpDir, 'dirX1');
+    const dirX2 = path.join(tmpDir, 'dirX2');
+    fs.mkdirSync(dirX1);
+    fs.mkdirSync(dirX2);
+    for (let i = 0; i < 6; i += 1) {
+      fs.copyFileSync(RED, path.join(dirX1, `x1-${i}.bmp`));
+      fs.copyFileSync(GREEN, path.join(dirX2, `x2-${i}.bmp`));
+    }
+    const albumX = singleFolderAlbum('X1', dirX1);
+    store.set({
+      perMonitor: true,
+      autoPlay: false,
+      applyOnStart: false,
+      albumId: albumX.id,
+      albums: [...store.get().albums, albumX],
+      shuffle: true,
+      skipSizeTwin: false,
+      monitors: { 'MON-B': { albumId: albumX.id, interval: 3600 } },
+    });
+    await scheduler.rebuild('album-grow-before');
+    scheduler.setPlaying('MON-B', false);
+    const chX = scheduler.channels.get('MON-B');
+    const beforeOrder = chX.files.map((f) => f.name);
+    const beforeCurrent = chX.files[chX.index] ? chX.files[chX.index].path : null;
+
+    // 相簿加进第二个目录（模拟设置面板的「添加目录」：同一个相簿 id，folders 变了）
+    const grown = {
+      ...albumX,
+      folders: [
+        { path: dirX1, enabled: true },
+        { path: dirX2, enabled: true },
+      ],
+    };
+    store.set({ albums: store.get().albums.map((a) => (a.id === albumX.id ? grown : a)) });
+    await scheduler.rebuild('album-grow-after');
+    const chX2 = scheduler.channels.get('MON-B');   // rebuild 会重建频道对象，必须重新取
+
+    const afterOrder = chX2.files.map((f) => f.name);
+    check('加目录后张数 6 → 12', chX2.files.length === 12, `${beforeOrder.length} → ${afterOrder.length}`);
+    check('原有 6 张的相对顺序原样保留（没有重洗）',
+      afterOrder.slice(0, 6).join(',') === beforeOrder.join(','));
+    check('新目录的图接在列表末尾',
+      afterOrder.slice(6).every((n) => n.startsWith('x2-')),
+      afterOrder.slice(6).join(' '));
+    check('当前这张没有被顶走', chX2.files[chX2.index] && chX2.files[chX2.index].path === beforeCurrent,
+      `${beforeCurrent} → ${chX2.files[chX2.index] && chX2.files[chX2.index].path}`);
+  }
+
+  /* ================= 21. 旧配置自动迁移 ================= */
+  console.log('\n===== 21. 旧版 folder 配置读入时自动包装成相簿 =====');
+  {
+    const legacyPath = path.join(tmpDir, 'legacy-config.json');
+    fs.writeFileSync(legacyPath, JSON.stringify({
+      interval: 60,
+      folder: dirA,
+      monitors: { 'MON-B': { folder: dirB, interval: 1 } },
+    }, null, 2), 'utf8');
+    const legacyStore = new Store(legacyPath);
+    const legacyCfg = legacyStore.get();
+
+    check('旧顶层 folder 变成了相簿', Array.isArray(legacyCfg.albums) && legacyCfg.albums.length === 2,
+      `${(legacyCfg.albums || []).length}`);
+    check('相簿名取目录名', legacyCfg.albums.map((a) => a.name).sort().join(',') === 'dirA,dirB',
+      legacyCfg.albums.map((a) => a.name).join(','));
+    check('顶层频道绑到了自动生成的相簿',
+      legacyCfg.albums.some((a) => a.id === legacyCfg.albumId && a.folders[0].path === dirA));
+    check('MON-B 的覆盖也换成了相簿引用',
+      legacyCfg.monitors['MON-B'].albumId
+      && legacyCfg.albums.some((a) => a.id === legacyCfg.monitors['MON-B'].albumId
+        && a.folders[0].path === dirB));
+    check('旧 folder 字段已清掉', legacyCfg.folder === '' && !('folder' in legacyCfg.monitors['MON-B']));
+
+    // 相簿内重复目录去重（大小写不敏感）
+    const deduped = require('../src/store').normalizeAlbums([{
+      id: 'alb_dup', name: 'dup',
+      folders: [{ path: dirA }, { path: dirA.toUpperCase() }],
+    }]);
+    check('同一目录在相簿里只保留一份（大小写不敏感）', deduped[0].folders.length === 1,
+      `${deduped[0].folders.length}`);
+  }
+
+  /* ================= 22. 旧播放记录（按目录路径存）也能找回进度 ================= */
+  console.log('\n===== 22. 升级后旧进度记录兼容：按路径认亲 =====');
+  {
+    const legacyDirP = path.join(tmpDir, 'dirP');   // 19 节块作用域里的 dirP 已出栈，按路径重建
+    const playbackPath = path.join(tmpDir, 'playback.json');
+    // 把 MON-B 重新绑回「带失效目录」的相簿（含 dirP）：20 节把它绑去了 albumX
+    store.set({ perMonitor: true, monitors: { 'MON-B': { albumId: 'alb_missing' } } });
+    // 旧版记录：folder 是目录路径、没有 album 字段
+    fs.writeFileSync(playbackPath, JSON.stringify({
+      version: 1,
+      channels: {
+        'MON-B': { path: path.join(legacyDirP, 'p-2.bmp'), index: 1, folder: legacyDirP, playing: false, at: Date.now() },
+      },
+    }, null, 2), 'utf8');
+    const { PlaybackState } = require('../src/playbackState');
+    const pb = new PlaybackState(playbackPath);
+
+    const s3 = new MonitorScheduler({
+      store,
+      cacheDir: tmpDir,
+      playback: pb,
+      enumerate: () => ({ ok: true, monitors: FAKE_MONITORS }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async () => ({ ok: true, method: 'test' }),
+      onEvent: () => {},
+    });
+    await s3.rebuild('legacy-progress');
+    const chL = s3.channels.get('MON-B');
+    const idx = chL ? chL.files.findIndex((f) => f.name === 'p-2.bmp') : -1;
+    check('旧记录的路径命中：从那张图继续播', chL && chL.index === idx,
+      `index=${chL && chL.index}，期望（p-2 在第 ${idx} 位）`);
+    s3.stop();
+  }
+
+  /* ================= 23. 兼容层：相簿已存在时旧 folder 载荷仍可换算 ================= */
+  console.log('\n===== 23. 兼容层：旧 folder 载荷在已有相簿时也能换算 =====');
+  {
+    const dirY = path.join(tmpDir, 'dirY');
+    fs.mkdirSync(dirY);
+    fs.copyFileSync(RED, path.join(dirY, 'y-1.bmp'));
+
+    // 旧脚本 / 旧入口还在发 setConfig({ folder })——此刻相簿列表非空，也要能换算
+    const albumsBefore = store.get().albums.length;
+    store.set({ perMonitor: false, folder: dirY, applyOnStart: false });
+    const cfgY = store.get();
+    const albumY = cfgY.albums.find((a) => a.folders.length === 1
+      && a.folders[0].path.toLowerCase() === dirY.toLowerCase());
+    check('已有相簿时 set({ folder }) 也能换成相簿引用',
+      Boolean(albumY) && cfgY.albumId === albumY.id && cfgY.folder === '',
+      `albums ${albumsBefore} → ${cfgY.albums.length}`);
+
+    // set-profile 的旧 { folder } 载荷落到单屏覆盖上
+    store.setMonitorProfile('MON-B', { folder: dirY, interval: 5 });
+    const ovY = store.get().monitors['MON-B'];
+    check('set-profile 的旧 folder 载荷落到 albumId 上',
+      Boolean(ovY.albumId) && ovY.albumId === albumY.id && !('folder' in ovY),
+      JSON.stringify(ovY));
+
+    const profY = resolveProfile(store.get(), 'MON-B');
+    check('profile.folder 派生出目录路径（status.js / 旧断言兼容）',
+      profY.folder.toLowerCase() === dirY.toLowerCase() && profY.albumId === albumY.id,
+      profY.folder || '(空)');
+
+    // 多目录相簿没有单一「目录」可言，派生 folder 留空
+    const dirZ = path.join(tmpDir, 'dirZ');
+    fs.mkdirSync(dirZ);
+    store.set({
+      albums: [...store.get().albums, {
+        id: 'alb_multi23', name: '多目录',
+        folders: [{ path: dirY, enabled: true }, { path: dirZ, enabled: true }],
+      }],
+      albumId: 'alb_multi23',
+    });
+    const profM = resolveProfile(store.get(), null);
+    check('多目录相簿不派生 folder（留空）',
+      profM.albumId === 'alb_multi23' && profM.folder === '', profM.folder);
+
+    // 幂等：空 patch 再触发一遍兜底迁移，不应重复建相簿
+    const n1 = store.get().albums.length;
+    store.set({});
+    check('换算是幂等的：空 patch 不会再建相簿',
+      store.get().albums.length === n1, `${n1} → ${store.get().albums.length}`);
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
