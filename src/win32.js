@@ -29,6 +29,16 @@ const SPIF_SENDWININICHANGE = 0x0002;
 /** Windows 内核壁纸加载器能直接吃的扩展名，其余需要转码 */
 const NATIVE_EXT = new Set(['.jpg', '.jpeg', '.png', '.bmp']);
 
+/**
+ * 内核不吃、但 Windows 自己有可能读出来的格式（GIF/TIFF 这类）。
+ *
+ * 转码失败时只对这些格式「交给系统碰运气」；webp / avif 这类系统根本不认识的格式
+ * 继续把原路径递上去只会得到一次**假成功**：SPI 返回成功、桌面却黑一下或纹丝不动，
+ * 而且没有任何错误提示 —— 用户看到的就是「这张壁纸加载不出来」。这种情况必须报错，
+ * 让调度器把这张图本轮跳过（见 scheduler 的失效处理）。
+ */
+const SYSTEM_MAYBE_EXT = new Set(['.gif', '.jfif', '.tif', '.tiff']);
+
 /** koffi 对调用约定的兼容写法，逐个尝试直到某个原型注册成功 */
 const PROTO_STR = [
   'bool __stdcall SystemParametersInfoW(uint uiAction, uint uiParam, str16 pvParam, uint fWinIni)',
@@ -106,7 +116,11 @@ function ensureNativeFormat(imagePath, cacheDir) {
 
   const { nativeImage } = require('electron');
   const img = nativeImage.createFromPath(imagePath);
-  if (img.isEmpty()) return imagePath;
+  if (img.isEmpty()) {
+    // 解不出来：GIF/TIFF 还值得让系统自己试试；webp/avif 这类递上去必然是假的成功
+    if (SYSTEM_MAYBE_EXT.has(ext)) return imagePath;
+    throw new Error(`无法解码图片（可能损坏或还没同步完成）：${path.basename(imagePath)}`);
+  }
 
   fs.mkdirSync(cacheDir, { recursive: true });
   const out = path.join(cacheDir, `wp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);

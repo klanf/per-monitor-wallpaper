@@ -25,8 +25,25 @@
  */
 
 const path = require('node:path');
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
+
+/**
+ * 失效图片处理的几个常量。
+ *
+ * 背景：播放列表来自扫描缓存，而图片可能被外部删掉（资源管理器 / Syncthing 同步删除）。
+ * 只要列表里还留着一条已不存在的路径，切到它时就会「桌面不动一拍 + 弹错误」。
+ * 现在的策略是写前预检、就地摘除、立即补一张（用户拍板：静默跳过，看不到死帧）。
+ */
+const MAX_WRITE_ATTEMPTS = 4;          // 一次切换最多试几张（全读不出来时别死循环）
+const MASS_SKIP = 12;                  // 一次切换里连续摘掉这么多张 → 列表大概率整体过期，触发重扫
+const MASS_RESCAN_COOLDOWN_MS = 60000; // 两次「大面积失效重扫」之间的最小间隔
+
+/** 写失败的错误文案算不算「文件已经没了」 */
+function isMissingError(text) {
+  return typeof text === 'string' && (text.includes('文件不存在') || text.includes('ENOENT'));
+}
 
 const { scanFolder } = require('./scanner');
 const { resolveProfile, findAlbum } = require('./store');
@@ -237,6 +254,15 @@ class MonitorScheduler {
         timer: null,
         lastWrite: null,
         lastError: item.error,
+        /**
+         * 本轮（本次会话）读不出来的图片：文件还在但解码/转码失败，
+         * 常见于 Syncthing 半同步、下载中的文件、损坏文件。
+         * 标记后本次不再尝试它，重扫或重启会重新开一轮（文件可能已经同步好）。
+         */
+        badFiles: new Set(),
+        /** 上一次「跳过了失效图片」的统计，渲染层据此做聚合提示 */
+        lastSkip: null,
+        lastMassRescan: 0,
         writes: 0,
         ticks: 0,          // 累计推进次数 —— 索引会绕回，这个只会单调增长
         rev: 0,            // 文件列表修订号 —— 删除/移动后就地更新时自增
@@ -576,19 +602,39 @@ class MonitorScheduler {
     await this.goTo(ch.id, (ch.index + dir + n) % n, dir, reason);
   }
 
-  /** 写入当前帧到系统壁纸；返回写入结果 */
-  async _write(ch, reason) {
-    if (ch.retired) return null;
-    const entry = ch.files[ch.index];
-    if (!entry) return null;
+  /**
+   * 找出一张**真正可用**的图：文件还在、且不是本次会话已判定读不出的。
+   *
+   * 途中遇到已不存在的条目就地摘除（复用删除链路：索引对齐 / rev++ / 作废扫描缓存 /
+   * 通知渲染层），遇到坏图标进跳过集合 —— 两种情况都记进 skipped 集合，供聚合提示。
+   *
+   * @param {object} ch 频道
+   * @param {{droppedPaths:Set<string>, badPaths:Set<string>}} skipped 计数集合（按路径去重）
+   * @returns {{entry:object|null}}
+   */
+  _seekLiveEntry(ch, skipped) {
+    let guard = ch.files.length + 1;
+    while (guard-- > 0) {
+      const entry = ch.files[ch.index];
+      if (!entry) return { entry: null };
 
-    if (!ch.profile.enabled || !this.store.get().applyToSystem) {
-      ch.lastWrite = { ok: true, method: 'preview-only', skipped: true, at: Date.now() };
-      return ch.lastWrite;
+      if (ch.badFiles.has(entry.path)) {
+        skipped.badPaths.add(entry.path);
+        ch.index = (ch.index + 1) % ch.files.length;
+        continue;
+      }
+      if (fs.existsSync(entry.path)) return { entry };
+
+      // 文件已经没了（外部删除）→ 摘掉它。摘完索引会自动对齐，原位就是下一张
+      skipped.droppedPaths.add(entry.path);
+      this.applyFileMutation(entry.path, null, { skipRewrite: true });
+      if (!ch.files.length) return { entry: null };
     }
+    return { entry: null };
+  }
 
-    const target = this._targetFor(ch);
-    let result;
+  /** 真正落一次写入；抽出来是为了「这张不行就换下一张」时能复用 */
+  async _writeOnce(entry, target) {
     // 登记在途写入：重建要等它结束，避免旧配置的图在切换之后才落到桌面（见 _rebuild）
     const attempt = (async () => {
       try {
@@ -599,12 +645,100 @@ class MonitorScheduler {
     })();
     this.pendingWrites.add(attempt);
     try {
-      result = await attempt;
+      return await attempt;
     } finally {
       this.pendingWrites.delete(attempt);
     }
+  }
 
-    ch.writes += 1;
+  /**
+   * 跳过失效图片之后的收尾：
+   *   1. 目录大概率整体过期（一次切换摘掉一堆）→ 异步重扫拿真实列表，别逐张试到天亮；
+   *   2. 索引变了 → 把播放进度落盘，免得重启后回到那张已删掉的图。
+   */
+  _afterSkip(ch, skipped) {
+    this._remember(ch);
+
+    // 只有「读不出来」时 applyFileMutation 没被调用过，列表本身没变 —— 但卡片状态区
+    // 要显示跳过统计，所以补一次广播（摘除那一路已经由 applyFileMutation 广播过了）
+    if (skipped.badPaths.size && !skipped.droppedPaths.size) {
+      this._emit('channels', { reason: 'skip-bad-files', channels: this.list() });
+    }
+
+    if (skipped.droppedPaths.size >= MASS_SKIP
+      && Date.now() - ch.lastMassRescan > MASS_RESCAN_COOLDOWN_MS) {
+      ch.lastMassRescan = Date.now();
+      console.log(`[scheduler] ${ch.id}: 一次切换里跳过 ${skipped.droppedPaths.size} 张失效图片，触发重扫`);
+      this.rescan(ch.id).catch((err) => console.error('[scheduler] 失效重扫失败:', err.message));
+    }
+  }
+
+  /** 写入当前帧到系统壁纸；返回写入结果 */
+  async _write(ch, reason) {
+    if (ch.retired) return null;
+    if (!ch.files.length) return null;
+
+    const target = this._targetFor(ch);
+    const skipped = { droppedPaths: new Set(), badPaths: new Set() };
+    const previewOnly = !ch.profile.enabled || !this.store.get().applyToSystem;
+
+    let result = null;
+    let entry = null;
+
+    /*
+     * 一次切换最多试 MAX_WRITE_ATTEMPTS 张：
+     *   已删除的 → 摘掉；读出/转码失败的 → 本次跳过（文件可能还在同步，下轮再试）。
+     * 试到能用的为止，桌面上就永远不会停在一张死图上。
+     */
+    for (let i = 0; i < MAX_WRITE_ATTEMPTS; i++) {
+      entry = this._seekLiveEntry(ch, skipped).entry;
+      if (!entry) break;
+
+      if (previewOnly) {
+        result = { ok: true, method: 'preview-only', skipped: true, at: Date.now() };
+        break;
+      }
+
+      result = await this._writeOnce(entry, target);
+      ch.writes += 1;
+      if (result.ok) break;
+
+      const error = result.error || result.method;
+      if (isMissingError(error)) {
+        // 预检之后才被删掉（竞态）→ 同样摘除
+        skipped.droppedPaths.add(entry.path);
+        this.applyFileMutation(entry.path, null, { skipRewrite: true });
+      } else {
+        // 文件还在但读不出来 → 本次会话跳过，不再反复试
+        skipped.badPaths.add(entry.path);
+        ch.badFiles.add(entry.path);
+      }
+      if (!ch.files.length) break;
+      if (ch.files[ch.index] === entry) ch.index = (ch.index + 1) % ch.files.length;
+    }
+
+    const total = skipped.droppedPaths.size + skipped.badPaths.size;
+    if (total) {
+      ch.lastSkip = {
+        dropped: skipped.droppedPaths.size,
+        bad: skipped.badPaths.size,
+        total,
+        at: Date.now(),
+      };
+      this._afterSkip(ch, skipped);
+    } else {
+      ch.lastSkip = null;
+    }
+
+    if (!result) {
+      // 一张都没写成：列表里全是失效条目（或只剩坏图）
+      ch.lastError = total
+        ? `相簿里的图片都不可用（已失效 ${total} 张）`
+        : '没有可写入的图片';
+      ch.lastWrite = { ok: false, method: 'none', error: ch.lastError, at: Date.now(), reason };
+      return ch.lastWrite;
+    }
+
     ch.lastWrite = {
       ...result,
       at: Date.now(),
@@ -641,25 +775,30 @@ class MonitorScheduler {
     const n = ch.files.length;
     ch.index = ((Math.round(index) % n) + n) % n;
     ch.ticks += 1;
-    const entry = ch.files[ch.index];
-    ch.played.add(ch.index);   // 胶片条据此区分「看过的」和「还没到的」
+    ch.played.add(ch.index);
 
     this._remember(ch);
 
     await this._write(ch, reason);
 
+    /*
+     * 写入过程中可能摘掉了失效条目（索引随之对齐），所以这里要**重新取一次**当前帧 ——
+     * 用上面那个 entry 广播的话，渲染层拿到的会是一张已经不存在的路径。
+     */
+    const live = ch.files[ch.index] || null;
     this._emit('tick', {
       id,
       index: ch.index,
-      count: n,
+      count: ch.files.length,
       dir,
       reason,
-      entry: { path: entry.path, name: entry.name, url: entry.url },
+      entry: live ? { path: live.path, name: live.name, url: live.url } : null,
       write: ch.lastWrite,
+      skipped: ch.lastSkip,   // 本次切换跳过了几张失效图片（渲染层做聚合提示）
     });
 
     this._schedule(ch);
-    return entry;
+    return live;
   }
 
   /** 下一张 / 上一张 */
@@ -700,9 +839,11 @@ class MonitorScheduler {
    *
    * @param {string} oldPath 变更前的完整路径
    * @param {string|null} newPath 新路径；null 表示文件已删除
+   * @param {{skipRewrite?:boolean}} [opts] skipRewrite：调用方自己会补写当前帧时设 true，
+   *        避免这里再写一次（两笔写入并发会打架）
    * @returns {{affected:Array<{id:string,count:number,index:number}>, rewritten:string[]}}
    */
-  applyFileMutation(oldPath, newPath = null) {
+  applyFileMutation(oldPath, newPath = null, opts = {}) {
     // 同目录改名 → 就地更新路径；移到别的目录 → 从这条轮播里摘掉
     // （移到别处意味着「这张我不想要了」，留在轮播里只会在下次切换时黑洞一下）
     const sameFolder = Boolean(newPath) && (
@@ -801,7 +942,8 @@ class MonitorScheduler {
       const pending = ch.needsRewrite;
       ch.needsRewrite = false;
       // 当前这张被删了 → 立刻把新的当前帧写上去，别让桌面挂着一张已进回收站的图
-      if (pending) {
+      // （skipRewrite 时由调用方负责补写 —— 播放链路自己会立刻换下一张）
+      if (pending && !opts.skipRewrite) {
         rewritten.push(ch.id);
         this._write(ch, 'file-mutation').catch(() => {});
       }
@@ -875,6 +1017,8 @@ class MonitorScheduler {
       rounds: ch.rounds || 0,
       current: ch.files[ch.index] ? ch.files[ch.index].path : null,
       name: ch.files[ch.index] ? ch.files[ch.index].name : null,
+      /** 上一次切换跳过了几张失效图片（已删除 / 读不出来），渲染层据此显示「已跳过 N 张失效」 */
+      skipped: ch.lastSkip,
       lastWrite: ch.lastWrite,
       lastError: ch.lastError,
     }));
@@ -907,6 +1051,7 @@ class MonitorScheduler {
       writes: ch.writes,
       album: ch.albumName || '',
       albumId: ch.profile.albumId || '',
+      skipped: ch.lastSkip,
       lastWrite: ch.lastWrite,
     }));
   }

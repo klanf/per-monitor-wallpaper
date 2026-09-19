@@ -973,8 +973,24 @@ async function setPreview(id) {
 
 /* ------------------------------------------------------------ 主进程事件 */
 
+/**
+ * 「跳过了 N 张失效图片」的聚合文案。
+ *
+ * 之所以要聚合而不是逐张弹：一次切换可能摘掉一整批（用户删了整个目录），
+ * 逐张弹会在几秒里刷出几十条提示；而且 toast 只有一个槽位，后一条会顶掉前一条。
+ */
+function skipMessage(skipped) {
+  const parts = [];
+  if (skipped.dropped) parts.push(`${skipped.dropped} 张已被删除`);
+  if (skipped.bad) parts.push(`${skipped.bad} 张读不出来`);
+  return `已跳过 ${skipped.total} 张失效图片（${parts.join('，')}）`;
+}
+
 function onTick(payload) {
   if (!payload) return;
+
+  // 本次切换跳过了几张失效图片（可能为 ''）
+  const skippedMsg = payload.skipped && payload.skipped.total ? skipMessage(payload.skipped) : '';
 
   // 不是当前预览的频道：只更新设置面板里的状态文字，不动画面
   if (payload.id !== state.previewId) {
@@ -985,12 +1001,15 @@ function onTick(payload) {
       ch.current = payload.entry ? payload.entry.path : ch.current;
     }
     const write = payload.write;
-    if (write && !write.ok) {
+    if (write && !write.ok && !isMissingWrite(write)) {
       const key = `${payload.id}:${write.error}`;
       if (!state.previewErrors.has(key)) {
         state.previewErrors.add(key);
-        toast(`「${channelName(ch)}」写入失败：${write.error || write.method}`, true);
+        toast(`「${channelName(ch)}」写入失败：${write.error || write.method}`
+          + (skippedMsg ? `（${skippedMsg}）` : ''), true);
       }
+    } else if (skippedMsg) {
+      toast(skippedMsg);
     }
     return;
   }
@@ -1010,8 +1029,13 @@ function onTick(payload) {
     syncInfoToCurrent();
   }
 
-  if (payload.write && !payload.write.ok && !payload.write.skipped) {
-    toast(`系统壁纸写入失败：${payload.write.error || payload.write.method}`, true);
+  // 真正的写入失败：把「跳过了几张失效图片」并进同一条消息（toast 只有一个槽位，
+  // 分两条发的话后者会把前者顶掉，跳过信息就永远看不见了）
+  if (payload.write && !payload.write.ok && !payload.write.skipped && !isMissingWrite(payload.write)) {
+    toast(`系统壁纸写入失败：${payload.write.error || payload.write.method}`
+      + (skippedMsg ? `（${skippedMsg}）` : ''), true);
+  } else if (skippedMsg) {
+    toast(skippedMsg);
   }
 }
 
@@ -1147,6 +1171,13 @@ function cardHtml(ch) {
   status.push(`<span>第 ${ch.count ? ch.index + 1 : 0}/${ch.count}</span>`);
   if (ch.truncated) status.push('<span>已达扫描上限</span>');
   if (missing.length) status.push(`<span class="err" title="${escapeHtml(missing.join('\n'))}">${missing.length} 个目录不可用</span>`);
+  // 失效图片：已被程序自动跳过（从列表摘掉 / 本轮不写），只是让用户知道列表为什么变短了
+  if (ch.skipped && ch.skipped.total) {
+    const parts = [];
+    if (ch.skipped.dropped) parts.push(`${ch.skipped.dropped} 张已被删除`);
+    if (ch.skipped.bad) parts.push(`${ch.skipped.bad} 张读不出来`);
+    status.push(`<span class="warn" title="这些图片已自动跳过并换下一张：${escapeHtml(parts.join('，'))}">已跳过 ${ch.skipped.total} 张失效</span>`);
+  }
   if (ch.lastError) status.push(`<span class="err">${escapeHtml(ch.lastError)}</span>`);
   else if (p.enabled && ch.count) status.push(`<span class="ok">已接管</span>`);
   else if (!p.enabled) status.push('<span>未接管</span>');
@@ -1751,6 +1782,18 @@ async function deleteCurrentImage() {
 // 间隔秒数 → 展示文案：不满一分钟显示秒，否则显示分钟（30/60/300/1800 预设也是这个口径）
 function formatInterval(sec) {
   return sec < 60 ? `${sec} 秒` : `${sec % 60 === 0 ? sec / 60 : (sec / 60).toFixed(1)} 分钟`;
+}
+
+/**
+ * 「文件不存在」类的写入失败要不要弹错误。
+ *
+ * 主进程现在会先探测再写：文件没了就直接跳过并补下一张，根本轮不到这里报错。
+ * 真出现在这里说明是探测之后才被删的极端竞态 —— 属于已被自动处理的情况，
+ * 再弹红色错误只会让人以为坏了，所以静默（卡片状态区仍能查到）。
+ */
+function isMissingWrite(write) {
+  const text = `${write.error || ''} ${write.method || ''}`;
+  return text.includes('文件不存在') || text.includes('ENOENT');
 }
 
 // 高亮与当前间隔一致的预设 chip

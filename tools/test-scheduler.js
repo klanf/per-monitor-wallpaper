@@ -889,6 +889,163 @@ async function main() {
       store.get().albums.length === n1, `${n1} → ${store.get().albums.length}`);
   }
 
+  /* ================= 24. 已删除的图片：跳过 / 摘除 / 立即补一张 ================= */
+  console.log('\n===== 24. 切到已删除的图片：静默跳过、就地摘除、立即补一张 =====');
+  {
+    const dirDel = path.join(tmpDir, 'dirDel');
+    fs.mkdirSync(dirDel);
+    for (const n of ['d-1.bmp', 'd-2.bmp', 'd-3.bmp']) fs.copyFileSync(RED, path.join(dirDel, n));
+
+    const albumDel = { id: 'alb_del24', name: '删除测试', folders: [{ path: dirDel, enabled: true }] };
+    store.set({
+      perMonitor: true,
+      autoPlay: false,
+      applyToSystem: true,
+      applyOnStart: false,
+      albums: [...store.get().albums, albumDel],
+      monitors: { 'MON-A': { albumId: albumDel.id, interval: 5 } },
+    });
+
+    const delWrites = [];
+    const delEvents = [];
+    const sDel = new MonitorScheduler({
+      store,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: FAKE_MONITORS }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async (imagePath) => {
+        delWrites.push(path.basename(imagePath));
+        return { ok: true, method: 'test' };
+      },
+      onEvent: (type, payload) => delEvents.push({ type, payload }),
+    });
+    await sDel.rebuild('test-del');
+    const chDel = sDel.channels.get('MON-A');
+    const revBefore = chDel.rev;
+
+    // 模拟外部删除（资源管理器 / Syncthing）：文件从磁盘上没了，但播放列表还不知道
+    fs.unlinkSync(path.join(dirDel, 'd-2.bmp'));
+    delWrites.length = 0;
+    delEvents.length = 0;
+
+    await sDel.goTo('MON-A', 1, 1, 'timer');   // 正好切到那张已被删掉的图
+
+    check('不去写已删除的那张', !delWrites.includes('d-2.bmp'), `写入序列 ${delWrites.join(',') || '(无)'}`);
+    check('同一拍内直接补上下一张', delWrites[0] === 'd-3.bmp', `实际 ${delWrites[0] || '(无)'}`);
+    check('已删除的条目从列表里摘掉', !chDel.files.some((f) => f.name === 'd-2.bmp'));
+    check('列表数量随之减一', chDel.files.length === 2, `实际 ${chDel.files.length}`);
+    check('列表修订号自增（渲染层据此重取列表）', chDel.rev > revBefore, `${revBefore} → ${chDel.rev}`);
+
+    const tickDel = delEvents.filter((e) => e.type === 'tick').pop();
+    check('tick 广播的是真正写上去的那张图',
+      Boolean(tickDel && tickDel.payload.entry)
+        && path.basename(tickDel.payload.entry.path) === 'd-3.bmp',
+      tickDel && tickDel.payload.entry ? path.basename(tickDel.payload.entry.path) : '(无)');
+    check('tick 带上跳过统计（供聚合提示）',
+      Boolean(tickDel && tickDel.payload.skipped) && tickDel.payload.skipped.dropped === 1,
+      JSON.stringify(tickDel && tickDel.payload.skipped));
+    check('频道状态里留下跳过记录（卡片显示「已跳过 N 张失效」）',
+      Boolean(chDel.lastSkip) && chDel.lastSkip.total === 1, JSON.stringify(chDel.lastSkip));
+    check('成功补写之后错误状态被清掉', chDel.lastError === null, String(chDel.lastError));
+    sDel.stop();
+  }
+
+  /* ================= 25. 读不出来的图片：本轮跳过 / 不摘除 / 不反复重试 ================= */
+  console.log('\n===== 25. 读不出来的图片：本轮跳过、不摘除、不再反复重试 =====');
+  {
+    const dirBad = path.join(tmpDir, 'dirBad');
+    fs.mkdirSync(dirBad);
+    for (const n of ['x-1.bmp', 'x-2.webp', 'x-3.bmp']) fs.copyFileSync(RED, path.join(dirBad, n));
+
+    const albumBad = { id: 'alb_bad25', name: '坏图测试', folders: [{ path: dirBad, enabled: true }] };
+    store.set({
+      albums: [...store.get().albums, albumBad],
+      monitors: { 'MON-A': { albumId: albumBad.id, interval: 5 }, 'MON-B': { albumId: albumB.id, interval: 5 } },
+    });
+
+    const attempts = [];
+    const sBad = new MonitorScheduler({
+      store,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: FAKE_MONITORS }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async (imagePath) => {
+        const name = path.basename(imagePath);
+        attempts.push(name);
+        if (name === 'x-2.webp') {
+          // 半同步 / 损坏文件的典型报错（不是「文件不存在」）
+          return { ok: false, method: 'transcode', error: '无法解码图片（可能损坏或还没同步完成）：x-2.webp' };
+        }
+        return { ok: true, method: 'test' };
+      },
+      onEvent: () => {},
+    });
+    await sBad.rebuild('test-bad');
+    const chBad = sBad.channels.get('MON-A');
+    attempts.length = 0;
+
+    await sBad.goTo('MON-A', 1, 1, 'timer');   // 切到读不出来的那张
+
+    check('坏图不会留在桌面上（换下一张写）', attempts.includes('x-3.bmp'), `尝试序列 ${attempts.join(',') || '(无)'}`);
+    check('坏图仍留在列表里（不摘除，稍后还能重试）', chBad.files.length === 3, `实际 ${chBad.files.length}`);
+    check('坏图被标记，本次会话内不再尝试', chBad.badFiles.size === 1, `标记 ${chBad.badFiles.size} 个`);
+    check('状态区分「读不出来」与「已删除」',
+      Boolean(chBad.lastSkip) && chBad.lastSkip.bad === 1 && chBad.lastSkip.dropped === 0,
+      JSON.stringify(chBad.lastSkip));
+
+    const before = attempts.length;
+    await sBad.goTo('MON-A', 1, 1, 'timer');   // 再切到它一次
+    check('再次经过坏图不会再试写它', !attempts.slice(before).includes('x-2.webp'),
+      `本轮尝试 ${attempts.slice(before).join(',') || '(无)'}`);
+    sBad.stop();
+  }
+
+  /* ================= 26. 大面积失效：一次切换摘掉一批 → 触发重扫 ================= */
+  console.log('\n===== 26. 大面积失效：整批摘掉后触发重扫（不逐张试错） =====');
+  {
+    const dirMass = path.join(tmpDir, 'dirMass');
+    fs.mkdirSync(dirMass);
+    const massNames = [];
+    for (let i = 1; i <= 15; i += 1) {
+      const n = `m-${String(i).padStart(2, '0')}.bmp`;
+      massNames.push(n);
+      fs.copyFileSync(RED, path.join(dirMass, n));
+    }
+
+    const albumMass = { id: 'alb_mass26', name: '大面积失效', folders: [{ path: dirMass, enabled: true }] };
+    store.set({
+      albums: [...store.get().albums, albumMass],
+      monitors: { 'MON-A': { albumId: albumMass.id, interval: 5 }, 'MON-B': { albumId: albumB.id, interval: 5 } },
+    });
+
+    const massWrites = [];
+    const sMass = new MonitorScheduler({
+      store,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: FAKE_MONITORS }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async (imagePath) => {
+        massWrites.push(path.basename(imagePath));
+        return { ok: true, method: 'test' };
+      },
+      onEvent: () => {},
+    });
+    await sMass.rebuild('test-mass');
+
+    const rescanned = [];
+    sMass.rescan = async (id) => { rescanned.push(id); };   // 只验证「有触发」，不真去扫盘
+
+    for (const n of massNames.slice(0, 13)) fs.unlinkSync(path.join(dirMass, n));
+
+    await sMass.goTo('MON-A', 0, 1, 'timer');
+
+    const chMass = sMass.channels.get('MON-A');
+    check('一次切换把整批失效条目摘干净', chMass.files.length === 2, `实际 ${chMass.files.length}`);
+    check('摘掉一批之后仍补上可用的一张', massWrites.length === 1, `写入 ${massWrites.join(',') || '(无)'}`);
+    check('触发重扫拿真实列表', rescanned.includes('MON-A'), JSON.stringify(rescanned));
+    sMass.stop();
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);

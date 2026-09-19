@@ -552,6 +552,7 @@ body.mode-per-monitor .unified-only { display: none; }
 }
 .mc-status .ok { color: #7ee0a8; }
 .mc-status .err { color: #ffb4b4; }
+.mc-status .warn { color: #f0c674; }
 
 .mc-block { display: flex; flex-direction: column; gap: 6px; }
 .mc-block > .field-label { font-size: 11.5px; }
