@@ -93,6 +93,7 @@ const state = {
   played: new Set(),          // 本次会话播放过的序号（胶片条用来标灰）
   quickFolders: [],
   albums: [],                 // 相簿列表（config.albums 的镜像，主进程改了会推过来）
+  lastAutoScanAt: 0,          // 上次定时自动扫描的时刻（0 = 本次会话还没扫过）
 };
 
 /* ------------------------------------------------------------ 胶片条状态 */
@@ -1042,6 +1043,11 @@ function onTick(payload) {
 function applyChannelInfo(info) {
   if (info.channels) state.channels = info.channels;
   if (info.perMonitor !== undefined) state.perMonitor = Boolean(info.perMonitor);
+  // 定时自动扫描完成的时刻（主进程带上来的），设置面板里显示「上次扫描 …」
+  if (info.lastAutoScanAt !== undefined) {
+    state.lastAutoScanAt = Number(info.lastAutoScanAt) || 0;
+    renderAutoScanHint();
+  }
 
   document.body.classList.toggle('mode-per-monitor', state.perMonitor);
   setSegment('cfg-mode', state.perMonitor ? 'per-monitor' : 'unified');
@@ -1784,6 +1790,27 @@ function formatInterval(sec) {
   return sec < 60 ? `${sec} 秒` : `${sec % 60 === 0 ? sec / 60 : (sec / 60).toFixed(1)} 分钟`;
 }
 
+/** 自动扫描间隔（分钟）→ 展示文案：整小时的换算成小时（60 → 「每 1 小时」） */
+function describeScanMinutes(min) {
+  return min % 60 === 0 ? `每 ${min / 60} 小时` : `每 ${min} 分钟`;
+}
+
+/** 设置里「自动扫描相簿」的说明行 —— 关着和开着、扫过和没扫过，说法都不一样 */
+function renderAutoScanHint() {
+  const el = $('cfg-auto-scan-hint');
+  if (!el) return;
+  const min = Number(state.config && state.config.autoScanMinutes) || 0;
+  if (!min) {
+    el.textContent = '关闭后，只有手动「重新扫描」或重启程序才会更新图片列表。';
+    return;
+  }
+  const stamp = state.lastAutoScanAt
+    ? `上次扫描 ${new Date(state.lastAutoScanAt).toLocaleTimeString('zh-CN', { hour12: false })}`
+    : '本次启动后还没扫过';
+  el.textContent = `${describeScanMinutes(min)}重新扫描一次相簿目录：新图接在列表末尾、`
+    + `已删的图自动清掉，当前正在显示的那张和播放顺序都不动。${stamp}。`;
+}
+
 /**
  * 「文件不存在」类的写入失败要不要弹错误。
  *
@@ -1813,6 +1840,8 @@ function applyConfigToUI() {
   $('cfg-duration').value = c.duration;
   $('cfg-duration-out').textContent = `${c.duration} ms`;
   $('cfg-recursive').checked = c.recursive;
+  $('cfg-auto-scan').value = String(c.autoScanMinutes || 0);
+  renderAutoScanHint();
   $('cfg-apply').checked = c.applyToSystem;
   $('cfg-apply-on-start').checked = c.applyOnStart !== false;
   $('cfg-resume-last').checked = c.resumeLast !== false;
@@ -1970,6 +1999,13 @@ function bindSettings() {
   $('cfg-recursive').addEventListener('change', async (e) => {
     await save({ recursive: e.target.checked });
     toast(e.target.checked ? '已开启子目录扫描' : '已关闭子目录扫描');
+  });
+
+  $('cfg-auto-scan').addEventListener('change', async (e) => {
+    const min = Number(e.target.value) || 0;
+    await save({ autoScanMinutes: min });
+    renderAutoScanHint();
+    toast(min ? `已开启自动扫描：${describeScanMinutes(min)}一次` : '已关闭自动扫描');
   });
 
   $('cfg-apply').addEventListener('change', async (e) => {

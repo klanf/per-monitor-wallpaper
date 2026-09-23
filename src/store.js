@@ -32,6 +32,16 @@ const DEFAULTS = {
   albums: [],              // [{ id, name, folders: [{ path, enabled }] }]
   recursive: true,
   interval: 60,            // 秒
+
+  /**
+   * 定时重新扫描相簿目录的间隔（分钟）。0 = 不自动扫描。
+   *
+   * 扫描缓存只在「手动重新扫描 / 目录内容变动」时失效，所以外部往目录里丢新图
+   * （Syncthing 同步、ComfyUI 出图）程序自己是不知道的 —— 这个定时就是补这一段。
+   * 自动扫描**只丢扫描缓存**，不洗牌：新图接在列表末尾、已删的图消失，
+   * 当前正在显示的那张和播放顺序都不动（与手动「重新扫描」的重洗语义区分开）。
+   */
+  autoScanMinutes: 0,
   animation: 'slide',      // slide | fade | zoom
   duration: 520,           // 毫秒
   shuffle: false,
@@ -293,6 +303,7 @@ function normalizeConfig(obj) {
   const out = normalizeBooleans(obj);
   if ('hotkeys' in out) out.hotkeys = normalizeHotkeys(out.hotkeys);
   if ('albums' in out) out.albums = normalizeAlbums(out.albums);
+  if ('autoScanMinutes' in out) out.autoScanMinutes = clampAutoScanMinutes(out.autoScanMinutes);
   return out;
 }
 
@@ -370,6 +381,18 @@ function clampDuration(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return DEFAULTS.duration;
   return Math.min(Math.max(Math.round(n), 0), 5000);
+}
+
+/**
+ * 自动扫描间隔（分钟）：0 = 关闭，最小 1 分钟，上限 24 小时。
+ *
+ * 下限卡在 1 分钟不是随便定的 —— 相簿动辄上万张图，扫一次要走一遍目录树，
+ * 太频繁就变成后台常驻的磁盘压力（用户的图库在 Syncthing 目录里，本来就有同步 IO）。
+ */
+function clampAutoScanMinutes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULTS.autoScanMinutes;
+  return Math.min(Math.max(Math.round(n), 0), 24 * 60);
 }
 
 /**

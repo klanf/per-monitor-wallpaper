@@ -199,6 +199,20 @@
     <label class="check"><input type="checkbox" id="cfg-recursive"><span>包含子文件夹</span></label>
   </div>
 
+  <div class="field">
+    <label class="field-label">自动扫描相簿</label>
+    <select class="select" id="cfg-auto-scan">
+      <option value="0">关闭</option>
+      <option value="5">每 5 分钟</option>
+      <option value="15">每 15 分钟</option>
+      <option value="30">每 30 分钟</option>
+      <option value="60">每 1 小时</option>
+      <option value="180">每 3 小时</option>
+      <option value="720">每 12 小时</option>
+    </select>
+    <div class="field-hint" id="cfg-auto-scan-hint"></div>
+  </div>
+
   <div class="field unified-only">
     <label class="field-label">写入目标显示器</label>
     <select class="select" id="cfg-monitor">

@@ -1046,6 +1046,89 @@ async function main() {
     sMass.stop();
   }
 
+  /* ================= 27. 定时自动扫描 ================= */
+  console.log('\n===== 27. 定时自动扫描相簿 =====');
+  {
+    const dirScan = path.join(tmpDir, 'dirScan');
+    fs.mkdirSync(dirScan);
+    for (const n of ['s-1.bmp', 's-2.bmp']) fs.copyFileSync(RED, path.join(dirScan, n));
+
+    const albumScan = { id: 'alb_scan27', name: '自动扫描测试', folders: [{ path: dirScan, enabled: true }] };
+    store.set({
+      albums: [...store.get().albums, albumScan],
+      monitors: { 'MON-A': { albumId: albumScan.id, interval: 5 } },
+      autoScanMinutes: 0,
+    });
+
+    const scanEvents = [];
+    const sScan = new MonitorScheduler({
+      store,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: FAKE_MONITORS }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async () => ({ ok: true, method: 'test' }),
+      onEvent: (type, payload) => scanEvents.push({ type, payload }),
+    });
+    await sScan.rebuild('test-scan');
+
+    check('默认（0 分钟）不装定时器', sScan.scanTimer === null);
+    check('默认配置就是关闭定时扫描', DEFAULTS.autoScanMinutes === 0, String(DEFAULTS.autoScanMinutes));
+
+    // ---- 配置收紧：非法值与越界值都要落回可预期的值 ----
+    store.set({ autoScanMinutes: 0.4 });
+    check('不足 1 分钟被收紧为关闭', store.get().autoScanMinutes === 0, String(store.get().autoScanMinutes));
+    store.set({ autoScanMinutes: 9999 });
+    check('超过一天被收紧为 1440 分钟', store.get().autoScanMinutes === 1440, String(store.get().autoScanMinutes));
+    store.set({ autoScanMinutes: 'abc' });
+    check('非数字落回默认值 0', store.get().autoScanMinutes === 0, String(store.get().autoScanMinutes));
+
+    // ---- 开启后定时器装上，改配置立即重新计时 ----
+    store.set({ autoScanMinutes: 30 });
+    await sScan.rebuild('config');
+    check('开启后装上了定时器', sScan.scanTimer !== null);
+
+    // ---- 核心行为：扫描到新图、清掉已删的图、当前这张不动 ----
+    const chScan = sScan.channels.get('MON-A');
+    await sScan.goTo('MON-A', 1, 1, 'goto');        // 停在第 2 张（s-2.bmp）
+    const beforePaths = chScan.files.map((f) => f.name);
+    const currentName = chScan.files[chScan.index].name;
+
+    // 外部变动：删掉一张、新增一张（Syncthing / ComfyUI 的日常）
+    fs.unlinkSync(path.join(dirScan, 's-1.bmp'));
+    fs.copyFileSync(GREEN, path.join(dirScan, 's-3.bmp'));
+    scanEvents.length = 0;
+
+    await sScan.autoScan();
+
+    const chAfter = sScan.channels.get('MON-A');
+    const afterPaths = chAfter.files.map((f) => f.name);
+    check('自动扫描发现了新加的图', afterPaths.includes('s-3.bmp'), afterPaths.join(','));
+    check('已删的图从列表里消失', !afterPaths.includes('s-1.bmp'), afterPaths.join(','));
+    check('当前正在显示的那张没变（画面不跳）',
+      chAfter.files[chAfter.index] && chAfter.files[chAfter.index].name === currentName,
+      `${currentName} → ${chAfter.files[chAfter.index] && chAfter.files[chAfter.index].name}`);
+    check('留在列表里的旧图相对顺序不变（不洗牌）',
+      beforePaths.filter((n) => afterPaths.includes(n)).join(',')
+        === afterPaths.filter((n) => beforePaths.includes(n)).join(','),
+      `${beforePaths.join(',')} → ${afterPaths.join(',')}`);
+    check('新图接在列表末尾而不是插队', afterPaths[afterPaths.length - 1] === 's-3.bmp', afterPaths.join(','));
+    check('记录了上次扫描的时刻', sScan.lastAutoScanAt > 0, String(sScan.lastAutoScanAt));
+    check('扫描完会广播给渲染层（设置里显示「上次扫描 …」）',
+      scanEvents.some((e) => e.type === 'channels' && e.payload.reason === 'auto-scan'));
+
+    // ---- 定时器真的会开火（绕开 1 分钟下限，直接给个 1.2 秒的间隔）----
+    store.data.autoScanMinutes = 0.02;
+    sScan._armAutoScan();
+    const firedBefore = sScan.lastAutoScanAt;
+    await new Promise((r) => setTimeout(r, 1600));
+    check('定时器到点自动触发扫描', sScan.lastAutoScanAt > firedBefore,
+      `${firedBefore} → ${sScan.lastAutoScanAt}`);
+
+    // ---- stop() 之后不再触发 ----
+    sScan.stop();
+    check('stop() 之后定时器被清掉', sScan.scanTimer === null);
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);

@@ -951,6 +951,7 @@ function channelBroadcast(payload = {}) {
     ...payload,
     perMonitor: Boolean(cfg.perMonitor),
     applyToSystem: Boolean(cfg.applyToSystem),
+    lastAutoScanAt: scheduler.lastAutoScanAt || 0,
   };
 }
 
@@ -1062,6 +1063,8 @@ function registerIpc() {
       applyToSystem: Boolean(store.get().applyToSystem),
       monitors: monitorInfo.monitors,
       monitorsError: monitorInfo.error || scheduler.lastEnumError,
+      // 定时自动扫描的「上次扫描时刻」——渲染层在设置里显示（0 = 本次会话还没扫过）
+      lastAutoScanAt: scheduler.lastAutoScanAt || 0,
       globalWallpaper: win32.getCurrentWallpaper(),
       windowMonitorId: (() => {
         const hwnd = currentHwnd();

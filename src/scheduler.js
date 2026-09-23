@@ -127,6 +127,10 @@ class MonitorScheduler {
     this.buildChain = Promise.resolve();
     this.tookOver = false;
     this.lastEnumError = null;
+    /** 定时自动扫描的定时器（见 _armAutoScan）；关闭时为 null */
+    this.scanTimer = null;
+    /** 上次自动扫描的时刻（时间戳，0 = 本次会话还没扫过）；渲染层据此显示「上次扫描 …」 */
+    this.lastAutoScanAt = 0;
   }
 
   _emit(type, payload) {
@@ -282,7 +286,79 @@ class MonitorScheduler {
 
     for (const ch of this.channels.values()) this._schedule(ch);
 
+    // 无论从哪条路径进的重建（启动 / 改配置 / 插拔显示器 / 扫描完），定时扫描都按最新配置重新计时
+    this._armAutoScan();
+
     this._emit('channels', { reason, channels: this.list() });
+  }
+
+  /**
+   * 按配置重新武装「定时自动扫描」定时器。
+   *
+   * 挂在 _rebuild 末尾而不是各自调用点 —— 改配置、切模式、插拔显示器、手动重扫
+   * 最后都会落到 rebuild，于是不管哪条路径改的间隔都能立刻生效，
+   * 不用每个调用点都记得去刷一次定时器（漏一处的代价是「改了间隔却按旧间隔扫」）。
+   */
+  _armAutoScan() {
+    if (this.scanTimer) {
+      clearTimeout(this.scanTimer);
+      this.scanTimer = null;
+    }
+    const minutes = Number(this.store.get().autoScanMinutes) || 0;
+    if (minutes <= 0) return;
+
+    this.scanTimer = setTimeout(() => {
+      this.scanTimer = null;
+      this.autoScan().catch((err) => console.error('[scheduler] 自动扫描失败:', err && err.message));
+    }, Math.round(minutes * 60000));
+
+    /*
+     * unref：这个定时器不该把进程钉住。
+     * 单测里没调 stop() 也能干净收尾；Electron 主进程的存活本来就靠窗口 / 托盘，
+     * 不靠这个定时器 —— 而定时器到点照旧会开火（只要进程还活着）。
+     */
+    if (typeof this.scanTimer.unref === 'function') this.scanTimer.unref();
+  }
+
+  /**
+   * 自动扫描：丢掉扫描缓存 + 重建，**不洗牌**。
+   *
+   * 与手动「重新扫描」唯一的差别就在这一句 orders 不去动：
+   *   手动重扫 = 用户明确要「重来一遍」，连播放顺序一起洗（rescan 的既定语义）；
+   *   自动扫描 = 后台静默发生，把正在看的顺序搅乱只会让人莫名其妙。
+   * 只清缓存的效果是：新丢进目录的图接在列表末尾（_orderFor 的既定行为）、
+   * 已删的图自然消失、当前这张靠 progress 按路径找回 —— 画面和顺序都不动。
+   */
+  async autoScan() {
+    /*
+     * 先记下每路「当前正在显示的是哪张」——记**路径**而不是序号。
+     *
+     * progress 里存的是序号，而列表前面少了一张图时序号会整体前移：
+     * 播到第 2 张、第 1 张被删 → 序号 1 现在指的是原来的第 3 张，画面凭空跳一张。
+     * （实测就是这个现象：s-1 被删后，当前帧从 s-2 跳成了 s-3。）
+     * 所以扫描完要按路径把当前帧找回去 —— 后台静默发生的事，画面不该有动静。
+     */
+    const before = new Map();
+    for (const [id, ch] of this.channels) {
+      const entry = ch.files[ch.index];
+      if (entry) before.set(id, entry.path);
+    }
+
+    // 记在扫描前：扫描本身只有几十毫秒，而这样推送出去的时间就是准的
+    this.lastAutoScanAt = Date.now();
+    this.scanCache.clear();
+    await this.rebuild('auto-scan');
+
+    for (const [id, wanted] of before) {
+      const ch = this.channels.get(id);
+      if (!ch || !ch.files.length) continue;
+      const at = ch.files.findIndex((f) => f.path === wanted);
+      // 当前这张自己被删了才真的换一张（那时也别挑，停在原位等价的下一张）
+      if (at >= 0 && at !== ch.index) {
+        ch.index = at;
+        this._remember(ch);
+      }
+    }
   }
 
   /**
@@ -977,6 +1053,10 @@ class MonitorScheduler {
 
   stop() {
     for (const ch of this.channels.values()) clearTimeout(ch.timer);
+    if (this.scanTimer) {
+      clearTimeout(this.scanTimer);
+      this.scanTimer = null;
+    }
     this.channels.clear();
     // 退出前把最后那张的位置落盘 —— 否则「刚换完图就关程序」会丢掉这一步
     if (this.playback) this.playback.flush();
