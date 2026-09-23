@@ -196,6 +196,24 @@ function toggleWindow() {
   else showWindow();
 }
 
+/**
+ * 重新启动本程序（托盘菜单 / 窗口菜单共用）。
+ *
+ * 改了主进程代码之后最省事的一步就是重启 —— 以前得「退出 → 再双击 VBS」两步，
+ * 从托盘退出后桌面还停在最后一张，得手动找回去。
+ *
+ * 两个细节：
+ *   ① `relaunch` 是「当前实例退出时再拉起新进程」，不会和单实例锁抢 —— 所以不用自己 sleep；
+ *   ② 用 `app.quit()` 而不是 `app.exit(0)`：后者不发 will-quit，playback 就不会 flush，
+ *      「记住上次播放位置」这一步会丢。quitting 置 true 是让「关窗口=藏托盘」别把退出流程拦下来。
+ */
+function restartApp() {
+  quitting = true;
+  // 带上原来的启动参数（比如 --hidden），重启后行为和手动重开一致
+  app.relaunch({ args: process.argv.slice(1) });
+  app.quit();
+}
+
 /* ------------------------------------------------------------------ 菜单 */
 
 function buildMenu() {
@@ -215,6 +233,8 @@ function buildMenu() {
         { label: '打开缩略图缓存目录', click: () => thumbnails.stats().then((s) => shell.openPath(s.dir)) },
         { type: 'separator' },
         { label: '隐藏到托盘', click: () => mainWindow && mainWindow.hide() },
+        { type: 'separator' },
+        { label: '重新启动', click: () => restartApp() },
         { role: 'quit', label: '退出' },
       ],
     },
@@ -1691,6 +1711,7 @@ function installTray() {
       send('menu:action', 'toggle-settings');
     },
     openConfigDir: () => shell.openPath(app.getPath('userData')),
+    restart: () => restartApp(),
     quit: () => { quitting = true; app.quit(); },
     onLaunchAtLoginChanged: (result) => {
       store.set({ launchAtLogin: Boolean(result.launchAtLogin) });

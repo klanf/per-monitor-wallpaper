@@ -175,6 +175,11 @@ function buildMenuTemplate() {
 
   template.push({ label: '打开配置目录', click: () => actions.openConfigDir() });
   template.push({ type: 'separator' });
+  template.push({
+    label: '重新启动',
+    // 改了主进程代码后不用「退出 → 再双击 VBS」两步了；启动参数照旧（比如 --hidden）
+    click: () => { if (actions.restart) actions.restart(); else actions.quit(); },
+  });
   template.push({ label: `关于 ${app.getName() || '壁纸切换器'} v${app.getVersion()}`, enabled: false });
   template.push({ label: '退出', click: () => actions.quit() });
 
@@ -252,6 +257,7 @@ function updateTooltip(channels) {
  * @param {() => void} handlers.toggleWindow
  * @param {() => void} handlers.openSettings
  * @param {() => void} handlers.openConfigDir
+ * @param {() => void} [handlers.restart] 重新启动（缺省时「重新启动」退化为退出）
  * @param {() => void} handlers.quit
  * @param {(result:object) => void} [handlers.onLaunchAtLoginChanged]
  */
