@@ -1079,6 +1079,57 @@ electron-wallpaper = "...\electron-wallpaper\node_modules\electron\dist\electron
 
 ---
 
+## 第二十二轮续：设置面板分类标签页 + 托盘「重新启动」
+
+### 为什么要改
+
+设置面板塞了 **21 个字段块 / 二十来个分组**，一整条长列从头滚到尾 —— 找一个开关（比如
+「开机自动启动」）要滚好几屏，且没有锚点可以跳。用户反馈「抽屉东西太多了，太杂乱」。
+
+### 方案选择（用户拍板）
+
+| 选项 | 结论 |
+|---|---|
+| 结构：分类标签页 / 手风琴折叠 / 搜索过滤 / 分组标题+锚点 | **分类标签页** —— 一次只显示一组，不用反复展开收起，也不需要用户先想好关键词 |
+| 状态：记住上次那一页 / 每次都从第一页开始 | **记住上次那一页** —— 用户调设置往往连着好几项都在同一类里 |
+
+### 设计决定
+
+| 决定 | 理由 |
+|---|---|
+| **四类：轮播 / 外观 / 操作 / 系统** | 按「改它是为了什么」分，不是按字段类型分；<br>用户 90% 的动线落在「轮播」（选相簿、调间隔） |
+| **整页 `hidden`，不是滚动定位** | 隐藏的控件不该被 Tab 键走到；只用 CSS 藏起来的话键盘还能聚焦进去 |
+| **标签栏 + 底栏不跟着内容滚** | 原来 `.settings` 整块滚动，滚到底就看不见分类了；<br>改成内容区 `.settings-body` 自己滚（`min-height:0` 不能少，<br>否则 flex 子项不肯缩到容器高度以内，滚动条出不来） |
+| **每屏模式下统一项照旧隐藏** | 过渡动画 / 填充这些在显示器卡片「更多设置」里逐屏设，<br>标签页不额外画一份 —— 模式规则（`unified-only` / `per-monitor-only`）优先级不变 |
+| **切页不重建频道** | `config:set` 走到 `applyConfigChange` 会 `scheduler.rebuild()`；<br>为纯界面状态重扫一遍相簿、重排定时器是白干活。<br>新增 `UI_ONLY_KEYS = ['settingsTab']`，**patch 全部由这些键组成时只写盘不重建** |
+| **值不认识就退回第一页** | 手改 config.json / 老版本残留值不该把面板点成空白；`clampSettingsTab` 兜底 |
+| **`settingsTab` 不进 `PROFILE_KEYS`** | 它是全局界面状态，不该被每屏覆盖表继承 |
+
+### 改动
+
+- `src/store.js`：`SETTINGS_TABS = ['play','look','action','system']`、`DEFAULTS.settingsTab`、
+  `clampSettingsTab()` + `normalizeConfig` 收紧
+- `src/main.js`：`UI_ONLY_KEYS` 短路；托盘与窗口「文件」菜单加「重新启动」（`restartApp()`：
+  `app.relaunch({args})` + `app.quit()`，保留 `--hidden` 等参数并走完整退出流程）
+- `src/tray.js`：菜单加「重新启动」，拿不到 `restart` 时降级为「退出」
+- `src/renderer/index.html`：21 个字段块重排进四个 `.settings-pane`；新增标签栏与 `.settings-body`
+- `src/renderer/style.css`：标签栏样式、`.settings-body` 滚动区、`.settings-pane[hidden]`
+- `src/renderer/app.js`：`selectSettingsTab()` / `persistSettingsTab()`、标签点击绑定、
+  `applyConfigToUI` 恢复上次那一页、「快捷文件夹」跳转先翻到「操作」页再滚
+
+### 验证
+
+| 层次 | 结果 |
+|---|---|
+| 单元测试 | **153/153**（新增 §28 共 10 条：默认值、id 顺序、四个 id 都能存、<br>拼错 / 空串 / null / 数字一律退回第一页、落盘再读仍是上次那一页、改完再读一致） |
+| 静态接线检查 | **37/37**（`tools/tmp/check-settings-tabs.js`，一次性）：标签↔内容页一一对应、<br>21 个块无遗漏、每页非空、代表项归属、**app.js 里 97 个 `$('id')` 全部还在 HTML 中**、<br>无重复 id、CSS 规则齐全、主进程 UI_ONLY 短路在位 |
+| ⚠️ 真机 CDP | **未做** —— 本次会话 Electron 起不来（连最小 app 都秒退，与项目代码无关），<br>标签页的实际观感与滚动手感待用户实测 |
+
+> 静态检查当场抓到一个真 bug：`.settings-body` 只有 class 没有 id，`els.settingsBody` 取到 `null`
+> （切页滚回顶部的那一行会静默失效）—— 已补 `id="settings-body"`。
+
+---
+
 ## 第二十二轮：定时自动扫描相簿（间隔可调）
 
 ### 为什么要它

@@ -27,6 +27,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+/**
+ * 设置面板的分类页 id —— 顺序即标签栏的显示顺序。
+ *
+ * 放在 store 里而不是 renderer 里，是为了让写盘前能收紧这个值：
+ * 用户手改 config.json 或老版本的残留值（比如拼错的 'playback'）不该把面板点成空白。
+ */
+const SETTINGS_TABS = ['play', 'look', 'action', 'system'];
+
 const DEFAULTS = {
   albumId: '',             // 频道绑定的相簿 id；空 = 没绑定（无图可播）
   albums: [],              // [{ id, name, folders: [{ path, enabled }] }]
@@ -42,6 +50,14 @@ const DEFAULTS = {
    * 当前正在显示的那张和播放顺序都不动（与手动「重新扫描」的重洗语义区分开）。
    */
   autoScanMinutes: 0,
+
+  /**
+   * 设置面板停在哪个分类页（见 SETTINGS_TABS）。
+   *
+   * 设置面板有几十个字段，以前是一整条长列，找个开关要滚很久。改成分类标签页后
+   * 默认应该落回用户上次看的那一页 —— 否则每次打开都要重新点一遍。
+   */
+  settingsTab: 'play',
   animation: 'slide',      // slide | fade | zoom
   duration: 520,           // 毫秒
   shuffle: false,
@@ -304,6 +320,7 @@ function normalizeConfig(obj) {
   if ('hotkeys' in out) out.hotkeys = normalizeHotkeys(out.hotkeys);
   if ('albums' in out) out.albums = normalizeAlbums(out.albums);
   if ('autoScanMinutes' in out) out.autoScanMinutes = clampAutoScanMinutes(out.autoScanMinutes);
+  if ('settingsTab' in out) out.settingsTab = clampSettingsTab(out.settingsTab);
   return out;
 }
 
@@ -393,6 +410,11 @@ function clampAutoScanMinutes(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return DEFAULTS.autoScanMinutes;
   return Math.min(Math.max(Math.round(n), 0), 24 * 60);
+}
+
+/** 设置面板分类页：不认识的 id 一律退回第一页，保证面板不会变成一片空白 */
+function clampSettingsTab(value) {
+  return SETTINGS_TABS.includes(value) ? value : DEFAULTS.settingsTab;
 }
 
 /**
@@ -502,6 +524,7 @@ class Store {
 module.exports = {
   Store,
   DEFAULTS,
+  SETTINGS_TABS,
   PROFILE_KEYS,
   deepMerge,
   resolveProfile,

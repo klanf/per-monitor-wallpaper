@@ -119,265 +119,284 @@
     </button>
   </div>
 
-  <div class="field">
-    <label class="field-label">轮播模式</label>
-    <div class="seg" id="cfg-mode">
-      <button data-value="unified" class="seg-item">统一配置</button>
-      <button data-value="per-monitor" class="seg-item">每屏独立</button>
+  <!-- 设置项太多（二十来个分组），一条长列滚半天找不到开关 —— 按分类切成标签页，
+       上次停在哪页记在 config.settingsTab 里，下次打开直接落回去 -->
+  <div class="settings-tabs" id="settings-tabs" role="tablist" aria-label="设置分类">
+    <button type="button" class="settings-tab" data-tab="play" role="tab">轮播</button>
+    <button type="button" class="settings-tab" data-tab="look" role="tab">外观</button>
+    <button type="button" class="settings-tab" data-tab="action" role="tab">操作</button>
+    <button type="button" class="settings-tab" data-tab="system" role="tab">系统</button>
+  </div>
+
+  <div class="settings-body" id="settings-body">
+    <div class="settings-pane" data-pane="play">
+      <div class="field">
+        <label class="field-label">轮播模式</label>
+        <div class="seg" id="cfg-mode">
+          <button data-value="unified" class="seg-item">统一配置</button>
+          <button data-value="per-monitor" class="seg-item">每屏独立</button>
+        </div>
+        <div class="field-hint" id="mode-hint">统一配置：所有显示器共用一套目录与节奏。</div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">相簿</label>
+        <div class="field-hint" id="album-bind-hint">每块屏轮播哪个相簿，在下面「显示器」的卡片上选；管理相簿请点顶栏的「相簿」。</div>
+      </div>
+
+      <!-- 全局设置放在每屏卡片之前：卡片很长，压在它下面的全局项会被整个挡住 -->
+      <div class="field">
+        <label class="field-label">自动扫描相簿</label>
+        <select class="select" id="cfg-auto-scan">
+          <option value="0">关闭</option>
+          <option value="5">每 5 分钟</option>
+          <option value="15">每 15 分钟</option>
+          <option value="30">每 30 分钟</option>
+          <option value="60">每 1 小时</option>
+          <option value="180">每 3 小时</option>
+          <option value="720">每 12 小时</option>
+        </select>
+        <div class="field-hint" id="cfg-auto-scan-hint"></div>
+      </div>
+
+      <!-- 每屏模式：每台显示器一张卡片 -->
+      <div class="field per-monitor-only">
+        <label class="field-label">显示器</label>
+        <div class="monitor-list" id="monitor-cards"></div>
+        <div class="field-hint" id="monitor-hint">点卡片右上角的眼睛图标，可把窗口预览切到那块屏。</div>
+      </div>
+
+      <!-- 统一模式的字段 -->
+      <div class="field unified-only">
+        <label class="field-label">相簿</label>
+        <select class="select" id="cfg-album"></select>
+        <div class="field-hint" id="cfg-album-hint">选中的相簿决定统一模式播哪些图；新建相簿、加减目录请点顶栏的「相簿」。</div>
+      </div>
+
+      <div class="field unified-only">
+        <label class="field-label">轮播间隔</label>
+        <div class="field-row">
+          <input type="range" id="cfg-interval" min="3" max="3600" step="1">
+          <output class="field-value" id="cfg-interval-out">60 秒</output>
+        </div>
+        <div class="preset-row" id="cfg-interval-presets">
+          <button type="button" class="preset-chip" data-sec="30">30 秒</button>
+          <button type="button" class="preset-chip" data-sec="60">1 分钟</button>
+          <button type="button" class="preset-chip" data-sec="300">5 分钟</button>
+          <button type="button" class="preset-chip" data-sec="1800">30 分钟</button>
+        </div>
+      </div>
+
+      <div class="field unified-only">
+        <label class="field-label">播放顺序</label>
+        <div class="seg" id="cfg-shuffle">
+          <button data-value="order" class="seg-item">按名称顺序</button>
+          <button data-value="random" class="seg-item">随机不重复</button>
+        </div>
+      </div>
+
+      <div class="field unified-only">
+        <label class="field-label">扫描</label>
+        <label class="check"><input type="checkbox" id="cfg-recursive"><span>包含子文件夹</span></label>
+      </div>
+
+      <div class="field unified-only">
+        <label class="field-label">写入目标显示器</label>
+        <select class="select" id="cfg-monitor">
+          <option value="all">全部显示器</option>
+          <option value="window">程序窗口所在的显示器</option>
+          <option value="primary">主显示器</option>
+        </select>
+        <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。</div>
+      </div>
     </div>
-    <div class="field-hint" id="mode-hint">统一配置：所有显示器共用一套目录与节奏。</div>
-  </div>
 
-  <div class="field">
-    <label class="field-label">相簿</label>
-    <div class="field-hint" id="album-bind-hint">每块屏轮播哪个相簿，在下面「显示器」的卡片上选；管理相簿请点顶栏的「相簿」。</div>
-  </div>
+    <div class="settings-pane" data-pane="look" hidden>
+      <div class="field unified-only">
+        <label class="field-label">过渡动画</label>
+        <div class="seg" id="cfg-animation">
+          <button data-value="slide" class="seg-item">滑动</button>
+          <button data-value="fade" class="seg-item">淡入</button>
+          <button data-value="zoom" class="seg-item">缩放</button>
+        </div>
+      </div>
 
-  <!-- 全局设置放在每屏卡片之前：卡片很长，压在它下面的全局项会被整个挡住 -->
-  <div class="field">
-    <label class="field-label">自动扫描相簿</label>
-    <select class="select" id="cfg-auto-scan">
-      <option value="0">关闭</option>
-      <option value="5">每 5 分钟</option>
-      <option value="15">每 15 分钟</option>
-      <option value="30">每 30 分钟</option>
-      <option value="60">每 1 小时</option>
-      <option value="180">每 3 小时</option>
-      <option value="720">每 12 小时</option>
-    </select>
-    <div class="field-hint" id="cfg-auto-scan-hint"></div>
-  </div>
+      <div class="field unified-only">
+        <label class="field-label">动画时长</label>
+        <div class="field-row">
+          <input type="range" id="cfg-duration" min="120" max="1500" step="20">
+          <output class="field-value" id="cfg-duration-out">520 ms</output>
+        </div>
+      </div>
 
-  <!-- 每屏模式：每台显示器一张卡片 -->
-  <div class="field per-monitor-only">
-    <label class="field-label">显示器</label>
-    <div class="monitor-list" id="monitor-cards"></div>
-    <div class="field-hint" id="monitor-hint">点卡片右上角的眼睛图标，可把窗口预览切到那块屏。</div>
-  </div>
+      <div class="field unified-only">
+        <label class="field-label">图片填充方式</label>
+        <div class="seg" id="cfg-fit">
+          <button data-value="cover" class="seg-item">铺满裁切</button>
+          <button data-value="contain" class="seg-item">完整显示</button>
+        </div>
+      </div>
 
-  <!-- 统一模式的字段 -->
-  <div class="field unified-only">
-    <label class="field-label">相簿</label>
-    <select class="select" id="cfg-album"></select>
-    <div class="field-hint" id="cfg-album-hint">选中的相簿决定统一模式播哪些图；新建相簿、加减目录请点顶栏的「相簿」。</div>
-  </div>
+      <!-- ------------------------------------------------ 工具栏自动隐藏 -->
+      <div class="field">
+        <label class="field-label">工具栏自动隐藏</label>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 auto">无动作后</span>
+          <input type="range" id="cfg-auto-hide" min="0" max="20000" step="200">
+          <output class="field-value" id="cfg-auto-hide-out">2.4 秒</output>
+        </div>
+        <div class="field-hint">顶栏和胶片条在这段时间内没有鼠标移动或触摸之后淡出，一动就回来。拖到最左边（0）表示一直显示。设置面板或图片信息面板开着时不会隐藏。</div>
+      </div>
 
-  <div class="field unified-only">
-    <label class="field-label">轮播间隔</label>
-    <div class="field-row">
-      <input type="range" id="cfg-interval" min="3" max="3600" step="1">
-      <output class="field-value" id="cfg-interval-out">60 秒</output>
+      <!-- ---------------------------------------------------------- 胶片条 -->
+      <div class="field">
+        <label class="field-label">缩略图胶片条</label>
+        <label class="check"><input type="checkbox" id="cfg-filmstrip"><span>在底部显示缩略图条</span></label>
+        <label class="check"><input type="checkbox" id="cfg-filmstrip-center"><span>切换后自动回到当前这张</span></label>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 auto">当前左右各显示</span>
+          <input type="range" id="cfg-filmstrip-range" min="8" max="200" step="1">
+          <output class="field-value" id="cfg-filmstrip-range-out">40 张</output>
+        </div>
+        <div class="field-hint">只渲染这个窗口内的缩略图 —— 两万张的目录不会因为胶片条卡住。</div>
+      </div>
     </div>
-    <div class="preset-row" id="cfg-interval-presets">
-      <button type="button" class="preset-chip" data-sec="30">30 秒</button>
-      <button type="button" class="preset-chip" data-sec="60">1 分钟</button>
-      <button type="button" class="preset-chip" data-sec="300">5 分钟</button>
-      <button type="button" class="preset-chip" data-sec="1800">30 分钟</button>
+
+    <div class="settings-pane" data-pane="action" hidden>
+      <!-- ---------------------------------------------------------- 删除 -->
+      <div class="field">
+        <label class="field-label">删除</label>
+
+        <!-- 参考 Windows 设置里的行式开关：图标 + 标题 + 说明 + 开关 -->
+        <label class="check rich" for="cfg-confirm-delete">
+          <input type="checkbox" id="cfg-confirm-delete">
+          <span class="rich-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 7h16"></path>
+              <path d="M9.5 7V5.6c0-.6.4-1 1-1h3c.6 0 1 .4 1 1V7"></path>
+              <path d="M6.4 7l.8 11.4c.05.9.8 1.6 1.7 1.6h6.2c.9 0 1.65-.7 1.7-1.6L17.6 7"></path>
+              <path d="M10.4 10.6v5.6M13.6 10.6v5.6"></path>
+            </svg>
+          </span>
+          <span class="rich-text">
+            <span class="rich-title">请求删除照片的权限</span>
+            <span class="rich-hint">删除项目或文件夹时显示确认对话框</span>
+          </span>
+        </label>
+
+        <div class="field-row">
+          <button class="btn sm danger" id="btn-del-current">删除当前这张到回收站</button>
+        </div>
+        <div class="field-hint">关掉开关后，右键菜单、胶片条垃圾桶、托盘和热键的删除都会直接移入回收站。</div>
+
+        <!-- 桌面右键菜单：注册到 HKCU，卸载就是删掉那棵子树。两项分开开关，可以只装一个 -->
+        <label class="check rich" for="cfg-desktop-menu-next">
+          <input type="checkbox" id="cfg-desktop-menu-next">
+          <span class="rich-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4.6 10a7.6 7.6 0 0 1 12.8-4.2L20 8"></path>
+              <path d="M20 4.4V8h-3.6"></path>
+              <path d="M19.4 14a7.6 7.6 0 0 1-12.8 4.2L4 16"></path>
+              <path d="M4 19.6V16h3.6"></path>
+            </svg>
+          </span>
+          <span class="rich-text">
+            <span class="rich-title">切换到下一张壁纸</span>
+            <span class="rich-hint">桌面右键——把光标那块屏的壁纸往后拨一张</span>
+          </span>
+        </label>
+        <label class="check rich" for="cfg-desktop-menu-delete">
+          <input type="checkbox" id="cfg-desktop-menu-delete">
+          <span class="rich-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 7h16"></path>
+              <path d="M10 4h4"></path>
+              <path d="M6.5 7l.9 12.2h9.2L17.5 7"></path>
+              <path d="M10.2 11v5M13.8 11v5"></path>
+            </svg>
+          </span>
+          <span class="rich-text">
+            <span class="rich-title">删除当前显示器的壁纸</span>
+            <span class="rich-hint">桌面右键——把光标那块屏正在放的那张移入回收站</span>
+          </span>
+        </label>
+        <div class="field-hint" id="desktop-menu-hint">
+          两项都按光标所在的那块屏生效：光标停在哪块屏，就动哪块屏的壁纸，别的屏不碰。
+          写的是当前用户（HKCU），不需要管理员权限。Windows 11 里这两项在桌面右键的「显示更多选项」下面。
+        </div>
+      </div>
+
+      <!-- ---------------------------------------------------------- 全局热键 -->
+      <div class="field">
+        <label class="field-label">全局热键</label>
+        <div class="hotkey-list" id="hotkey-list"></div>
+        <div class="field-row">
+          <button class="btn sm" id="btn-hotkey-clear">清空全部</button>
+        </div>
+        <div class="field-hint">
+          窗口藏在托盘里也生效，作用于「当前预览的那块屏」。想换一块屏操作，就按「切到下一台显示器」
+          —— 后面几个热键的目标会跟着它走。必须带修饰键（Ctrl / Alt / Shift / Win），
+          不带修饰键会把全系统的按键抢走。
+        </div>
+        <div class="field-hint mono" id="hotkey-hint"></div>
+      </div>
+
+      <!-- ---------------------------------------------------------- 快捷文件夹 -->
+      <div class="field" id="quick-section">
+        <label class="field-label">右键菜单 · 快捷文件夹</label>
+        <div class="quick-list" id="quick-list"></div>
+        <div class="field-row">
+          <button class="btn sm" id="btn-quick-add">添加文件夹…</button>
+          <button class="btn sm" id="btn-quick-add-current">添加当前目录</button>
+        </div>
+        <div class="field-hint">用于右键菜单里的「移动到 / 复制到」，比如把不想要的图一键挪进「垃圾桶」目录。</div>
+      </div>
+
+      <!-- ---------------------------------------------------------- 右键菜单 -->
+      <div class="field">
+        <label class="field-label">右键菜单</label>
+        <label class="check"><input type="checkbox" id="cfg-context-menu"><span>在图片上启用右键菜单</span></label>
+        <label class="check"><input type="checkbox" id="cfg-info-panel"><span>启用「图片信息」面板</span></label>
+      </div>
     </div>
-  </div>
 
-  <div class="field unified-only">
-    <label class="field-label">过渡动画</label>
-    <div class="seg" id="cfg-animation">
-      <button data-value="slide" class="seg-item">滑动</button>
-      <button data-value="fade" class="seg-item">淡入</button>
-      <button data-value="zoom" class="seg-item">缩放</button>
+    <div class="settings-pane" data-pane="system" hidden>
+      <div class="field">
+        <label class="field-label">系统集成</label>
+        <label class="check"><input type="checkbox" id="cfg-apply"><span>真正写入系统壁纸</span></label>
+        <label class="check"><input type="checkbox" id="cfg-apply-on-start"><span>启动时立即接管所选屏幕</span></label>
+        <label class="check"><input type="checkbox" id="cfg-resume-last"><span>记住上次播放位置（重启后接着播）</span></label>
+        <div class="field-hint">关闭第一项后只在本窗口预览，不修改桌面。第三项关掉后，每次启动都从第一张开始。</div>
+      </div>
+
+      <!-- ---------------------------------------------------------- 后台驻留 -->
+      <div class="field">
+        <label class="field-label">后台驻留</label>
+        <label class="check"><input type="checkbox" id="cfg-tray"><span>显示托盘图标</span></label>
+        <label class="check"><input type="checkbox" id="cfg-close-to-tray"><span>关闭窗口时隐藏到托盘（不退出）</span></label>
+        <label class="check"><input type="checkbox" id="cfg-launch-at-login"><span>开机自动启动</span></label>
+        <label class="check"><input type="checkbox" id="cfg-start-hidden"><span>启动时不显示窗口</span></label>
+        <div class="field-hint">托盘开启后，关掉窗口不影响桌面继续轮播；右键托盘图标可以逐屏控制。</div>
+        <div class="field-hint mono" id="login-hint"></div>
+      </div>
+
+      <!-- ---------------------------------------------------------- 缓存 -->
+      <div class="field">
+        <label class="field-label">缩略图缓存</label>
+        <div class="field-row">
+          <span class="muted" id="thumb-stats">读取中…</span>
+        </div>
+        <div class="field-row">
+          <button class="btn sm" id="btn-thumb-open">打开缓存目录</button>
+          <button class="btn sm" id="btn-thumb-prune">清理超额</button>
+          <button class="btn sm" id="btn-thumb-clear">全部清空</button>
+        </div>
+        <div class="field-hint mono" id="thumb-dir"></div>
+      </div>
     </div>
-  </div>
-
-  <div class="field unified-only">
-    <label class="field-label">动画时长</label>
-    <div class="field-row">
-      <input type="range" id="cfg-duration" min="120" max="1500" step="20">
-      <output class="field-value" id="cfg-duration-out">520 ms</output>
-    </div>
-  </div>
-
-  <div class="field unified-only">
-    <label class="field-label">图片填充方式</label>
-    <div class="seg" id="cfg-fit">
-      <button data-value="cover" class="seg-item">铺满裁切</button>
-      <button data-value="contain" class="seg-item">完整显示</button>
-    </div>
-  </div>
-
-  <div class="field unified-only">
-    <label class="field-label">播放顺序</label>
-    <div class="seg" id="cfg-shuffle">
-      <button data-value="order" class="seg-item">按名称顺序</button>
-      <button data-value="random" class="seg-item">随机不重复</button>
-    </div>
-  </div>
-
-  <div class="field unified-only">
-    <label class="field-label">扫描</label>
-    <label class="check"><input type="checkbox" id="cfg-recursive"><span>包含子文件夹</span></label>
-  </div>
-
-  <div class="field unified-only">
-    <label class="field-label">写入目标显示器</label>
-    <select class="select" id="cfg-monitor">
-      <option value="all">全部显示器</option>
-      <option value="window">程序窗口所在的显示器</option>
-      <option value="primary">主显示器</option>
-    </select>
-    <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。</div>
-  </div>
-
-  <div class="field">
-    <label class="field-label">系统集成</label>
-    <label class="check"><input type="checkbox" id="cfg-apply"><span>真正写入系统壁纸</span></label>
-    <label class="check"><input type="checkbox" id="cfg-apply-on-start"><span>启动时立即接管所选屏幕</span></label>
-    <label class="check"><input type="checkbox" id="cfg-resume-last"><span>记住上次播放位置（重启后接着播）</span></label>
-    <div class="field-hint">关闭第一项后只在本窗口预览，不修改桌面。第三项关掉后，每次启动都从第一张开始。</div>
-  </div>
-
-  <!-- ---------------------------------------------------------- 后台驻留 -->
-  <div class="field">
-    <label class="field-label">后台驻留</label>
-    <label class="check"><input type="checkbox" id="cfg-tray"><span>显示托盘图标</span></label>
-    <label class="check"><input type="checkbox" id="cfg-close-to-tray"><span>关闭窗口时隐藏到托盘（不退出）</span></label>
-    <label class="check"><input type="checkbox" id="cfg-launch-at-login"><span>开机自动启动</span></label>
-    <label class="check"><input type="checkbox" id="cfg-start-hidden"><span>启动时不显示窗口</span></label>
-    <div class="field-hint">托盘开启后，关掉窗口不影响桌面继续轮播；右键托盘图标可以逐屏控制。</div>
-    <div class="field-hint mono" id="login-hint"></div>
-  </div>
-
-  <!-- ---------------------------------------------------------- 删除 -->
-  <div class="field">
-    <label class="field-label">删除</label>
-
-    <!-- 参考 Windows 设置里的行式开关：图标 + 标题 + 说明 + 开关 -->
-    <label class="check rich" for="cfg-confirm-delete">
-      <input type="checkbox" id="cfg-confirm-delete">
-      <span class="rich-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
-             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 7h16"></path>
-          <path d="M9.5 7V5.6c0-.6.4-1 1-1h3c.6 0 1 .4 1 1V7"></path>
-          <path d="M6.4 7l.8 11.4c.05.9.8 1.6 1.7 1.6h6.2c.9 0 1.65-.7 1.7-1.6L17.6 7"></path>
-          <path d="M10.4 10.6v5.6M13.6 10.6v5.6"></path>
-        </svg>
-      </span>
-      <span class="rich-text">
-        <span class="rich-title">请求删除照片的权限</span>
-        <span class="rich-hint">删除项目或文件夹时显示确认对话框</span>
-      </span>
-    </label>
-
-    <div class="field-row">
-      <button class="btn sm danger" id="btn-del-current">删除当前这张到回收站</button>
-    </div>
-    <div class="field-hint">关掉开关后，右键菜单、胶片条垃圾桶、托盘和热键的删除都会直接移入回收站。</div>
-
-    <!-- 桌面右键菜单：注册到 HKCU，卸载就是删掉那棵子树。两项分开开关，可以只装一个 -->
-    <label class="check rich" for="cfg-desktop-menu-next">
-      <input type="checkbox" id="cfg-desktop-menu-next">
-      <span class="rich-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
-             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4.6 10a7.6 7.6 0 0 1 12.8-4.2L20 8"></path>
-          <path d="M20 4.4V8h-3.6"></path>
-          <path d="M19.4 14a7.6 7.6 0 0 1-12.8 4.2L4 16"></path>
-          <path d="M4 19.6V16h3.6"></path>
-        </svg>
-      </span>
-      <span class="rich-text">
-        <span class="rich-title">切换到下一张壁纸</span>
-        <span class="rich-hint">桌面右键——把光标那块屏的壁纸往后拨一张</span>
-      </span>
-    </label>
-    <label class="check rich" for="cfg-desktop-menu-delete">
-      <input type="checkbox" id="cfg-desktop-menu-delete">
-      <span class="rich-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
-             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 7h16"></path>
-          <path d="M10 4h4"></path>
-          <path d="M6.5 7l.9 12.2h9.2L17.5 7"></path>
-          <path d="M10.2 11v5M13.8 11v5"></path>
-        </svg>
-      </span>
-      <span class="rich-text">
-        <span class="rich-title">删除当前显示器的壁纸</span>
-        <span class="rich-hint">桌面右键——把光标那块屏正在放的那张移入回收站</span>
-      </span>
-    </label>
-    <div class="field-hint" id="desktop-menu-hint">
-      两项都按光标所在的那块屏生效：光标停在哪块屏，就动哪块屏的壁纸，别的屏不碰。
-      写的是当前用户（HKCU），不需要管理员权限。Windows 11 里这两项在桌面右键的「显示更多选项」下面。
-    </div>
-  </div>
-
-  <!-- ---------------------------------------------------------- 全局热键 -->
-  <div class="field">
-    <label class="field-label">全局热键</label>
-    <div class="hotkey-list" id="hotkey-list"></div>
-    <div class="field-row">
-      <button class="btn sm" id="btn-hotkey-clear">清空全部</button>
-    </div>
-    <div class="field-hint">
-      窗口藏在托盘里也生效，作用于「当前预览的那块屏」。想换一块屏操作，就按「切到下一台显示器」
-      —— 后面几个热键的目标会跟着它走。必须带修饰键（Ctrl / Alt / Shift / Win），
-      不带修饰键会把全系统的按键抢走。
-    </div>
-    <div class="field-hint mono" id="hotkey-hint"></div>
-  </div>
-
-  <!-- ------------------------------------------------ 工具栏自动隐藏 -->
-  <div class="field">
-    <label class="field-label">工具栏自动隐藏</label>
-    <div class="field-row">
-      <span class="field-label" style="flex:0 0 auto">无动作后</span>
-      <input type="range" id="cfg-auto-hide" min="0" max="20000" step="200">
-      <output class="field-value" id="cfg-auto-hide-out">2.4 秒</output>
-    </div>
-    <div class="field-hint">顶栏和胶片条在这段时间内没有鼠标移动或触摸之后淡出，一动就回来。拖到最左边（0）表示一直显示。设置面板或图片信息面板开着时不会隐藏。</div>
-  </div>
-
-  <!-- ---------------------------------------------------------- 胶片条 -->
-  <div class="field">
-    <label class="field-label">缩略图胶片条</label>
-    <label class="check"><input type="checkbox" id="cfg-filmstrip"><span>在底部显示缩略图条</span></label>
-    <label class="check"><input type="checkbox" id="cfg-filmstrip-center"><span>切换后自动回到当前这张</span></label>
-    <div class="field-row">
-      <span class="field-label" style="flex:0 0 auto">当前左右各显示</span>
-      <input type="range" id="cfg-filmstrip-range" min="8" max="200" step="1">
-      <output class="field-value" id="cfg-filmstrip-range-out">40 张</output>
-    </div>
-    <div class="field-hint">只渲染这个窗口内的缩略图 —— 两万张的目录不会因为胶片条卡住。</div>
-  </div>
-
-  <!-- ---------------------------------------------------------- 快捷文件夹 -->
-  <div class="field" id="quick-section">
-    <label class="field-label">右键菜单 · 快捷文件夹</label>
-    <div class="quick-list" id="quick-list"></div>
-    <div class="field-row">
-      <button class="btn sm" id="btn-quick-add">添加文件夹…</button>
-      <button class="btn sm" id="btn-quick-add-current">添加当前目录</button>
-    </div>
-    <div class="field-hint">用于右键菜单里的「移动到 / 复制到」，比如把不想要的图一键挪进「垃圾桶」目录。</div>
-  </div>
-
-  <!-- ---------------------------------------------------------- 右键菜单 -->
-  <div class="field">
-    <label class="field-label">右键菜单</label>
-    <label class="check"><input type="checkbox" id="cfg-context-menu"><span>在图片上启用右键菜单</span></label>
-    <label class="check"><input type="checkbox" id="cfg-info-panel"><span>启用「图片信息」面板</span></label>
-  </div>
-
-  <!-- ---------------------------------------------------------- 缓存 -->
-  <div class="field">
-    <label class="field-label">缩略图缓存</label>
-    <div class="field-row">
-      <span class="muted" id="thumb-stats">读取中…</span>
-    </div>
-    <div class="field-row">
-      <button class="btn sm" id="btn-thumb-open">打开缓存目录</button>
-      <button class="btn sm" id="btn-thumb-prune">清理超额</button>
-      <button class="btn sm" id="btn-thumb-clear">全部清空</button>
-    </div>
-    <div class="field-hint mono" id="thumb-dir"></div>
   </div>
 
   <div class="settings-foot">

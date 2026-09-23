@@ -12,6 +12,7 @@
     "shot:readme": "node tools/screenshot-readme.js",
     "shot:new": "node tools/screenshot-new-features.js",
     "verify:unit": "node tools/test-scheduler.js",
+    "verify:wiring": "node tools/check-wiring.js",
     "verify:resume": "node tools/verify-resume.js",
     "wallpaper:now": "node tools/wallpaper-now.js",
     "app:eval": "node tools/app-eval.js",

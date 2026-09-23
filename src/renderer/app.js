@@ -35,6 +35,8 @@ const els = {
   counter: $('counter'),
   progressFill: $('progress-fill'),
   settings: $('settings'),
+  settingsTabs: $('settings-tabs'),
+  settingsBody: $('settings-body'),
   albums: $('albums'),
   toast: $('toast'),
   iconPlay: $('icon-play'),
@@ -1529,6 +1531,45 @@ function toggleSettings() {
   if (state.settingsOpen) closeSettings(); else openSettings();
 }
 
+/* ------------------------------------------------------ 设置面板的分类标签页 */
+
+/**
+ * 切到设置面板的某个分类页。
+ *
+ * 二十来个分组挤在一列里找一个开关要滚很久，所以按「轮播 / 外观 / 操作 / 系统」切开；
+ * 只显示一页，其余整页 hidden（不是滚动定位 —— 隐藏的那页里的控件不该被 Tab 键走到）。
+ *
+ * @param {string} tab 分类 id，见主进程 store 的 SETTINGS_TABS
+ * @param {{save?: boolean, scrollTop?: boolean}} [opts]
+ *   save —— 记进 config，下次打开面板直接落回这一页；
+ *   scrollTop —— 切页时把内容滚回顶部（恢复上次那页时不要滚，否则会跳掉位置）。
+ */
+function selectSettingsTab(tab, opts = {}) {
+  const panes = Array.from(document.querySelectorAll('.settings-pane'));
+  if (!panes.length) return;
+
+  const hit = panes.some((pane) => pane.dataset.pane === tab) ? tab : panes[0].dataset.pane;
+  for (const pane of panes) pane.hidden = pane.dataset.pane !== hit;
+
+  for (const btn of document.querySelectorAll('.settings-tab')) {
+    const on = btn.dataset.tab === hit;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+
+  if (opts.scrollTop && els.settingsBody) els.settingsBody.scrollTop = 0;
+  if (opts.save) persistSettingsTab(hit);
+}
+
+/** 记住上次停在哪个分类页（写盘失败无所谓，最多是下次回到第一页） */
+async function persistSettingsTab(tab) {
+  try {
+    state.config = await window.wp.setConfig({ settingsTab: tab });
+  } catch (err) {
+    console.error('[ui] 记住设置分类失败:', err && err.message);
+  }
+}
+
 /* ------------------------------------------------------------ 相簿页交互 */
 
 function openAlbumsPage() {
@@ -1884,6 +1925,9 @@ function applyConfigToUI() {
   // 统一模式的相簿下拉（选项列表来自 state.albums，见 albumOptions）
   syncAlbumSelect();
 
+  // 设置面板停在上次那一页（藏在哪个分类里，重新打开时不至于要再点一遍）
+  selectSettingsTab(c.settingsTab || 'play');
+
   document.body.classList.toggle('mode-per-monitor', Boolean(c.perMonitor));
   document.body.classList.toggle('fit-contain', c.fit === 'contain');
   document.body.classList.toggle('filmstrip-off', c.filmstrip === false);
@@ -1923,6 +1967,13 @@ function bindSettings() {
     applyConfigToUI();
     return state.config;
   };
+
+  // ---- 分类标签页 ----
+  $('settings-tabs').addEventListener('click', (event) => {
+    const btn = event.target.closest('.settings-tab');
+    if (!btn) return;
+    selectSettingsTab(btn.dataset.tab, { save: true, scrollTop: true });
+  });
 
   // ---- 相簿 ----
   $('album-list').addEventListener('click', onAlbumListClick);
@@ -2654,6 +2705,8 @@ function bindEvents() {
       case 'toggle-info': toggleInfo(); break;
       case 'open-quick-folders': {
         openSettings();
+        // 快捷文件夹在「操作」页里 —— 不先翻到那一页，scrollIntoView 是在隐藏元素上跑的（滚不动）
+        selectSettingsTab('action', { save: true });
         $('quick-section').scrollIntoView({ behavior: 'smooth', block: 'center' });
         break;
       }

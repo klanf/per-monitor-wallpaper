@@ -1034,10 +1034,22 @@ function announceAutoSetup(info, viaBalloon = false) {
   tray.notify('已为每块屏建立独立轮播', content);
 }
 
+/**
+ * 只影响界面、跟轮播无关的配置键。
+ *
+ * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
+ * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
+ */
+const UI_ONLY_KEYS = ['settingsTab'];
+
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 async function applyConfigChange(patch) {
+  const keys = Object.keys(patch || {});
+  const uiOnly = keys.length > 0 && keys.every((key) => UI_ONLY_KEYS.includes(key));
   const hadHotkeys = patch && Object.prototype.hasOwnProperty.call(patch, 'hotkeys');
   store.set(patch);
+  // 纯界面状态：写盘就够了，别惊动调度器
+  if (uiOnly) return store.get();
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');

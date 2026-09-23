@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { Store, resolveProfile, DEFAULTS } = require('../src/store');
+const { Store, resolveProfile, DEFAULTS, SETTINGS_TABS } = require('../src/store');
 const { MonitorScheduler, UNIFIED_ID } = require('../src/scheduler');
 
 const RED = path.resolve(__dirname, 'fixtures/monitor-A-red.bmp');
@@ -1127,6 +1127,34 @@ async function main() {
     // ---- stop() 之后不再触发 ----
     sScan.stop();
     check('stop() 之后定时器被清掉', sScan.scanTimer === null);
+  }
+
+  // ============================================================ §28 =====
+  console.log('\n§28 设置面板分类页 settingsTab');
+  {
+    const tabPath = path.join(tmpDir, 'cfg-tab.json');
+    const mk = (raw) => {
+      fs.writeFileSync(tabPath, JSON.stringify({ ...DEFAULTS, ...raw }));
+      return new Store(tabPath).get().settingsTab;
+    };
+
+    check('默认停在第一页「轮播」', DEFAULTS.settingsTab === 'play', DEFAULTS.settingsTab);
+    check('四个分类页的 id 与顺序固定', SETTINGS_TABS.join(',') === 'play,look,action,system', SETTINGS_TABS.join(','));
+    check('合法值原样保留', mk({ settingsTab: 'system' }) === 'system');
+    check('四个 id 都能存住',
+      ['play', 'look', 'action', 'system'].every((t) => mk({ settingsTab: t }) === t));
+    check('拼错的值退回第一页（面板不会变空白）', mk({ settingsTab: 'playback' }) === 'play');
+    check('空字符串退回第一页', mk({ settingsTab: '' }) === 'play');
+    check('null / 数字这类脏值也退回第一页',
+      mk({ settingsTab: null }) === 'play' && mk({ settingsTab: 7 }) === 'play');
+    check('不写这个键时取默认值', mk({}) === 'play');
+
+    // 写盘 → 重读：真正落回磁盘的才是「记住上次那一页」
+    fs.writeFileSync(tabPath, JSON.stringify({ ...DEFAULTS, settingsTab: 'action' }));
+    const reread = new Store(tabPath);
+    check('重新读盘后还是上次那一页', reread.get().settingsTab === 'action', reread.get().settingsTab);
+    reread.set({ settingsTab: 'look' });
+    check('改完再读一次也对得上', new Store(tabPath).get().settingsTab === 'look');
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
