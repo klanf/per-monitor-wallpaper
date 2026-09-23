@@ -26,6 +26,7 @@ Windows 平台的多显示器本地图片库轮播工具。支持每台显示器
 - [图片信息](#图片信息)
 - [文件操作与删除](#文件操作与删除)
 - [托盘与开机自启](#托盘与开机自启)
+- [设置面板](#设置面板)
 - [与同类工具的差异](#与同类工具的差异)
 - [安装](#安装)
 - [首次使用](#首次使用)
@@ -490,6 +491,9 @@ python tools/build-exe.py --open       # 打完打开 dist 目录
   ],
   "recursive": true,                // 是否包含子文件夹
   "interval": 60,                   // 轮播间隔（秒）
+  "autoScanMinutes": 0,             // 定时重扫相簿的间隔（分钟，0 = 关闭）
+                                    //   与手动「重新扫描」不同：只丢扫描缓存不洗牌，
+                                    //   新图接在末尾、已删的图消失、当前那张不动
   "animation": "slide",             // slide | fade | zoom
   "duration": 520,                  // 动画时长（毫秒）
   "shuffle": false,                 // true = 随机不重复，false = 按名称顺序
@@ -513,6 +517,8 @@ python tools/build-exe.py --open       # 打完打开 dist 目录
   "launchAtLogin": false,           // 开机自启（实际状态以系统为准）
 
   "autoHideDelay": 2400,            // 顶栏与胶片条在无动作多久后淡出（毫秒，0 = 一直显示）
+  "settingsTab": "play",            // 设置面板停在哪个分类页：play | look | action | system
+                                    //   记住上次看的那一页，值不认识时退回 play
 
   "filmstrip": true,                // 显示缩略图胶片条
   "filmstripRange": 40,             // 当前帧左右各保留多少张
