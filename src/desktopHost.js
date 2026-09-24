@@ -68,6 +68,12 @@ const GW_HWNDPREV = 3;
 const WS_CHILD = 0x40000000;
 const WS_POPUP = 0x80000000;
 const WS_VISIBLE = 0x10000000;
+/** 标题栏+对话框边框。⚠️ 挂成子窗口后必须剥掉：非客户区边框会把客户区
+ * （= 网页内容区）啃掉一圈 —— 实测本机左/右/下各 11px、顶部 0（DWM 边框扩展），
+ * 表现为「桌面四周露出系统壁纸」。 */
+const WS_CAPTION = 0x00C00000;
+/** 可调大小边框，同上必须剥掉 */
+const WS_THICKFRAME = 0x00040000;
 const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_TOOLWINDOW = 0x00000080;
 
@@ -75,6 +81,8 @@ const SWP_NOSIZE = 0x0001;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOACTIVATE = 0x0010;
 const SWP_SHOWWINDOW = 0x0040;
+/** 强制重算非客户区（改 GWL_STYLE 后必须带一次，否则边框不消失） */
+const SWP_FRAMECHANGED = 0x0020;
 
 const SMTO_NORMAL = 0x0000;
 
@@ -249,6 +257,7 @@ let api = null;
 let loadError = null;
 let dpiState = null;
 let RectTy = null;
+let PointTy = null;
 
 function ensureTypes() {
   if (RectTy) return;
@@ -256,6 +265,7 @@ function ensureTypes() {
   RectTy = koffi.struct('WpDesktopHostRect', {
     left: 'long', top: 'long', right: 'long', bottom: 'long',
   });
+  PointTy = koffi.struct('WpDesktopHostPoint', { x: 'long', y: 'long' });
 }
 
 function load() {
@@ -278,6 +288,8 @@ function load() {
       GetClassNameW: u.func('int GetClassNameW(void *hWnd, _Out_ uint16 *buf, int cch)'),
       GetWindowTextW: u.func('int GetWindowTextW(void *hWnd, _Out_ uint16 *buf, int cch)'),
       GetWindowRect: u.func('bool GetWindowRect(void *hWnd, _Out_ WpDesktopHostRect *r)'),
+      GetClientRect: u.func('bool GetClientRect(void *hWnd, _Out_ WpDesktopHostRect *r)'),
+      ClientToScreen: u.func('bool ClientToScreen(void *hWnd, _Out_ WpDesktopHostPoint *pt)'),
       GetWindowThreadProcessId: u.func('uint32 GetWindowThreadProcessId(void *hWnd, _Out_ uint32 *pid)'),
       SetParent: u.func('void *SetParent(void *hWndChild, void *hWndNewParent)'),
       SetWindowPos: u.func('bool SetWindowPos(void *hWnd, void *hWndInsertAfter, int X, int Y, int cx, int cy, uint32 flags)'),
@@ -382,6 +394,38 @@ function rectOf(hWnd) {
   if (!a.GetWindowRect(hWnd, buf)) return { x: 0, y: 0, w: 0, h: 0 };
   const r = koffi.decode(buf, RectTy);
   return { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+}
+
+/** 客户区尺寸（外框矩形 - 客户区 = Electron frameless 的隐形调整边框） */
+function clientSizeOf(hWnd) {
+  const a = load();
+  const buf = koffi.alloc(RectTy, 1);
+  if (!a.GetClientRect(hWnd, buf)) return { w: 0, h: 0 };
+  const r = koffi.decode(buf, RectTy);
+  return { w: r.right, h: r.bottom };
+}
+
+/** 客户区原点的屏幕坐标 */
+function clientOriginScreen(hWnd) {
+  const a = load();
+  const buf = koffi.alloc(PointTy, 1);
+  koffi.decode(buf, PointTy);               // 清零
+  if (!a.ClientToScreen(hWnd, buf)) return { x: 0, y: 0 };
+  const p = koffi.decode(buf, PointTy);
+  return { x: p.x, y: p.y };
+}
+
+/**
+ * 实测当前窗口的隐形边框（Electron frameless 天生带：外框 - 客户区）。
+ * 与窗口当前位置无关，随时可测。返回 {l,t,r,b} 物理像素。
+ */
+function frameInsetsOf(hWnd) {
+  const wr = rectOf(hWnd);                  // GetWindowRect 对子窗口也返回屏幕坐标（本机实测）
+  const cs = clientSizeOf(hWnd);
+  const co = clientOriginScreen(hWnd);
+  const l = co.x - wr.x;
+  const t = co.y - wr.y;
+  return { l, t, r: wr.w - cs.w - l, b: wr.h - cs.h - t };
 }
 
 /** 顶层窗口句柄列表（Z 序，最前面的先出）。
@@ -535,9 +579,12 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
     return { ok: false, step: 'SetParent', error: setParentErr };
   }
 
-  // 2. 样式补 WS_CHILD（**SetParent 不会自动加**，少了它窗口挂上了但不显示）
+  // 2. 样式补 WS_CHILD（**SetParent 不会自动加**，少了它窗口挂上了但不显示）。
+  //    同时剥掉 WS_CAPTION / WS_THICKFRAME：子窗口带边框样式时，非客户区会
+  //    把客户区（网页内容区）内缩一圈（本机实测左/右/下各 11px、顶部 0），
+  //    窗口矩形看着是满屏的，内容却铺不满 → 桌面四周露出系统壁纸。
   const style = Number(a.GetWindowLongPtrW(self, GWL_STYLE));
-  const newStyle = (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE;
+  const newStyle = ((style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE) & ~(WS_CAPTION | WS_THICKFRAME);
   a.SetWindowLongPtrW(self, GWL_STYLE, newStyle);
 
   // 3. 扩展样式：不抢焦点、不进 Alt+Tab
@@ -545,15 +592,36 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   a.SetWindowLongPtrW(self, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
 
   // 4. 插到图标层之后。
-  //    ⚠️ 坐标语义：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
+  //    ⚠️ 坐标语义①：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
   //    而调用方传的是虚拟桌面物理坐标（含多屏负偏移）。Progman 的客户区原点
   //    = 虚拟桌面左上角（本机副屏在最左，是 (-1600,0)，不是 (0,0)）——
   //    阶段 0 的 PoC 单屏没炸纯属「原点恰好是 (0,0)」的巧合，多屏必错位。
   //    这里统一减掉父窗口原点换算。
+  //    ⚠️ 坐标语义②：SetWindowPos 的 x/y/w/h 定的是**外框矩形**，而 Electron
+  //    frameless 窗口天生带隐形调整边框（本机实测 L/R/B 各 ~10px 物理、T=0），
+  //    客户区（=网页内容区）= 外框 - 边框。直接设满屏 → 内容被啃一圈，
+  //    桌面四周露出系统壁纸（2026-09-25 真机抓屏实锤）。
+  //    所以分两步：先摆到目标矩形量出实际边框，再把外框矩形放大补偿，
+  //    让**客户区**精确落在目标矩形上。
   const pb = rectOf(parent);
   const b = bounds || { x: pb.x, y: pb.y, w: pb.w, h: pb.h };
-  const okPos = a.SetWindowPos(self, insertAfter, b.x - pb.x, b.y - pb.y, b.w, b.h,
+  const relX = b.x - pb.x, relY = b.y - pb.y;
+  if (!a.SetWindowPos(self, insertAfter, relX, relY, b.w, b.h,
+    SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED)) {
+    return { ok: false, step: 'SetWindowPos', error: 'SetWindowPos 失败' };
+  }
+  // 量实际边框：客户区原点（换算到父客户区相对）与刚 SetWindowPos 的位置之差
+  const co = clientOriginScreen(self);
+  const cs = clientSizeOf(self);
+  const dl = (co.x - pb.x) - relX;              // 左边框
+  const dt = (co.y - pb.y) - relY;              // 顶边框
+  const wr = rectOf(self);
+  const dr = (wr.w - cs.w) - dl;                // 右边框
+  const db = (wr.h - cs.h) - dt;                // 底边框
+  const okPos = a.SetWindowPos(self, insertAfter,
+    relX - dl, relY - dt, b.w + dl + dr, b.h + dt + db,
     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  console.log(`[desktop-host] 边框补偿: L=${dl} T=${dt} R=${dr} B=${db} 第二次SetWindowPos=${okPos ? 'ok' : 'FAIL'}`);
 
   return {
     ok: Boolean(okPos),
@@ -561,6 +629,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
     error: okPos ? null : 'SetWindowPos 失败',
     style: { before: style, after: newStyle },
     exStyle: { before: ex, after: ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW },
+    frame: { l: dl, t: dt, r: dr, b: db },      // 调试用：实测的隐形边框宽度
   };
 }
 
@@ -647,7 +716,10 @@ function isZOrderIntact(hwnd, anchorHwnd, harmless = null) {
 }
 
 /** 重申 Z 序：把窗口重新插到锚点之后（Progman 重绘后不需要重挂，只需要这一句）。
- *  bounds 是虚拟桌面物理坐标，内部换算成父客户区相对坐标（同 mount，见那里） */
+ *  bounds 是虚拟桌面物理坐标，内部换算成父客户区相对坐标（同 mount，见那里）。
+ *  ⚠️ 带 bounds 时**必须做隐形边框补偿**（同 mount）：否则看门狗每次重申都会把
+ *  mount 里补偿好的外框矩形打回原形，客户区又被啃掉一圈（2026-09-25 实锤：
+ *  「补偿成功 → 看门狗重申 → 外框复原 → 四周露壁纸」就是这么来的）。 */
 function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   const a = load();
   if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
@@ -657,10 +729,11 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   if (bounds) {
     const parent = a.GetParent(self);
     const pb = parent ? rectOf(parent) : { x: 0, y: 0 };
-    x = bounds.x - pb.x;
-    y = bounds.y - pb.y;
-    w = bounds.w;
-    h = bounds.h;
+    const inf = frameInsetsOf(self);
+    x = bounds.x - pb.x - inf.l;
+    y = bounds.y - pb.y - inf.t;
+    w = bounds.w + inf.l + inf.r;
+    h = bounds.h + inf.t + inf.b;
     flags = 0;
   }
   return {

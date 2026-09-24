@@ -237,7 +237,9 @@ function watchOnce() {
           const choice = desktopHost.chooseMountParent(snap);
           if (choice.ok) {
             rec.anchor = { parentHwnd: choice.parentHwnd, insertAfterHwnd: choice.insertAfterHwnd };
-            const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, {
+            // ⚠️ mount 要的是**物理坐标**（boundsPhys），之前误传 DIP 的 rec.bounds，
+            //    多屏/高 DPI 下重挂位置会错（2026-09-25 复查时抓出）
+            const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys || {
               x: rec.bounds.x, y: rec.bounds.y, w: rec.bounds.width, h: rec.bounds.height,
             });
             if (m.ok) {
