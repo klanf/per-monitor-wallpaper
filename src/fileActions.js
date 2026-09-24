@@ -42,33 +42,121 @@ async function uniqueDestination(dir, fileName) {
 /* ---------------------------------------------------------------- 剪贴板 */
 
 /**
+ * `clipboard.write()` 的等待上限。
+ *
+ * 实测（Electron 44.3.0 / Windows）：剪贴板被别的程序占着、或 Chromium 那边
+ * 状态没走完时，这个 Promise 会**既不 resolve 也不 reject**。表现出来就是
+ * 菜单点了没有任何提示、粘贴也拿不到东西 —— 正是「复制图像到剪贴板失效」的样子。
+ * 所以这里给一个硬超时，超了就换下面那条不依赖 Chromium 的兜底写法。
+ */
+const CLIPBOARD_WRITE_TIMEOUT_MS = 1500;
+
+/** 给 Promise 加死线，永不抛：返回 {status:'ok'|'error'|'timeout', value?, error?} */
+function withDeadline(promise, ms) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => finish({ status: 'timeout' }), ms);
+    Promise.resolve(promise).then(
+      (value) => finish({ status: 'ok', value }),
+      (err) => finish({ status: 'error', error: (err && err.message) || String(err) }),
+    );
+  });
+}
+
+/**
  * 复制图片像素（可以粘进 Word / 画图 / PS / 微信等）。
  *
  * Electron 44 的主进程 clipboard 已换成 W3C 异步风格：writeImage 不存在了，
- * 改成 write([ClipboardItem])。实测写 `image/png` 时 Chromium 会自动转换成
- * CF_DIBV5 / CF_BITMAP / CF_DIB 一并放进系统剪贴板，所以 Windows 侧任何
- * 认位图的程序都能正常粘贴 —— 不需要自己拼 DIB。
+ * 改成 write([ClipboardItem])。写 `image/png` 时 Chromium 会自动转换成
+ * CF_DIBV5 / CF_BITMAP / CF_DIB 一并放进系统剪贴板 —— 正常路径够用。
+ *
+ * 但「够用」不能靠猜：Chromium 用的是**延迟渲染**，`write()` resolve 只代表
+ * 它认领了剪贴板。所以这里三步走，每步都有可核对的证据：
+ *   ① 走 Electron 的 write()（带硬超时，防它吊死）；
+ *   ② **当场回读系统剪贴板**，量 CF_DIB / CF_DIBV5 的真实体积 ——
+ *      对得上 `宽×高×4` 才算真的写进去了（这一步顺带把延迟渲染的数据实体化）；
+ *   ③ 对不上就换原生直写（clipboardWin.writeImage：自己拼 CF_DIBV5 + PNG，
+ *      立即交出真实句柄），再回读一次。
+ *
+ * 返回值带 `method`（electron / native），失败时带 `attempts` 说明每一步卡在哪。
  */
 async function copyImage(imagePath) {
-  const img = nativeImage.createFromPath(imagePath);
-  if (img.isEmpty()) {
-    return { ok: false, error: '这个格式无法解码到剪贴板（试试「复制文件」）' };
-  }
-
-  const png = img.toPNG();
-  if (!png || !png.length) {
-    return { ok: false, error: '转 PNG 失败，无法写入剪贴板' };
-  }
-
-  const size = img.getSize();
   try {
-    await clipboard.write([new ClipboardItem({
-      'image/png': new Blob([png], { type: 'image/png' }),
-    })]);
+    if (!imagePath) return { ok: false, error: '没有文件' };
+
+    try {
+      const st = await fsp.stat(imagePath);
+      if (!st.isFile()) return { ok: false, error: '不是文件' };
+    } catch (err) {
+      return { ok: false, error: `文件已经读不到了（${err.code || err.message}）` };
+    }
+
+    const img = nativeImage.createFromPath(imagePath);
+    if (img.isEmpty()) {
+      return {
+        ok: false,
+        error: '这个格式解不出像素（Electron 的解码器只认 PNG / JPEG）—— 可以改用「复制文件到剪贴板」',
+      };
+    }
+
+    const { width, height } = img.getSize();
+    const png = img.toPNG();
+    if (!png || !png.length) return { ok: false, error: '转 PNG 失败，无法写入剪贴板' };
+
+    const expect = width * height * 4;
+    const attempts = [];
+
+    // ① Electron / Chromium 的正常路径
+    const w3c = await withDeadline(
+      clipboard.write([new ClipboardItem({
+        'image/png': new Blob([png], { type: 'image/png' }),
+      })]),
+      CLIPBOARD_WRITE_TIMEOUT_MS,
+    );
+
+    if (w3c.status === 'ok') {
+      const after = clipboardWin.readImageStatus();
+      if (after.ok && (after.dibv5 >= expect || after.dib >= expect)) {
+        return {
+          ok: true, width, height, bytes: png.length, method: 'electron',
+          clipboard: { dib: after.dib, dibv5: after.dibv5 },
+        };
+      }
+      attempts.push(after.ok
+        ? `electron 写完回读不完整（CF_DIB=${after.dib} / CF_DIBV5=${after.dibv5}，期望≥${expect}）`
+        : `electron 写完读不了剪贴板：${after.error}`);
+    } else if (w3c.status === 'timeout') {
+      attempts.push(`electron 的 clipboard.write 在 ${CLIPBOARD_WRITE_TIMEOUT_MS}ms 内没有返回`);
+    } else {
+      attempts.push(`electron 的 clipboard.write 报错：${w3c.error}`);
+    }
+
+    // ② 原生兜底：绕开 Chromium 自己写 CF_DIBV5（+ 原始 PNG 的注册格式）
+    const nativeWrite = clipboardWin.writeImage({
+      bgra: img.toBitmap(), width, height, png,
+    });
+    if (!nativeWrite.ok) {
+      return { ok: false, error: `写入剪贴板失败：${nativeWrite.error}`, attempts };
+    }
+
+    const after2 = clipboardWin.readImageStatus();
+    if (!after2.ok || !after2.hasImage) {
+      return {
+        ok: false,
+        error: `兜底写入后回读不到图片（${after2.error || '剪贴板里没有 CF_DIB / CF_DIBV5'}）`,
+        attempts,
+      };
+    }
+
+    return {
+      ok: true, width, height, bytes: png.length, method: 'native', attempts,
+      clipboard: { dib: after2.dib, dibv5: after2.dibv5 },
+    };
   } catch (err) {
-    return { ok: false, error: `写入剪贴板失败：${err.message}` };
+    // 兜底中的兜底：这个方法绝不抛异常，否则菜单点了会连提示都没有
+    return { ok: false, error: `复制图像时出错：${err.message}` };
   }
-  return { ok: true, width: size.width, height: size.height, bytes: png.length };
 }
 
 /**
@@ -272,6 +360,46 @@ async function pickProgram(win, title = '选择用来打开图片的程序') {
   return result.filePaths[0];
 }
 
+/**
+ * 系统的「你要如何打开这个文件？」对话框（Windows 的「打开方式」）。
+ *
+ * Electron 没有对应 API。两条候选路：
+ *   · `SHOpenWithDialog`（shell32）—— 现代、能拿到返回值，但它是**模态**的：
+ *     直接调会把调用线程的消息循环卡到用户关掉对话框为止。本应用的全部轮播
+ *     定时器都在主进程里，卡住就等于桌面定格 —— 不能这么干。
+ *   · `rundll32.exe shell32.dll,OpenAs_RunDLL <路径>` —— 另起一个进程，
+ *     我们的消息循环一点不受影响。代价是没人能给我们返回值，且首次弹出慢一秒左右。
+ *
+ * 选后者。慢一秒换「点开对话框的时候壁纸还在正常轮播」，这个交换划算。
+ */
+async function openWithDialog(imagePath) {
+  if (!imagePath) return { ok: false, error: '没有文件' };
+  try {
+    await fsp.access(imagePath);
+  } catch {
+    return { ok: false, error: `文件已经不在了：${imagePath}` };
+  }
+  if (process.platform !== 'win32') return { ok: false, error: '「打开方式」对话框只有 Windows 有' };
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+    try {
+      const child = spawn('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', imagePath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.on('error', (err) => done({ ok: false, error: `调不出「打开方式」：${err.message}` }));
+      child.unref();
+      // 对话框由另一个进程画，我们这边只确认「拉起来了」
+      setTimeout(() => done({ ok: true, method: 'OpenAs_RunDLL' }), 300);
+    } catch (err) {
+      done({ ok: false, error: err.message });
+    }
+  });
+}
+
 /* ---------------------------------------------------------------- 预设文件夹 */
 
 /**
@@ -327,6 +455,7 @@ module.exports = {
   reveal,
   launchWith,
   pickProgram,
+  openWithDialog,
   makeQuickFolder,
   pickFolderForQuick,
   fileStats,

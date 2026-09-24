@@ -365,11 +365,20 @@ function buildScratch() {
     probe && probe.ok !== false && (probe.size > 0 || probe.bytes > 0), JSON.stringify(probe).slice(0, 90));
 
   const copyImg = await ev(`window.wp.copyImage(${JSON.stringify(filesNow[0])})`);
-  check('复制图片到剪贴板成功', copyImg && copyImg.ok !== false, JSON.stringify(copyImg).slice(0, 90));
+  check('复制图片到剪贴板成功', copyImg && copyImg.ok === true, JSON.stringify(copyImg).slice(0, 120));
+  check('复制结果注明走的是哪条路（electron / native 兜底）',
+    Boolean(copyImg) && (copyImg.method === 'electron' || copyImg.method === 'native'),
+    copyImg && `method=${copyImg.method}`);
   const clipImg = clipboardReader.inspect();
   check('系统剪贴板里真的出现了位图（CF_DIB / CF_DIBV5）',
     Boolean(clipImg.ids.dib || clipImg.ids.dibv5),
     clipImg.names.join(' | '));
+  // 「格式在」不等于「里面有一张完整的图」—— 位图载荷应当是 头 + 宽×高×4
+  const clipExpect = copyImg && copyImg.width && copyImg.height
+    ? copyImg.width * copyImg.height * 4 : 0;
+  check('位图载荷体积对得上宽×高×4（不是空壳格式）',
+    clipExpect > 0 && (clipImg.sizes.dibv5 >= clipExpect || clipImg.sizes.dib >= clipExpect),
+    `dibv5=${clipImg.sizes.dibv5} dib=${clipImg.sizes.dib} 期望≥${clipExpect}`);
 
   const copyPath = await ev(`window.wp.copyPath(${JSON.stringify(filesNow[0])})`);
   check('复制路径成功', copyPath && copyPath.ok !== false, JSON.stringify(copyPath).slice(0, 90));
@@ -430,6 +439,13 @@ function buildScratch() {
     return parent.submenu.some((s) => s.label === '选择程序…');
   })(), (flat.find((i) => i.label === '用其他程序打开') || {}).submenu
     ?.map((s) => s.label).filter(Boolean).join(' / '));
+  check('子菜单里有系统的「打开方式」对话框入口，且接了动作', (() => {
+    const parent = flat.find((i) => i.label === '用其他程序打开');
+    if (!parent || !parent.submenu) return false;
+    const item = parent.submenu.find((s) => /打开方式/.test(s.label || ''));
+    return Boolean(item) && item.enabled !== false && item.hasClick === true;
+  })(), (flat.find((i) => i.label === '用其他程序打开') || {}).submenu
+    ?.map((s) => s.label).filter(Boolean).join(' / '));
   check('「在资源管理器中显示」已与「打开所在文件夹」合并（不再重复出现）',
     !labels.includes('在资源管理器中显示'), labels.filter((l) => /文件夹|资源管理器/.test(l)).join(' / '));
   // 置灰的占位项（「还没有添加程序」「还没有预设文件夹」）本来就不该有动作
@@ -480,6 +496,10 @@ function buildScratch() {
     ghostMenu.filter((i) => ['复制图像到剪贴板', '复制文件到剪贴板', '用默认程序打开', '选择打开方式…', '删除到回收站'].includes(i.label))
       .every((i) => i.enabled === false),
     ghostMenu.filter((i) => i.enabled === false).map((i) => i.label).join(' / '));
+  // 光把项变灰 = 「点了没反应」。顶上得写清楚为什么
+  check('文件不存在时，菜单里给出「文件已不在」的说明',
+    ghostMenu.some((i) => i.enabled === false && /文件已不在/.test(i.label || '')),
+    ghostMenu.map((i) => i.label).filter(Boolean).join(' / '));
 
   // ---- 移动：非当前帧 → 张数 -1，画面不跳
   section('5. 移动（不碰当前帧）：轮转就地更新、画面不跳');

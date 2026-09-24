@@ -37,6 +37,7 @@ function load() {
   try {
     const user32 = koffi.load('user32.dll');
     const shell32 = koffi.load('shell32.dll');
+    const kernel32 = koffi.load('kernel32.dll');
     api = {
       OpenClipboard: user32.func('bool OpenClipboard(void *hWnd)'),
       CloseClipboard: user32.func('bool CloseClipboard()'),
@@ -44,11 +45,18 @@ function load() {
       GetClipboardFormatNameW: user32.func('int GetClipboardFormatNameW(uint32 format, _Out_ uint16 *name, int cch)'),
       GetClipboardData: user32.func('void *GetClipboardData(uint32 uFormat)'),
       DragQueryFileW: shell32.func('uint32 DragQueryFileW(void *hDrop, uint32 iFile, _Out_ uint16 *buf, uint32 cch)'),
+      GlobalSize: kernel32.func('size_t GlobalSize(void *hMem)'),
     };
   } catch (err) {
     loadError = err;
   }
   return api;
+}
+
+/** 某个格式的载荷体积；取不到就 0（调用方必须已经 OpenClipboard） */
+function globalSize(format) {
+  const handle = api.GetClipboardData(format);
+  return handle ? Number(api.GlobalSize(handle)) : 0;
 }
 
 function nameOf(id) {
@@ -76,6 +84,7 @@ function dropFiles() {
 /**
  * @returns {{ok:boolean, error?:string, formats:number[], names:string[],
  *            ids:{dib:number|null, dibv5:number|null, unicodeText:number|null, hdrop:number|null},
+ *            sizes:{dib:number, dibv5:number},
  *            files:string[]|null}}
  */
 function inspect() {
@@ -101,6 +110,15 @@ function inspect() {
         dibv5: has(CF_DIBV5) ? CF_DIBV5 : null,
         unicodeText: has(CF_UNICODETEXT) ? CF_UNICODETEXT : null,
         hdrop: has(CF_HDROP) ? CF_HDROP : null,
+      },
+      /**
+       * 体积（字节）。「格式在不在」和「里面真的有没有一张完整的图」是两件事 ——
+       * 位图载荷 = 头 + 宽×高×4，量一下就能分辨「空壳格式」和「真图」。
+       * 只对 DIB 系格式取样：它们背后是 HGLOBAL。CF_BITMAP 是 GDI 对象，不能 GlobalSize。
+       */
+      sizes: {
+        dib: has(CF_DIB) ? globalSize(CF_DIB) : 0,
+        dibv5: has(CF_DIBV5) ? globalSize(CF_DIBV5) : 0,
       },
       files: has(CF_HDROP) ? dropFiles() : null,
     };

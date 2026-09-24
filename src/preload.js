@@ -64,6 +64,8 @@ contextBridge.exposeInMainWorld('wp', {
   copyPath: (imagePath) => ipcRenderer.invoke('file:copy-path', imagePath),
   openExternally: (imagePath) => ipcRenderer.invoke('file:open', imagePath),
   openContainingFolder: (imagePath) => ipcRenderer.invoke('file:open-folder', imagePath),
+  /** 系统「打开方式」对话框（Windows 的「你要如何打开这个文件？」） */
+  openWithDialog: (imagePath) => ipcRenderer.invoke('file:open-with-dialog', imagePath),
   /** 「用其他程序打开」的程序列表（用户在右键子菜单里挑的 exe，存在配置里） */
   openWithList: () => ipcRenderer.invoke('open-with:list'),
   openWithAdd: (programPath) => ipcRenderer.invoke('open-with:add', programPath),

@@ -560,12 +560,12 @@ function quickFolderSubmenu(imagePath, mode) {
 /**
  * 「用其他程序打开」子菜单。
  *
- * 沿用原版 Python 的做法（`open_with.programs`）：一个**用户自己的程序列表**，
- * 选过一次就记住，下次在菜单里一点就开。
- *
- * 比每次弹系统的「打开方式」对话框省事 —— 常用来回看的那几个看图 / 修图软件
- * 直接排在那里。（原实现走的是 `rundll32.exe shell32.dll,OpenAs_RunDLL`：
- * 慢、拿不到结果，而且每张图都要重选一遍。）
+ * 两层入口，覆盖两种习惯：
+ *   · **记住的程序列表** —— 沿用原版 Python 的做法（`open_with.programs`），
+ *     选过一次就记住，下次一点就开。常用来回看的那几个看图 / 修图软件排在这儿。
+ *   · **系统的「打开方式」对话框** —— 第一次遇到的新格式、或想临时换个程序时用。
+ *     （原实现走的是 `rundll32.exe shell32.dll,OpenAs_RunDLL`：慢、拿不到结果，
+ *     而且每张图都要重选一遍 —— 所以它只该是「列表之外的补充」，不是主路径。）
  */
 function openWithSubmenu(imagePath) {
   const programs = store.get().openWith || [];
@@ -601,6 +601,14 @@ function openWithSubmenu(imagePath) {
       }
       // 添加完顺手就用它打开这一张 —— 用户加程序就是为了用它看
       const r = await fileActions.launchWith(picked, imagePath);
+      if (!r.ok) send('notice', { text: r.error, error: true });
+    },
+  });
+  items.push({
+    label: '打开方式…（系统对话框）',
+    toolTip: 'Windows 的「你要如何打开这个文件？」——任意已安装程序都能选，不用先加进列表',
+    click: async () => {
+      const r = await fileActions.openWithDialog(imagePath);
       if (!r.ok) send('notice', { text: r.error, error: true });
     },
   });
@@ -654,14 +662,31 @@ function buildImageMenuTemplate(payload) {
 
   const template = [];
 
+  /*
+   * 文件不在的时候，别只是把菜单项灰掉 —— 一排灰项不写任何理由，用户看到的
+   * 就是「点了没反应」。顶上顶一行说明，比给每一项加后缀清楚，也不破坏
+   * 验证脚本「这些项应当置灰」的断言。
+   */
+  if (!canModify) {
+    template.push({
+      label: '文件已不在（可能被移走或删掉了）',
+      enabled: false,
+    });
+    template.push({ type: 'separator' });
+  }
+
   template.push({
     label: '复制图像到剪贴板',
     enabled: canModify,
     click: async () => {
       const r = await fileActions.copyImage(imagePath);
-      send('notice', r.ok
-        ? { text: `已复制图像（${r.width}×${r.height}），可直接粘贴` }
-        : { text: r.error, error: true });
+      if (!r.ok) {
+        send('notice', { text: r.error, error: true });
+        return;
+      }
+      // 「走兜底」是重要信息：说明 Electron 那条路当时不可用，值得让用户知道
+      const via = r.method === 'native' ? '（Electron 写入未生效，已走系统兜底写入）' : '';
+      send('notice', { text: `已复制图像（${r.width}×${r.height}）${via}，可直接粘贴` });
     },
   });
   template.push({
@@ -1324,6 +1349,8 @@ function registerIpc() {
   // 右键菜单里已经不放「用默认程序打开」了，但信息面板和「打开目录」还在用这条通道
   ipcMain.handle('file:open', (_e, imagePath) => fileActions.openExternally(imagePath));
   ipcMain.handle('file:open-folder', (_e, imagePath) => fileActions.openContainingFolder(imagePath));
+  /** 系统的「打开方式」对话框（另起 rundll32 画，不卡主进程消息循环） */
+  ipcMain.handle('file:open-with-dialog', (_e, imagePath) => fileActions.openWithDialog(imagePath));
   ipcMain.handle('file:trash', (_e, imagePath) => trashWithPermission(imagePath));
 
   /* 「用其他程序打开」的程序列表 —— 右键子菜单与设置面板共用这一套 */
