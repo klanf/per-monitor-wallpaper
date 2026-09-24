@@ -376,6 +376,8 @@ npm run app:eval -- "return (await wp.listChannels()).channels.map(c => c.index)
 
 `verify:resume` 用的是**两个 scheduler 实例 + 各自重新读盘的 Store**来模拟「关机再开机」，写入函数是替身，所以跑它不会动你的桌面。
 
+要接手继续开发，先看 [docs/交接文档.md](docs/交接文档.md)：代码地图、概念词典、关键设计决定的理由、踩过的坑、待办清单都在里面。
+
 需要反复重启应用做验证时，用 `python tools/launch-dev.py`（可选 `--cdp` / `--hidden`）。它替你做三件直接从 shell 起 Electron 会出问题的事：剔掉环境里注入的 `ELECTRON_RUN_AS_NODE`（留着会让 Electron 退化成纯 Node）、让进程脱离父进程组（否则跑完就被回收）、把输出重定向到 `%TEMP%\electron-wallpaper-dev.log`（用管道而不读会把进程吊死）。
 
 
