@@ -8,14 +8,16 @@
  * `clipboard.write()` 在剪贴板被别的程序占着、或内部状态没走完时**既不 resolve
  * 也不 reject**：菜单的 click 就永远停在 await 上，既不报错也不复制。
  *
- * 现在的实现是三步：硬超时 → 原生直写兜底（clipboardWin.writeImage）→ 回读校验。
- * 本脚本把三条路全部钉住：
+ * 现在的实现是两条路：大图跳过 PNG 编码（快路），小图三步走（硬超时 → 原生直写兜底
+ * → 回读校验）。本脚本把两条路都钉住：
  *   §1 回读接口（readImageStatus）
  *   §2 正常路径：走 Electron 的 write()
  *   §3 write 挂死 → 超时后走原生兜底（就是用户遇到的那个症状的复现）
  *   §4 write 直接 reject → 同样落到兜底
  *   §5 像素级正确性：兜底写出来的 CF_DIBV5 与 Chromium 自己写的**逐字节相同**
  *   §6 守卫分支：文件不在 / 格式解不了 / 空参数
+ *   §7 大图快路：阈值判定 / 完全绕开 Chromium / 同一张图两条路比耗时 / 格式集合的取舍
+ *      / 「先报进度再干活」的顺序
  *
  * 运行：`npm run verify:clipboard`
  * 副作用：会覆盖系统剪贴板（和 verify:features 里的复制断言一样）。
@@ -35,6 +37,13 @@ const fileActions = require(path.join(SRC, 'fileActions.js'));
 const FIXTURES = path.join(__dirname, 'fixtures');
 const GALLERY_PNG = path.join(FIXTURES, 'gallery', 'g-001-h0.png');
 const SOLID_BMP = path.join(FIXTURES, 'monitor-A-red.bmp');
+
+/**
+ * 大图夹具的尺寸：必须越过 fileActions.FAST_PATH_PIXELS（12 MP），
+ * 否则「自动走快路」根本不会被触发。3600×3600 = 12.96 MP。
+ */
+const BIG_W = 3600;
+const BIG_H = 3600;
 
 const CF_DIB = 8;
 const CF_DIBV5 = 17;
@@ -58,6 +67,7 @@ const kernel32 = koffi.load('kernel32.dll');
 const OpenClipboard = user32.func('bool OpenClipboard(void *hWnd)');
 const CloseClipboard = user32.func('bool CloseClipboard()');
 const GetClipboardData = user32.func('void *GetClipboardData(uint32 uFormat)');
+const RegisterClipboardFormatW = user32.func('uint32 RegisterClipboardFormatW(str16 lpszFormat)');
 const GlobalLock = kernel32.func('void *GlobalLock(void *hMem)');
 const GlobalUnlock = kernel32.func('bool GlobalUnlock(void *hMem)');
 const GlobalSize = kernel32.func('size_t GlobalSize(void *hMem)');
@@ -152,6 +162,41 @@ function expectedPremultipliedBgra() {
   ]));
 }
 
+/**
+ * 手写一张纯色 PNG（大图夹具）。
+ *
+ * 为什么要现造一张大图：只有像素数越过阈值才会触发「跳过 PNG 编码」的快路，
+ * 仓库里的夹具都是 1280×720（0.92 MP），够不着。
+ *
+ * 纯色是**刻意**的：压缩后很小、落地快，但决定 `toPNG()` 成本的量是**像素数**，
+ * 这个量是真实的一亿分之几都不差。所以它能如实反映两条路的成本差异。
+ */
+function writeSolidPng(file, width, height, [r, g, b, a] = [200, 40, 90, 255]) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 6;   // RGBA
+
+  const stride = 1 + width * 4;
+  const raw = Buffer.alloc(height * stride);
+  const row = Buffer.alloc(width * 4);
+  for (let x = 0; x < width; x += 1) {
+    row[x * 4] = r; row[x * 4 + 1] = g; row[x * 4 + 2] = b; row[x * 4 + 3] = a;
+  }
+  // 整行（含行过滤器字节）复制，别逐字节写 —— 3600 行 × 14400 字节是 5200 万次写入
+  const line = Buffer.concat([Buffer.from([0]), row]);
+  for (let y = 0; y < height; y += 1) line.copy(raw, y * stride);
+
+  fs.writeFileSync(file, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw, { level: 1 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]));
+  return file;
+}
+
 /* ------------------------------------------------ 驱动 */
 
 const realWrite = clipboard.write.bind(clipboard);
@@ -162,6 +207,7 @@ const patchWrite = (fn) => Object.defineProperty(clipboard, 'write', {
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-clip-'));
   const alphaPng = writeAlphaPng(path.join(tmp, 'alpha.png'));
+  const bigPng = writeSolidPng(path.join(tmp, 'big.png'), BIG_W, BIG_H);
 
   /* ---------------------------------------------- §1 */
   section('1. 回读接口（readImageStatus）');
@@ -244,6 +290,84 @@ async function main() {
     dlgGhost.ok === false && Boolean(dlgGhost.error), dlgGhost.error);
   const dlgEmpty = await fileActions.openWithDialog('');
   check('「打开方式…」空参数 → 结构化失败', dlgEmpty.ok === false, dlgEmpty.error);
+
+  /* ---------------------------------------------- §7 */
+  section('7. 大图快路：跳过 PNG 编码（「以前能复制、现在像没反应」的真凶）');
+
+  // ① 阈值判定：只读文件头，不解码
+  const planBig = fileActions.planCopy(bigPng);
+  check('planCopy 认出大图 → 快路',
+    planBig.fast === true && planBig.width === BIG_W && planBig.height === BIG_H,
+    `${planBig.width}×${planBig.height} fast=${planBig.fast}`);
+  const planGal = fileActions.planCopy(GALLERY_PNG);
+  check('planCopy 认出小图 → 不走快路（保住 PNG 格式）',
+    planGal.fast === false && planGal.width === 1280,
+    `${planGal.width}×${planGal.height} fast=${planGal.fast}`);
+  check('阈值就是 fileActions 导出的那个数',
+    fileActions.FAST_PATH_PIXELS === 12_000_000, `${fileActions.FAST_PATH_PIXELS}`);
+
+  // ② 强制快路跑 4 像素带 alpha 夹具：这样能和 Chromium 的位图逐字节对照
+  let writeCalls = 0;
+  patchWrite((...args) => { writeCalls += 1; return realWrite(...args); });
+  const forced = await fileActions.copyImage(alphaPng, { fast: true });
+  const forcedPixels = dibV5Pixels();
+  check('小图也能被强制走快路', forced.ok === true && forced.fast === true && forced.method === 'native',
+    JSON.stringify(forced).slice(0, 120));
+  check('快路的位图 == Chromium 写的同一份（逐字节）',
+    Boolean(forcedPixels && chromiumPixels && forcedPixels.equals(chromiumPixels)),
+    forcedPixels && chromiumPixels
+      ? `${forcedPixels.length} / ${chromiumPixels.length} 字节`
+      : '缺参照样本（§5 那次 Electron 写入没生效）');
+
+  // ③ 真实大图不传参数 → 自动走快路，且完全不碰 Chromium
+  const tAuto = Date.now();
+  const auto = await fileActions.copyImage(bigPng);
+  const costAuto = Date.now() - tAuto;
+  check('大图不传参数也自动走快路',
+    auto.ok === true && auto.fast === true && auto.method === 'native',
+    JSON.stringify(auto).slice(0, 130));
+  check('快路一次 clipboard.write 都没调（成本全在 toPNG 上，绕开它就是全部收益）',
+    writeCalls === 0, `write 调用 ${writeCalls} 次`);
+
+  // ④ 同一张图、两条路，直接对比（这是「快 8.3 倍」那个结论的可复现版本）
+  patchWrite(realWrite);
+  const tSlow = Date.now();
+  const slow = await fileActions.copyImage(bigPng, { fast: false });
+  const costSlow = Date.now() - tSlow;
+  const expectBig = BIG_W * BIG_H * 4;
+  check('强制老路确实走了 Electron 的 write',
+    slow.ok === true && slow.method === 'electron' && slow.fast !== true,
+    JSON.stringify(slow).slice(0, 130));
+  check('两条路回读的位图都装得下整图（不是空壳）',
+    auto.clipboard.dibv5 >= expectBig && slow.clipboard.dibv5 >= expectBig,
+    `快路 dibv5=${auto.clipboard.dibv5} / 老路 dibv5=${slow.clipboard.dibv5}，期望≥${expectBig}`);
+  check('同一张大图，快路更快', costAuto < costSlow, `快路 ${costAuto}ms vs 老路 ${costSlow}ms`);
+
+  // ⑤ 格式集合的差异 —— 这是快路的**代价**，钉住它免得将来被当成 bug
+  const pngId = RegisterClipboardFormatW('PNG');
+  check('快路的剪贴板里有 CF_DIBV5（Windows 程序读的就是这个）',
+    auto.clipboard.formats.includes(CF_DIBV5), `formats=[${auto.clipboard.formats.join(',')}]`);
+  check('快路没写注册格式 PNG（代价：只认 PNG 的程序拿不到无损原件）',
+    !auto.clipboard.formats.includes(pngId), `pngId=${pngId}`);
+  check('小图（Electron 路）带注册格式 PNG —— 所以小图不走快路',
+    slow.clipboard.formats.includes(pngId), `formats=[${slow.clipboard.formats.join(',')}]`);
+
+  // ⑥ 「先报进度，再干活」的顺序：提示必须发生在同步冻结**之前**
+  const notices = [];
+  const tNotice = Date.now();
+  const withNotice = await fileActions.copyImageWithNotice(
+    GALLERY_PNG,
+    (text) => notices.push({ text, at: Date.now() - tNotice }),
+  );
+  const costNotice = Date.now() - tNotice;
+  check('复制前先发了一条进度提示',
+    notices.length === 1 && /正在复制图像/.test(notices[0].text), JSON.stringify(notices));
+  check('进度提示带上了分辨率（用户能判断该不该等）',
+    /1280×720/.test(notices[0].text), notices[0].text);
+  check('提示发生在冻结之前，不是干完活才报',
+    notices[0].at < costNotice - 40, `提示 ${notices[0].at}ms / 总 ${costNotice}ms`);
+  check('编排之后的最终结果依然是可用的复制结果', withNotice.ok === true,
+    JSON.stringify(withNotice).slice(0, 100));
 
   patchWrite(realWrite);
   fs.rmSync(tmp, { recursive: true, force: true });

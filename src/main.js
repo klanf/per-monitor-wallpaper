@@ -679,13 +679,32 @@ function buildImageMenuTemplate(payload) {
     label: '复制图像到剪贴板',
     enabled: canModify,
     click: async () => {
-      const r = await fileActions.copyImage(imagePath);
+      /*
+       * 先报进度、再干活。
+       *
+       * 复制本身可能要 1~7 秒（取决于图的像素数），而那几秒里主进程是**同步冻住**的
+       * —— 提示如果和同步段发在同一次事件循环里，屏幕上什么都没画出来，
+       * 用户看到的就是「点了没反应、也粘贴不出来」。所以进度必须先出去、先画出来。
+       */
+      const r = await fileActions.copyImageWithNotice(
+        imagePath,
+        (text) => send('notice', { text }),
+      );
       if (!r.ok) {
         send('notice', { text: r.error, error: true });
         return;
       }
-      // 「走兜底」是重要信息：说明 Electron 那条路当时不可用，值得让用户知道
-      const via = r.method === 'native' ? '（Electron 写入未生效，已走系统兜底写入）' : '';
+      /*
+       * 两条路都要说清楚，因为它们对用户是不同的信息：
+       *   · 快路（大图跳过 PNG 编码）—— 正常且更快，用户知道「大图这次是有意走快的」；
+       *   · 兜底（Electron 那条路当时不可用）—— 异常情况，得让用户知道。
+       */
+      let via = '';
+      if (r.method === 'native') {
+        via = r.fast
+          ? '（大图，走快速通道）'
+          : '（Electron 写入未生效，已走系统兜底写入）';
+      }
       send('notice', { text: `已复制图像（${r.width}×${r.height}）${via}，可直接粘贴` });
     },
   });
@@ -1343,7 +1362,12 @@ function registerIpc() {
   // ---- 文件操作 ----
 
   ipcMain.handle('file:stats', (_e, imagePath) => fileActions.fileStats(imagePath));
-  ipcMain.handle('file:copy-image', (_e, imagePath) => fileActions.copyImage(imagePath));
+  // 和右键菜单走同一套编排：大图用快路，并且先报进度再干活
+  // （渲染层自绘菜单将来若启用，也不需要再各自实现一遍）
+  ipcMain.handle('file:copy-image', (_e, imagePath) => fileActions.copyImageWithNotice(
+    imagePath,
+    (text) => send('notice', { text }),
+  ));
   ipcMain.handle('file:copy-file', (_e, imagePath) => fileActions.copyFile(imagePath));
   ipcMain.handle('file:copy-path', (_e, imagePath) => fileActions.copyText(imagePath));
   // 右键菜单里已经不放「用默认程序打开」了，但信息面板和「打开目录」还在用这条通道

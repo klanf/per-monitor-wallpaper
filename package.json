@@ -14,7 +14,7 @@
     "verify:unit": "node tools/test-scheduler.js",
     "verify:wiring": "node tools/check-wiring.js",
     "verify:resume": "node tools/verify-resume.js",
-    "verify:clipboard": "electron tools/verify-clipboard.js",
+    "verify:clipboard": "python tools/run-electron.py tools/verify-clipboard.js",
     "wallpaper:now": "node tools/wallpaper-now.js",
     "app:eval": "node tools/app-eval.js",
     "verify:e2e": "node tools/verify-per-monitor.js",
