@@ -1157,6 +1157,48 @@ async function main() {
     check('改完再读一次也对得上', new Store(tabPath).get().settingsTab === 'look');
   }
 
+  // ============================================================ §29 =====
+  /* ================= 29. 动态桌面降频写：锚点才写系统壁纸 ================= */
+  console.log('\n===== 29. 动态桌面降频写：锚点才写系统壁纸 =====');
+  {
+    // 先停掉 1 秒间隔的轮播定时器 —— 否则 degraded=true 期间 timer 触发的
+    // goTo 会真写系统壁纸，把下面的写入计数搅乱（手动 step 不检查 playing，照常可用）
+    scheduler.pauseAll();
+
+    const ch = 'MON-A';
+    const writesBefore = writes.length;
+
+    store.set({ liveWallpaper: true });
+
+    // 非锚点时机（command = 手动翻页）→ 不写
+    await scheduler.step(ch, 1);
+    check('动态开着：手动翻页不写系统壁纸', writes.length === writesBefore,
+      `写入数 ${writesBefore} → ${writes.length}`);
+    check('翻页结果以 live-skip 记账（UI 能显示原因）',
+      scheduler.channels.get(ch).lastWrite.method === 'live-skip',
+      `${scheduler.channels.get(ch).lastWrite.method} / why=${scheduler.channels.get(ch).lastWrite.why}`);
+
+    // 锚点时机（stop）→ 两个频道各真写一次
+    await scheduler.anchorSystem();
+    check('动态开着：anchorSystem（reason=stop）每频道真写一次', writes.length === writesBefore + 2,
+      `写入数 ${writesBefore} → ${writes.length}`);
+
+    // 降级兜底：动态窗口失效 → 恢复每轮都写
+    scheduler.isLiveDegraded = () => true;
+    await scheduler.step(ch, 1);
+    check('动态窗口失效（degraded）：翻页恢复写兜底', writes.length === writesBefore + 3,
+      `写入数 → ${writes.length}`);
+    check('degraded 的判定依据进了 lastWrite.why',
+      scheduler.channels.get(ch).lastWrite.why === 'degraded-fallback' || writes.length > writesBefore + 3);
+    scheduler.isLiveDegraded = () => false;
+
+    // 动态关掉 → 立即回到原行为（live-off）
+    store.set({ liveWallpaper: false });
+    await scheduler.step(ch, 1);
+    check('动态关掉：翻页照旧写（老行为不变）', writes.length === writesBefore + 4,
+      `写入数 → ${writes.length}`);
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>stage</title>
+<link rel="stylesheet" href="stage.css">
+</head>
+<body>
+<!-- 双图层舞台：结构与主窗口一致，但用 canvas 代替 <img> —— 原图在 JS 里降采样后
+     画进 canvas（物理像素大小），常驻显存只有屏幕大小而不是图片原始大小。
+     8K 图原始解码 ≈132MB，两层交叉淡入同时常驻 ≈264MB；canvas 4K ≈33MB/层。
+     外层 .layer 管过渡（transform/opacity），内层 canvas 管 Ken Burns 缓动，
+     两层 transform 独立、互不叠加。 -->
+<div id="stage">
+  <div class="layer" id="layerA"><canvas></canvas></div>
+  <div class="layer" id="layerB"><canvas></canvas></div>
+</div>
+<script src="stage.js"></script>
+</body>
+</html>

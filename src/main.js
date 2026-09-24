@@ -30,9 +30,12 @@ const { readImageSize } = require('./imageSize');
 const fileActions = require('./fileActions');
 const tray = require('./tray');
 const shellMenu = require('./shellMenu');
+const stageProtocol = require('./stageProtocol');
+const liveStage = require('./liveStage');
 
 // 自定义协议必须在 app ready 之前注册，所以放在模块顶层
 thumbnails.registerScheme();
+stageProtocol.registerScheme();
 
 const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
@@ -1091,6 +1094,7 @@ async function applyConfigChange(patch) {
   const keys = Object.keys(patch || {});
   const uiOnly = keys.length > 0 && keys.every((key) => UI_ONLY_KEYS.includes(key));
   const hadHotkeys = patch && Object.prototype.hasOwnProperty.call(patch, 'hotkeys');
+  const liveBefore = Boolean(store.get().liveWallpaper);
   store.set(patch);
   // 纯界面状态：写盘就够了，别惊动调度器
   if (uiOnly) return store.get();
@@ -1100,6 +1104,20 @@ async function applyConfigChange(patch) {
   // 从设置面板整体写配置时也要让热键生效（单独改热键走 hotkeys:set）
   if (hadHotkeys) applyHotkeys();
   announceAutoSetup(auto);
+
+  // 动态桌面开关：只在它变化时启停（改别的配置不惊动它，避免无谓的窗口重建）
+  const liveAfter = Boolean(store.get().liveWallpaper);
+  if (liveBefore !== liveAfter) {
+    if (liveAfter) {
+      liveStage.start();
+      liveStage.syncTo(scheduler.list());
+    } else {
+      liveStage.stop();
+      // 关掉动态桌面：系统壁纸还停在最后一次锚点图 → 补写当前帧
+      // （reason='stop' 在锚点白名单里，必定真写，见 liveDesktop.js）
+      scheduler.anchorSystem().catch((err) => console.warn('[live-stage] 停止补写失败:', err.message));
+    }
+  }
   return store.get();
 }
 
@@ -1634,11 +1652,14 @@ if (!gotLock) {
       size: store.get().thumbSize,
     });
     thumbnails.handleProtocol();
+    stageProtocol.handleProtocol();   // wpimg:// 动态桌面的原图通道（no-store）
 
     scheduler = new MonitorScheduler({
       store,
       cacheDir: CACHE_DIR,
       playback,
+      // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
+      isLiveDegraded: () => liveStage.isDegraded(),
       enumerate: () => {
         const info = listMonitors();
         return { ok: info.ok, error: info.error, monitors: info.monitors };
@@ -1647,9 +1668,14 @@ if (!gotLock) {
       onEvent: (type, payload) => {
         if (type === 'tick') {
           send('channel:tick', payload);
+          // stage 窗口也收全量 tick，各自按频道 id 过滤（每块屏只听自己的频道）
+          liveStage.broadcast('channel:tick', payload);
           tray.refresh(scheduler.list());
         } else {
-          send('channels:changed', channelBroadcast(payload));
+          const broadcast = channelBroadcast(payload);
+          send('channels:changed', broadcast);
+          liveStage.broadcast('channels:changed', broadcast);
+          liveStage.syncTo(payload.channels || scheduler.list());
           tray.refresh(payload.channels || scheduler.list());
         }
       },
@@ -1683,6 +1709,12 @@ if (!gotLock) {
     await scheduler.rebuild('startup');
     announceAutoSetup(autoAtStartup, true);
     thumbnails.pruneCache().catch(() => {});
+
+    // 动态桌面：配置开着就随应用启动（窗口在这里创建并挂到桌面图标下面）
+    if (store.get().liveWallpaper) {
+      liveStage.start();
+      liveStage.syncTo(scheduler.list());
+    }
 
     /*
      * 桌面右键菜单点下去时 App 可能没在跑（比如开机后还没启动过）。
@@ -1726,10 +1758,29 @@ if (!gotLock) {
     });
   });
 
-  app.on('before-quit', () => { quitting = true; });
+  /*
+   * 退出前的锚点补写（方案 A 降频写的收尾）：
+   * 动态桌面开着时系统壁纸只在锚点时机写 —— 退出就是最后一次锚点。
+   * 不补这一帧的话，退出/崩溃后桌面停的是「上次启动/换相簿」那张，
+   * 不是用户最后看到的那张。写完再真正退出（preventDefault + 再 quit）。
+   */
+  let anchorFlushed = false;
+  app.on('before-quit', (event) => {
+    quitting = true;
+    // 只在「动态桌面开且舞台正在跑」时才需要补写：没开过、或刚关掉
+    // （applyConfigChange 已补写过）、或舞台降级中（每轮都在写，桌面已是最新）都放行
+    const needFlush = scheduler && store.get().liveWallpaper && liveStage.stats().running && !anchorFlushed;
+    if (needFlush) {
+      event.preventDefault();
+      scheduler.anchorSystem()
+        .catch((err) => console.warn('[quit] 锚点补写失败:', err.message))
+        .finally(() => { anchorFlushed = true; app.quit(); });
+    }
+  });
 
   // 释放 COM 接口 + CoUninitialize，避免留下悬挂的 out-of-proc 引用
   app.on('will-quit', () => {
+    liveStage.stop();   // 卸载舞台窗口（先脱离桌面树再销毁，不留残影）
     if (scheduler) scheduler.stop();
     tray.destroy();
     globalShortcut.unregisterAll();       // 不注销的话热键会留给下一个实例（或失效占用）

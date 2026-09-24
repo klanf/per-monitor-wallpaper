@@ -49,6 +49,7 @@ const { scanFolder } = require('./scanner');
 const { resolveProfile, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
 const win32 = require('./win32');
+const liveDesktop = require('./liveDesktop');
 
 const UNIFIED_ID = '__unified__';
 
@@ -90,8 +91,12 @@ class MonitorScheduler {
    * @param {import('./playbackState').PlaybackState} [deps.playback]
    *        播放位置的磁盘存档（跨进程重启）。不传就只有内存进度，
    *        行为跟以前一样（重启从第一张开始）—— 测试可以按需注入。
+   * @param {() => boolean} [deps.isLiveDegraded]
+   *        动态桌面窗口是否已失效（挂载失败 / 被拆且救不回来）。由 liveStage 层注入；
+   *        失效时降频写自动放开（degraded-fallback），显示职责交回系统壁纸。
+   *        不传按「从未失效」处理 —— 单测里也能注入来验证这条兜底。
    */
-  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback }) {
+  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, isLiveDegraded }) {
     this.store = store;
     this.cacheDir = cacheDir;
     this.enumerate = enumerate;
@@ -100,6 +105,7 @@ class MonitorScheduler {
     this.writeWallpaper = writeWallpaper
       || ((imagePath, cacheDir, options) => win32.setWallpaper(imagePath, cacheDir, options));
     this.playback = playback || null;
+    this.isLiveDegraded = isLiveDegraded || (() => false);
 
     this.channels = new Map();
     /** 目录扫描结果缓存：多个频道指向同一目录时不重复扫盘 */
@@ -756,7 +762,23 @@ class MonitorScheduler {
 
     const target = this._targetFor(ch);
     const skipped = { droppedPaths: new Set(), badPaths: new Set() };
-    const previewOnly = !ch.profile.enabled || !this.store.get().applyToSystem;
+    const config = this.store.get();
+    const previewOnly = !ch.profile.enabled || !config.applyToSystem;
+
+    /*
+     * 动态桌面降频写（方案 A，2026-09-24 拍板）：
+     * 动态窗口开着时，系统壁纸只在锚点时机写（takeover / stop），其余时机这张图
+     * 由动态窗口自己显示 —— 实测每写一次系统壁纸，Explorer 会重建 WorkerW 把
+     * 动态窗口盖住约 1 秒（任务书 §2.14/§2.16），照原节奏桌面会每 30 秒闪一下。
+     * 动态没开（live=false）或窗口已失效（degraded）时恢复「每轮都写」的兜底。
+     * 判定细节见 liveDesktop.js（纯函数，test-live-desktop.js 全分支覆盖）。
+     */
+    const liveGate = liveDesktop.shouldWriteSystem({
+      live: config.liveWallpaper === true,
+      applyToSystem: config.applyToSystem,
+      reason,
+      degraded: this.isLiveDegraded() === true,
+    });
 
     let result = null;
     let entry = null;
@@ -771,7 +793,13 @@ class MonitorScheduler {
       if (!entry) break;
 
       if (previewOnly) {
-        result = { ok: true, method: 'preview-only', skipped: true, at: Date.now() };
+        result = { ok: true, method: 'preview-only', skipped: true, why: liveGate.why, at: Date.now() };
+        break;
+      }
+
+      if (!liveGate.write) {
+        // 动态窗口在显示这张，系统壁纸不必跟（保持上一次锚点的那张当兜底）
+        result = { ok: true, method: 'live-skip', skipped: true, why: liveGate.why, at: Date.now() };
         break;
       }
 
@@ -821,6 +849,7 @@ class MonitorScheduler {
       reason,
       monitorId: target.monitorId,
       monitorLabel: target.label,
+      why: liveGate.why,   // 写入策略的判定依据（live-off / live-anchor / degraded-fallback / system-off）
     };
     ch.lastError = result.ok ? null : (result.error || result.method);
     return ch.lastWrite;
@@ -903,6 +932,19 @@ class MonitorScheduler {
       clearTimeout(ch.timer);
       ch.timer = null;
     }
+  }
+
+  /**
+   * 锚点补写：把每个频道的当前帧真正落到系统壁纸（reason='stop'）。
+   *
+   * 在「停止动态桌面」（关开关）与「应用退出」时调用 —— 平时降频写
+   * （见 _write 的 liveGate），这时必须落一次：否则退出/崩溃之后桌面停在的是
+   * 上一次锚点（启动/换相簿）的那张，而不是用户最后看到的那张。
+   * reason 走 'stop' ⇒ shouldWriteSystem 判为 live-anchor，必定真写。
+   */
+  async anchorSystem() {
+    const targets = [...this.channels.values()].filter((ch) => !ch.retired && ch.files.length);
+    return await Promise.all(targets.map((ch) => this._write(ch, 'stop')));
   }
 
   /**

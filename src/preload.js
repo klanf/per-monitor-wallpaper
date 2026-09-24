@@ -24,6 +24,18 @@ function thumbUrl(filePath) {
   return `${THUMB_SCHEME}://t/${Buffer.from(String(filePath), 'utf16le').toString('base64url')}`;
 }
 
+const STAGE_SCHEME = 'wpimg';
+
+/**
+ * 磁盘路径 → 原图 URL（动态桌面舞台用）。
+ * 与 thumbUrl 同一套编码（UTF-16LE → base64url），对端是主进程 stageProtocol.js
+ * 的 decodePath。与缩略图的区别是返回**全尺寸原文件**且 no-store（不进 C 盘缓存）。
+ */
+function stageUrl(filePath) {
+  if (!filePath) return '';
+  return `${STAGE_SCHEME}://img/${Buffer.from(String(filePath), 'utf16le').toString('base64url')}`;
+}
+
 contextBridge.exposeInMainWorld('wp', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (patch) => ipcRenderer.invoke('config:set', patch),
@@ -53,6 +65,8 @@ contextBridge.exposeInMainWorld('wp', {
 
   // ---- 缩略图 ----
   thumbUrl,
+  /** 原图 URL（动态桌面舞台用；no-store，不进 Chromium 磁盘缓存） */
+  stageUrl,
   thumbStats: () => ipcRenderer.invoke('thumbs:stats'),
   thumbPrune: () => ipcRenderer.invoke('thumbs:prune'),
   thumbClear: () => ipcRenderer.invoke('thumbs:clear'),
@@ -147,6 +161,11 @@ contextBridge.exposeInMainWorld('wp', {
 
   onChannelTick: (cb) => {
     ipcRenderer.on('channel:tick', (_event, payload) => cb(payload));
+  },
+
+  /** 主进程告诉 stage 窗口「你绑定哪个频道」（动态桌面 stage 页专用） */
+  onStageBind: (cb) => {
+    ipcRenderer.on('stage:bind', (_event, payload) => cb(payload));
   },
 
   /** 主进程主动弹提示（右键菜单操作、托盘操作的结果） */

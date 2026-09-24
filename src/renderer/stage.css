@@ -1,0 +1,31 @@
+/* ==========================================================================
+   动态桌面舞台 · 样式
+   纯渲染页：没有 HUD / 面板 / 胶片条，只有两块铺满的图层。
+   所有动画都是 JS 驱动（stage.js 的 rAF tick 写 style）——
+   纯 CSS 动画跑在合成器里，requestAnimationFrame 节流对它无效（任务书 §2.8），
+   所以这里连 transition 都不用，fpsCap 才能真正限住帧。
+   ========================================================================== */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  /* 用不透明的黑，不用 rgba：这块窗口就是桌面本身，透出什么都是错 */
+  background: #000;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  opacity: 0;                 /* 初始隐藏；JS 按过渡状态写 */
+}
+
+.layer canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  will-change: transform;     /* Ken Burns 作用在内层，与外层过渡互不干扰 */
+  backface-visibility: hidden;
+}
