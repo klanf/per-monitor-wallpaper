@@ -223,7 +223,7 @@
 
 | 菜单项       | 行为                                |
 | --------- | --------------------------------- |
-| 复制图像到剪贴板  | 复制像素数据，可粘贴到 Word、画图等程序；写完会回读系统剪贴板核对体积，Chromium 那条路不生效时自动改用系统兜底写入 |
+| 复制图像到剪贴板  | 复制像素数据，可粘贴到 Word、画图等程序。**大图（>12 MP）跳过 PNG 编码直接写 `CF_DIBV5`**（`toPNG()` 是同步的，66.7 MP 要冻住主进程 4.9 秒），小图保留注册格式 `PNG`；点下去先弹「正在复制图像（宽×高）…」再动手，写完回读系统剪贴板核对体积，Chromium 那条路不生效时自动改用系统兜底写入 |
 | 复制文件到剪贴板  | 复制文件对象，可在资源管理器中粘贴                 |
 | 移动到 / 复制到 | 预设文件夹的子菜单，用于批量整理（例如移入「垃圾桶」目录）     |
 | 打开所在文件夹   | 打开所在目录并选中该文件                      |
@@ -360,7 +360,7 @@ npm run fixtures       # 生成 tools/fixtures/ 下的测试图（120 张渐变 
 npm run verify:unit    # 153 项调度器与配置单测，不需要启动界面
 npm run verify:resume  # 28 项「重启后接着上次那张播」，不需要启动界面
 npm run verify:wiring  # 37 项渲染层静态接线检查，不需要启动界面
-npm run verify:clipboard  # 21 项剪贴板写入（用真剪贴板，但不碰桌面）
+npm run verify:clipboard  # 38 项剪贴板写入（用真剪贴板，但不碰桌面；含「大图快路」）
 ```
 
 `verify:wiring` 是纯静态的：核对 `app.js` 里 `$('xxx')` 取的 id 在 `index.html` 里都还在（重排 DOM 最容易搬丢，丢了之后的症状是「点了没反应」，读代码很难看出来）、没有重复 id、设置面板的四个分类标签与内容页一一对得上。改完渲染层顺手跑一遍。
@@ -380,6 +380,8 @@ npm run app:eval -- "return (await wp.listChannels()).channels.map(c => c.index)
 要接手继续开发，先看 [docs/交接文档.md](docs/交接文档.md)：代码地图、概念词典、关键设计决定的理由、踩过的坑、待办清单都在里面。
 
 需要反复重启应用做验证时，用 `python tools/launch-dev.py`（可选 `--cdp` / `--hidden`）。它替你做三件直接从 shell 起 Electron 会出问题的事：剔掉环境里注入的 `ELECTRON_RUN_AS_NODE`（留着会让 Electron 退化成纯 Node）、让进程脱离父进程组（否则跑完就被回收）、把输出重定向到 `%TEMP%\electron-wallpaper-dev.log`（用管道而不读会把进程吊死）。
+
+跑**单个 Electron 脚本**（例如 `verify:clipboard`）则用 `python tools/run-electron.py tools/verify-clipboard.js`。它和上面那个分工不同 —— 它是**前台跑完并等退出码**，而且额外给一个**一次性的隔离 `user-data-dir`**：`launch-dev.py` 解决的是「怎么让应用活下去」，它解决的是「怎么让脚本在有应用正在跑的情况下还能跑起来」（否则第二个实例会在 Chromium 启动阶段被 profile 单例锁挡住，表现为卡住不动、无任何输出）。`npm run verify:clipboard` 已经走它。
 
 
 ### 打包发行版
