@@ -46,6 +46,23 @@ const { PlaybackState } = require('./playbackState');
 
 const CACHE_DIR = path.join(os.tmpdir(), 'electron-wallpaper-cache');
 
+/*
+ * 防降帧三连（阶段 0 PoC 的教训进生产）：
+ * 舞台窗口挂进 Progman 之后就是个子窗口，Chromium 的「窗口遮挡检测」会把
+ * 「被其它子窗口盖住」当成「用户看不见」而停止出帧 —— 表现和合成器死了一样。
+ * 这三个开关必须在 ready 之前挂上，动态桌面开着时缺一不可。
+ */
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+
+/*
+ * 测试隔离钩子：环境变量把 userData（配置 / 单实例锁 / 播放存档）整个换目录。
+ * requestSingleInstanceLock 按 userData 分钥匙，所以端到端验证得以和
+ * 用户正在跑的真实实例并存，互不干扰。必须在下面拿锁之前生效。
+ */
+if (process.env.WP_USER_DATA) app.setPath('userData', path.resolve(process.env.WP_USER_DATA));
+
 let store = null;
 let mainWindow = null;
 let scheduler = null;

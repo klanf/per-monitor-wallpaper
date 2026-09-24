@@ -414,6 +414,25 @@ function childHandles(parent) {
 }
 
 /** 把窗口做成可 JSON 序列化的节点（`parentHwnd` 是找挂载点的关键） */
+/** DWM 披蔽（cloak）检测：IsWindowVisible=true 但 DWM 根本不合成上屏的窗口
+ *  （锁屏界面、Windows 输入体验、UWP 宿主框架等）。做「屏幕上什么位置被占」
+ *  这类判断时必须排除，否则会把整个屏幕误判成被盖住。 */
+let _dwmGetWindowAttribute = null;
+function cloakOf(hWnd) {
+  if (_dwmGetWindowAttribute === null) {
+    try {
+      const d = koffi.load('dwmapi.dll');
+      _dwmGetWindowAttribute = d.func('int32 DwmGetWindowAttribute(void *hwnd, uint32 attr, _Out_ uint32 *val, uint32 cb)');
+    } catch {
+      _dwmGetWindowAttribute = false;
+    }
+  }
+  if (!_dwmGetWindowAttribute) return false;
+  const out = koffi.alloc('uint32', 1);
+  const r = _dwmGetWindowAttribute(hWnd, 14, out, 4);   // DWMWA_CLOAKED
+  return r === 0 && koffi.decode(out, 'uint32') !== 0;
+}
+
 function nodeOf(hWnd, parentHwnd, depth, withExe = true) {
   const n = {
     hwnd: addr(hWnd),
@@ -421,6 +440,7 @@ function nodeOf(hWnd, parentHwnd, depth, withExe = true) {
     title: textOf(hWnd),
     rect: rectOf(hWnd),
     visible: Boolean(load().IsWindowVisible(hWnd)),
+    cloaked: cloakOf(hWnd),
     pid: pidOf(hWnd),
     parentHwnd,
     children: [],
@@ -524,9 +544,15 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   const ex = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
   a.SetWindowLongPtrW(self, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
 
-  // 4. 插到图标层之后
-  const b = bounds || rectOf(parent);
-  const okPos = a.SetWindowPos(self, insertAfter, b.x, b.y, b.w, b.h,
+  // 4. 插到图标层之后。
+  //    ⚠️ 坐标语义：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
+  //    而调用方传的是虚拟桌面物理坐标（含多屏负偏移）。Progman 的客户区原点
+  //    = 虚拟桌面左上角（本机副屏在最左，是 (-1600,0)，不是 (0,0)）——
+  //    阶段 0 的 PoC 单屏没炸纯属「原点恰好是 (0,0)」的巧合，多屏必错位。
+  //    这里统一减掉父窗口原点换算。
+  const pb = rectOf(parent);
+  const b = bounds || { x: pb.x, y: pb.y, w: pb.w, h: pb.h };
+  const okPos = a.SetWindowPos(self, insertAfter, b.x - pb.x, b.y - pb.y, b.w, b.h,
     SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
   return {
@@ -587,24 +613,62 @@ function assertMount(hwnd, parentHwnd, insertAfterHwnd) {
  *   但屏幕上我们的画面已经没了 —— **只看父子关系会漏判**。
  *   判据必须是「Z 序里紧挨着我上面的就是锚点」。
  */
-function isZOrderIntact(hwnd, anchorHwnd) {
+/**
+ * Z 序自检：从 hwnd 沿「上一个窗口」链走到锚点（图标层），沿途必须全是自己人。
+ *
+ * 多屏下所有舞台都是同一个锚点的兄弟 —— 第二块挂上来必然把第一块顶下去一位，
+ * 「紧邻我上面的必须是锚点」这个旧判据会让 N 块屏互相误报、看门狗让它们
+ * 轮流重申、无限打架（e2e 实测：日志每 2s 刷一轮重申）。所以允许沿途碰到
+ * harmless 里的兄弟舞台；真正夹进来的外人（Explorer 插的 WorkerW）会让
+ * 链路走不通，判为失效。
+ *
+ * @param {number|object} hwnd 我们的窗口
+ * @param {number|object} anchorHwnd 锚点（SHELLDLL_DefView）
+ * @param {number[]|Set<number>} [harmless] 允许出现在链上的兄弟舞台句柄（number）
+ * @returns {boolean}
+ */
+function isZOrderIntact(hwnd, anchorHwnd, harmless = null) {
   const a = load();
   if (!a || !hwnd || !anchorHwnd) return false;
-  const prev = a.GetWindow(koffi.as(hwnd, 'void *'), GW_HWNDPREV);
-  return addr(prev) === anchorHwnd;
+  const anchorNum = typeof anchorHwnd === 'number' ? anchorHwnd : addr(anchorHwnd);
+  const okSet = harmless instanceof Set ? harmless
+    : Array.isArray(harmless) ? new Set(harmless.map((h) => (typeof h === 'number' ? h : addr(h))))
+    : null;
+  let cur = hwnd;
+  for (let i = 0; i < 64; i += 1) {          // 64 步封顶：防异常窗口树把这里变成死循环
+    const prev = a.GetWindow(koffi.as(cur, 'void *'), GW_HWNDPREV);
+    const prevNum = prev ? addr(prev) : 0;
+    if (!prevNum) return false;              // 走到链顶都没碰到锚点 ⇒ 失效
+    if (prevNum === anchorNum) return true;  // 到锚点为止沿途都是自己人
+    if (okSet && okSet.has(prevNum)) { cur = prevNum; continue; }
+    return false;                            // 中间夹了外人 ⇒ 被挤住了
+  }
+  return false;
 }
 
-/** 重申 Z 序：把窗口重新插到锚点之后（Progman 重绘后不需要重挂，只需要这一句） */
+/** 重申 Z 序：把窗口重新插到锚点之后（Progman 重绘后不需要重挂，只需要这一句）。
+ *  bounds 是虚拟桌面物理坐标，内部换算成父客户区相对坐标（同 mount，见那里） */
 function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   const a = load();
   if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
-  const b = bounds || null;
+  const self = koffi.as(hwnd, 'void *');
+  let x = 0; let y = 0; let w = 0; let h = 0;
+  let flags = SWP_NOMOVE | SWP_NOSIZE;
+  if (bounds) {
+    const parent = a.GetParent(self);
+    const pb = parent ? rectOf(parent) : { x: 0, y: 0 };
+    x = bounds.x - pb.x;
+    y = bounds.y - pb.y;
+    w = bounds.w;
+    h = bounds.h;
+    flags = 0;
+  }
   return {
     ok: Boolean(a.SetWindowPos(
-      koffi.as(hwnd, 'void *'),
+      self,
       insertAfterHwnd ? koffi.as(insertAfterHwnd, 'void *') : null,
-      b ? b.x : 0, b ? b.y : 0, b ? b.w : 0, b ? b.h : 0,
-      (b ? 0 : SWP_NOMOVE | SWP_NOSIZE) | SWP_NOACTIVATE
+      x, y, w, h,
+      flags | SWP_NOACTIVATE
     )),
   };
 }

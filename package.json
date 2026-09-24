@@ -15,6 +15,7 @@
     "verify:desktop": "node tools/test-desktop-host.js",
     "verify:live": "node tools/test-live-desktop.js",
     "verify:stage": "python tools/run-electron.py tools/verify-live-stage.js",
+    "verify:live-e2e": "python tools/run-electron.py tools/verify-live-e2e.js",
     "verify:wiring": "node tools/check-wiring.js",
     "verify:resume": "node tools/verify-resume.js",
     "verify:clipboard": "python tools/run-electron.py tools/verify-clipboard.js",

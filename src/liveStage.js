@@ -55,8 +55,15 @@ function hwndOf(win) {
  */
 function displayForMonitor(m) {
   const all = screen.getAllDisplays();
-  const bySize = all.filter((d) => Math.round(d.bounds.width * d.scaleFactor) === m.width
-    && Math.round(d.bounds.height * d.scaleFactor) === m.height);
+  /*
+   * 容差 ±2 物理像素，不能严格相等：非整数缩放下 DIP×sf 会偏零点几像素
+   * （本机竖屏 1600×2560 @150% ⇒ 1067×1707 DIP ⇒ 1600.5×2560.5 物理），
+   * 严格相等必失配 ⇒ 回落主屏 ⇒ 两块舞台叠在同一屏互相 z-fight
+   * （e2e 实测：看门狗日志每 2s 刷一轮「Z 序被挤掉」）。
+   */
+  const near = (a, b) => Math.abs(a - b) <= 2;
+  const bySize = all.filter((d) => near(d.bounds.width * d.scaleFactor, m.width)
+    && near(d.bounds.height * d.scaleFactor, m.height));
   if (bySize.length === 1) return bySize[0];
   if (bySize.length > 1) return bySize.find((d) => d.primary) || bySize[0];
   return all.find((d) => d.primary) || screen.getPrimaryDisplay();
@@ -64,12 +71,23 @@ function displayForMonitor(m) {
 
 function stageBounds(ch) {
   const disp = displayForMonitor(ch.monitor || ch);
-  return {
+  const dip = {
     x: disp.bounds.x,
     y: disp.bounds.y,
     width: disp.bounds.width,
     height: disp.bounds.height,
   };
+  // mount/SetWindowPos 要**虚拟桌面物理坐标**（内部再换算成父客户区相对，
+  // 见 desktopHost.mount）；DIP×sf 在非整数缩放下可能差零点几像素，取整即可
+  //（±1px，任务书 §2.4 已知）。而 BrowserWindow 的 setBounds 仍然用 DIP。
+  const sf = disp.scaleFactor || 1;
+  const phys = {
+    x: Math.round(dip.x * sf),
+    y: Math.round(dip.y * sf),
+    w: Math.round(dip.width * sf),
+    h: Math.round(dip.height * sf),
+  };
+  return { dip, phys };
 }
 
 /* ---------------------------------------------------------------- 广播 */
@@ -85,11 +103,13 @@ function broadcast(type, payload) {
 /* ---------------------------------------------------------------- 创建 / 销毁 */
 
 async function createStage(ch) {
-  const rec = { win: null, hwnd: 0, anchor: null, bounds: null, degraded: false, fails: 0, creating: true };
+  const rec = { win: null, hwnd: 0, anchor: null, bounds: null, boundsPhys: null, degraded: false, fails: 0, creating: true };
   stages.set(ch.id, rec);
   try {
-    const b = stageBounds(ch);
+    const sb = stageBounds(ch);
+    const b = sb.dip;
     rec.bounds = b;
+    rec.boundsPhys = sb.phys;
     const win = new BrowserWindow({
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
@@ -128,9 +148,7 @@ async function createStage(ch) {
     rec.anchor = { parentHwnd: choice.parentHwnd, insertAfterHwnd: choice.insertAfterHwnd };
 
     rec.hwnd = hwndOf(win);
-    const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, {
-      x: b.x, y: b.y, w: b.width, h: b.height,
-    });
+    const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys);
     if (!m.ok) throw new Error(`挂载失败 @${m.step}: ${m.error}`);
 
     win.showInactive();                // 不抢焦点
@@ -191,11 +209,14 @@ function watchOnce() {
         continue;
       }
 
-      // 父子关系正常 —— 但还要看 Z 序（§2.14：写系统壁纸会插入 WorkerW 压住我们）
-      if (!desktopHost.isZOrderIntact(rec.hwnd, rec.anchor.insertAfterHwnd)) {
-        const r = desktopHost.reaffirmZOrder(rec.hwnd, rec.anchor.insertAfterHwnd, {
-          x: rec.bounds.x, y: rec.bounds.y, w: rec.bounds.width, h: rec.bounds.height,
-        });
+      // 父子关系正常 —— 但还要看 Z 序（§2.14：写系统壁纸会插入 WorkerW 压住我们）。
+      // 兄弟舞台（其它屏的窗口）不算外人，否则多屏下互相误报、看门狗无限打架。
+      const others = new Set();
+      for (const [otherId, otherRec] of stages) {
+        if (otherId !== id && otherRec.hwnd) others.add(otherRec.hwnd);
+      }
+      if (!desktopHost.isZOrderIntact(rec.hwnd, rec.anchor.insertAfterHwnd, others)) {
+        const r = desktopHost.reaffirmZOrder(rec.hwnd, rec.anchor.insertAfterHwnd, rec.boundsPhys);
         if (r.ok) console.log(`[live-stage] ${id} Z 序被挤掉，已重申恢复`);
       }
       rec.fails = 0;
@@ -231,22 +252,33 @@ function syncTo(channels) {
   if (!running) return;
   const wanted = new Set();
   for (const ch of Array.isArray(channels) ? channels : []) {
-    if (!ch || ch.width === 0 || ch.enabled === false || ch.count === 0) continue;
+    /*
+     * 不看 ch.enabled —— resolveProfile 把 applyToSystem 折进了 enabled
+     * （store.js：enabled = Boolean(config.applyToSystem)），于是
+     * 「动态桌面开 + 不写系统壁纸」（完全替代模式）下所有频道都是
+     * enabled=false，若在这里跳过，舞台永远不会出现，模式直接失效。
+     * 舞台只由 liveWallpaper 总开关控制（start 只在它为真时被调用）；
+     * width=0（unified 伪频道）与 count=0（空相簿）照旧跳过。
+     * 每屏单独退出（monitors[id].enabled=false）与动态桌面叠加的
+     * 语义留到阶段 2 再定义。
+     */
+    if (!ch || ch.width === 0 || ch.count === 0) continue;
     wanted.add(ch.id);
     const existing = stages.get(ch.id);
     if (!existing && !stages.has(ch.id)) {
       createStage(ch);   // 异步；creating 标记防重复创建
     } else if (existing && !existing.creating && existing.bounds) {
-      // 显示器配置可能变了 → 重新对齐 bounds（DIP，见 stageBounds）
-      const b = stageBounds(ch);
+      // 显示器配置可能变了 → 重新对齐 bounds（DIP 给 setBounds，物理给 reaffirm）
+      const sb = stageBounds(ch);
+      const b = sb.dip;
       if (b.x !== existing.bounds.x || b.y !== existing.bounds.y
         || b.width !== existing.bounds.width || b.height !== existing.bounds.height) {
         existing.bounds = b;
+        existing.boundsPhys = sb.phys;
         if (existing.win && !existing.win.isDestroyed()) {
           existing.win.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height });
           if (existing.hwnd) {
-            desktopHost.reaffirmZOrder(existing.hwnd, existing.anchor.insertAfterHwnd,
-              { x: b.x, y: b.y, w: b.width, h: b.height });
+            desktopHost.reaffirmZOrder(existing.hwnd, existing.anchor.insertAfterHwnd, sb.phys);
           }
         }
       }
