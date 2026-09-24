@@ -188,7 +188,9 @@ function kenTick(now) {
   const t = ((now - ken.start) % (KEN.period * 2)) / KEN.period;
   const k = t <= 1 ? t : 2 - t;                       // 0→1→0 往返，无跳变
   const e = easeCubicBezier(k);
-  const s = 1 + KEN.amplitude * e;
+  // 基础放大 1.02：位移 ±travel(14px) 必须被放大率盖住，否则 k=0（scale=1 且位移最大）
+  // 那一瞬间会露 14px 的边——放大 2% 后 W/2×0.02=16px ≥ 14px，任何时刻都不露底
+  const s = 1.02 + KEN.amplitude * e;
   const tx = (k - 0.5) * 2 * KEN.travel * ken.dx;
   const ty = (k - 0.5) * 2 * KEN.travel * ken.dy;
   layer.canvas.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${s.toFixed(5)})`;
@@ -206,8 +208,11 @@ function animTick(now) {
     { x: lerp(0, v.toT.x, e), y: lerp(0, v.toT.y, e), s: lerp(1, v.toT.s, e) },
     lerp(1, v.toO, e), v.u);
   if (p >= 1) {
-    // 后层钉死在透明+原位，避免下次复用残留位移
+    // 两层都钉死在原位：后层透明避免残留位移；前层必须钉回 scale=1 ——
+    // zoom 变体的 toT.s=0.985（终态略小一圈），不钉回去的话四边会永久留缝，
+    // 露出底下的旧图层（2026-09-25 真机抓屏实测：左右下各 11px 缝，内容缩 1.5%）
     setLayer(outgoing.root, REST, 0, 'px');
+    setLayer(incoming.root, REST, 1, 'px');
     anim = null;
     ken.start = performance.now();   // Ken Burns 从新帧重新起算，方向也换一个
     const ang = Math.random() * Math.PI * 2;
