@@ -18,9 +18,14 @@
  *   §6 守卫分支：文件不在 / 格式解不了 / 空参数
  *   §7 大图快路：阈值判定 / 完全绕开 Chromium / 同一张图两条路比耗时 / 格式集合的取舍
  *      / 「先报进度再干活」的顺序
+ *      ⚠️ §7 用的是**合成纯色图**，纯色极易压缩，所以这里的倍率被**低估**（实测约 2.3×）。
+ *         真实照片上的数字（66.7 MP：快路 1003ms vs 老路 6209ms，6.2×）见
+ *         CHANGELOG 第二十四轮；复现脚本是 tools/tmp/verify-real-copy.js。
+ *   §8 快照 / 还原：本脚本自己跑完，不许把测试图留在用户剪贴板里
  *
  * 运行：`npm run verify:clipboard`
- * 副作用：会覆盖系统剪贴板（和 verify:features 里的复制断言一样）。
+ * 副作用：会**临时**覆盖系统剪贴板（验证就得写真剪贴板），
+ *        但开跑前拍快照、结束时还原，跑完不会留下测试图。
  */
 
 const fs = require('node:fs');
@@ -33,6 +38,7 @@ const { app, clipboard } = require('electron');
 const SRC = path.join(__dirname, '..', 'src');
 const clipboardWin = require(path.join(SRC, 'clipboardWin.js'));
 const fileActions = require(path.join(SRC, 'fileActions.js'));
+const clipboardReader = require('./clipboardReader.js');
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const GALLERY_PNG = path.join(FIXTURES, 'gallery', 'g-001-h0.png');
@@ -46,6 +52,7 @@ const BIG_W = 3600;
 const BIG_H = 3600;
 
 const CF_DIB = 8;
+const CF_UNICODETEXT = 13;
 const CF_DIBV5 = 17;
 
 let pass = 0;
@@ -204,7 +211,32 @@ const patchWrite = (fn) => Object.defineProperty(clipboard, 'write', {
   value: fn, configurable: true, writable: true,
 });
 
+/**
+ * 开跑前给剪贴板拍快照，结束时还原 —— 这个脚本必须把测试图写进**真剪贴板**
+ * 才验证得了，不收尾就会把夹具留在用户剪贴板里。
+ * 2026-09-24 就是这么暴露的：用户粘出来一张 1280×720 的红渐变色带图，
+ * 正是 fixtures/gallery/g-001-h0.png（§7⑥ 最后那次 copyImageWithNotice 留下的）。
+ */
+let clipSnap = null;
+
+function finish(code) {
+  if (clipSnap) {
+    const r = clipboardReader.restore(clipSnap);
+    if (r.ok) {
+      console.log(`\n剪贴板已还原：${r.restored.length ? r.restored.join(' + ') : '（原来就是空的 → 已清空）'}`);
+    } else {
+      console.log(`\n⚠️ 剪贴板未能完全还原：${r.error || (r.failed || []).map((f) => `${f.name} ${f.why}`).join('；')}`);
+    }
+    const skipped = (clipSnap.skipped || []).map((s) => s.name);
+    if (skipped.length) console.log(`  （${skipped.length} 个 GDI 类格式存不下来，未还原：${skipped.join(', ')}）`);
+  }
+  app.exit(code);
+}
+
 async function main() {
+  clipSnap = clipboardReader.snapshot();
+  console.log(`剪贴板快照：${clipboardReader.describeSnapshot(clipSnap)}`);
+
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-clip-'));
   const alphaPng = writeAlphaPng(path.join(tmp, 'alpha.png'));
   const bigPng = writeSolidPng(path.join(tmp, 'big.png'), BIG_W, BIG_H);
@@ -369,13 +401,56 @@ async function main() {
   check('编排之后的最终结果依然是可用的复制结果', withNotice.ok === true,
     JSON.stringify(withNotice).slice(0, 100));
 
+  /* ---------------------------------------------- §8 */
+  section('8. 剪贴板快照 / 还原（这个脚本自己不许留垃圾）');
+
+  // 拼一个「已知的」剪贴板：图片 + 文字。
+  // 注意顺序：Electron 的 writeText / write 都会先 EmptyClipboard，
+  // 所以先放图，再用不清空的方式把文字挂上去 —— 这样两种格式同时在场，
+  // 还原时才有东西可验（2026-09-24 首版把顺序写反了，快照里只有图）。
+  const FIXTURE_TEXT = '快照夹具-ABC-123';
+  await fileActions.copyImage(GALLERY_PNG);
+  const textOk = clipboardReader.setUnicodeText(FIXTURE_TEXT);
+
+  const snap = clipboardReader.snapshot();
+  const snapImage = snap.entries.find((e) => e.id === CF_DIBV5);
+  check('快照能连图片一起存下来（CF_DIBV5 体积对得上 1280×720×4）',
+    snap.ok === true && Boolean(snapImage) && snapImage.bytes.length >= 1280 * 720 * 4,
+    clipboardReader.describeSnapshot(snap));
+  check('同时挂着的文字格式也被存下来了',
+    textOk === true && snap.entries.some((e) => e.id === 13),
+    `格式：${snap.entries.map((e) => e.name).join(',')}`);
+
+  // 覆盖成别的东西（模拟「脚本跑完留下测试图」）
+  await fileActions.copyImage(bigPng, { fast: true });
+  const clobbered = clipboardWin.readImageStatus();
+  check('覆盖成功（这时候剪贴板里已经是大图夹具，不是原来那张）',
+    clobbered.ok === true && clobbered.dibv5 >= BIG_W * BIG_H * 4,
+    `dibv5=${clobbered.dibv5}`);
+
+  const back = clipboardReader.restore(snap);
+  const after = clipboardWin.readImageStatus();
+  check('还原：图片回到原来那张（体积是小夹具，不是大图）',
+    back.ok === true && after.ok === true
+      && after.dibv5 >= 1280 * 720 * 4 && after.dibv5 < BIG_W * BIG_H * 4,
+    `restored=[${back.restored.join(',')}] dibv5=${after.dibv5}`);
+  check('还原：系统照旧合成 CF_DIB / CF_BITMAP（图片能被别的程序粘走）',
+    after.ok === true && after.formats.includes(CF_DIB) && after.formats.includes(2),
+    `formats=[${after.formats.join(',')}]`);
+  // 文字按 CF_UNICODETEXT 的**原始字节**核对，不经过 Electron 的 API ——
+  // 这个版本（44.3.0）的 clipboard.readText() 返回的是 Promise，直接比会拿不到值。
+  const textBlob = readClipboardBlob(CF_UNICODETEXT);
+  const textBack = textBlob ? textBlob.toString('ucs2').replace(/\0+$/, '') : null;
+  check('还原：文字也回来了（按 CF_UNICODETEXT 原始字节核对）',
+    textBack === FIXTURE_TEXT, `${JSON.stringify(textBack)} / ${textBlob ? textBlob.length : 0} 字节`);
+
   patchWrite(realWrite);
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
-  app.exit(fail ? 1 : 0);
+  finish(fail ? 1 : 0);
 }
 
 app.whenReady().then(main).catch((err) => {
   console.error('验证崩溃:', err);
-  app.exit(2);
+  finish(2);
 });

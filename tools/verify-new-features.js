@@ -36,6 +36,8 @@ const IMAGE_COUNT = 11;
 let pass = 0;
 let fail = 0;
 const failures = [];
+// 剪贴板快照放在模块级：半路崩溃时 catch 里也要能还原
+let clipSnap = null;
 
 function check(label, ok, detail = '') {
   if (ok) { pass += 1; console.log(`  ✓ ${label}${detail ? '   ' + detail : ''}`); }
@@ -118,6 +120,10 @@ function buildScratch() {
 
 (async () => {
   buildScratch();
+
+  // 这个脚本会走真实右键菜单里的「复制图像 / 复制文件」，也就是会写真剪贴板。
+  // 和自启项一样，用户的剪贴板也不能被测试吃掉 —— 开跑前拍快照，结束前还原。
+  clipSnap = clipboardReader.snapshot();
 
   const page = await waitForPage();
   const cdp = await connect(page.webSocketDebuggerUrl);
@@ -780,6 +786,12 @@ function buildScratch() {
 
   cdp.close();
 
+  // 剪贴板还原（和上面自启项一样：测试不许在用户环境里留痕）
+  const clipBack = clipboardReader.restore(clipSnap);
+  console.log(`\n剪贴板：${clipBack.ok
+    ? `已还原 —— ${clipBack.restored.length ? clipBack.restored.join(' + ') : '（原来就是空的 → 已清空）'}`
+    : `⚠️ 未能完全还原：${clipBack.error || (clipBack.failed || []).map((f) => `${f.name} ${f.why}`).join('；')}`}`);
+
   console.log(`\n${'='.repeat(56)}`);
   console.log(`通过 ${pass} 项，失败 ${fail} 项`);
   if (fail) {
@@ -791,6 +803,11 @@ function buildScratch() {
 })().catch((err) => {
   console.error('\n验证脚本异常终止：', err.message);
   console.error(err.stack);
+  // 异常路径也要把剪贴板还回去 —— 半路挂掉不等于可以留垃圾
+  if (clipSnap) {
+    const back = clipboardReader.restore(clipSnap);
+    console.log(back.ok ? '剪贴板已还原' : `⚠️ 剪贴板还原失败：${back.error || ''}`);
+  }
   process.exit(2);
 });
 
