@@ -360,7 +360,7 @@ npm run fixtures       # 生成 tools/fixtures/ 下的测试图（120 张渐变 
 npm run verify:unit    # 153 项调度器与配置单测，不需要启动界面
 npm run verify:resume  # 28 项「重启后接着上次那张播」，不需要启动界面
 npm run verify:wiring  # 37 项渲染层静态接线检查，不需要启动界面
-npm run verify:clipboard  # 38 项剪贴板写入（用真剪贴板，但不碰桌面；含「大图快路」）
+npm run verify:clipboard  # 44 项剪贴板写入（用真剪贴板，跑完自动还原；含「大图快路」）
 ```
 
 `verify:wiring` 是纯静态的：核对 `app.js` 里 `$('xxx')` 取的 id 在 `index.html` 里都还在（重排 DOM 最容易搬丢，丢了之后的症状是「点了没反应」，读代码很难看出来）、没有重复 id、设置面板的四个分类标签与内容页一一对得上。改完渲染层顺手跑一遍。
@@ -383,6 +383,7 @@ npm run app:eval -- "return (await wp.listChannels()).channels.map(c => c.index)
 
 跑**单个 Electron 脚本**（例如 `verify:clipboard`）则用 `python tools/run-electron.py tools/verify-clipboard.js`。它和上面那个分工不同 —— 它是**前台跑完并等退出码**，而且额外给一个**一次性的隔离 `user-data-dir`**：`launch-dev.py` 解决的是「怎么让应用活下去」，它解决的是「怎么让脚本在有应用正在跑的情况下还能跑起来」（否则第二个实例会在 Chromium 启动阶段被 profile 单例锁挡住，表现为卡住不动、无任何输出）。`npm run verify:clipboard` 已经走它。
 
+想**重启你正在用的那个实例**（改完代码要生效），用 `python tools/restart-app.py`：默认只**列出**会关掉的进程树（dry-run），加 `--yes` 才按 **PID 树后序**关闭、再用桌面 VBS 拉起。别用 `proc-list.py --kill --under=<目录>` —— 它按镜像路径过滤，区分不了「同一项目的多个实例」，会连你正在跑的那个窗口一起关掉。
 
 ### 打包发行版
 
