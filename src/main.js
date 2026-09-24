@@ -32,6 +32,7 @@ const tray = require('./tray');
 const shellMenu = require('./shellMenu');
 const stageProtocol = require('./stageProtocol');
 const liveStage = require('./liveStage');
+const fullscreenWatch = require('./fullscreenWatch');
 
 // 自定义协议必须在 app ready 之前注册，所以放在模块顶层
 thumbnails.registerScheme();
@@ -1107,6 +1108,32 @@ function announceAutoSetup(info, viaBalloon = false) {
 const UI_ONLY_KEYS = ['settingsTab'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
+/* ---------------------------------------------------------------- 全屏暂停（阶段 3） */
+
+/**
+ * 全屏 / 挂机暂停轮询：随动态桌面启停。
+ * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
+ */
+function startFullscreenWatch() {
+  fullscreenWatch.start({
+    getFlags: () => {
+      const ls = (store && store.get().liveStage) || {};
+      return {
+        pauseOnFullscreen: ls.pauseOnFullscreen !== false,
+        pauseOnAway: ls.pauseOnLock !== false,
+      };
+    },
+    onTick: ({ pausedIds, away, reasons }) => {
+      liveStage.applyPauseState({ pausedIds, away, reasons });
+    },
+  });
+}
+
+function stopFullscreenWatch() {
+  fullscreenWatch.stop();
+  liveStage.applyPauseState({ pausedIds: [], away: false });   // 兜底解冻
+}
+
 async function applyConfigChange(patch) {
   const keys = Object.keys(patch || {});
   const uiOnly = keys.length > 0 && keys.every((key) => UI_ONLY_KEYS.includes(key));
@@ -1797,6 +1824,7 @@ if (!gotLock) {
 
   // 释放 COM 接口 + CoUninitialize，避免留下悬挂的 out-of-proc 引用
   app.on('will-quit', () => {
+    stopFullscreenWatch();   // 停轮询（stop 内部会把舞台全部解冻）
     liveStage.stop();   // 卸载舞台窗口（先脱离桌面树再销毁，不留残影）
     if (scheduler) scheduler.stop();
     tray.destroy();

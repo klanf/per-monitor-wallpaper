@@ -63,6 +63,9 @@ let rafId = 0;
 let lastPaint = 0;             // fpsCap 时间闸门
 const ken = { start: 0, dx: 1, dy: 0 };
 
+/** 全屏 / 锁屏暂停（stage:pause）：冻结 = 停 rAF，画面钉在当前帧 */
+let frozen = false;
+
 let resizeTimer = 0;
 
 /* ------------------------------------------------------------------ 基础工具 */
@@ -214,16 +217,28 @@ function animTick(now) {
 }
 
 function ensureRaf() {
-  if (rafId) return;
+  if (rafId || frozen) return;
   const loop = (now) => {
     rafId = 0;
     if (gate(now)) {
       animTick(now);
       kenTick(now);
     }
+    if (frozen) return;                    // 暂停：这一帧画完就停表
     if (anim || currentEntry) rafId = requestAnimationFrame(loop);
   };
   rafId = requestAnimationFrame(loop);
+}
+
+function setFrozen(next) {
+  if (frozen === Boolean(next)) return;
+  frozen = Boolean(next);
+  if (frozen) {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  } else {
+    ken.start = performance.now();         // 恢复：Ken Burns 重置起点，避免大跳
+    ensureRaf();
+  }
 }
 
 /* ------------------------------------------------------------------ 帧切换 */
@@ -333,14 +348,21 @@ async function init() {
 
   window.wp.onStageBind((payload) => {
     myChannel = payload && payload.channelId;
+    // bind 里带的是创建瞬间的暂停态（轮询事件只在变化时发，晚创建的窗口
+    // 只等事件会错过当前状态）
+    setFrozen(Boolean(payload && payload.paused));
     applyChannelConfig();
     wp.listChannels().then(applyChannels);
+  });
+  window.wp.onStagePause((payload) => {
+    setFrozen(Boolean(payload && payload.paused));
   });
   window.wp.onChannelsChanged(async (payload) => {
     await applyChannels(payload && payload.channels);
   });
   window.wp.onChannelTick((payload) => {
     if (!payload || payload.id !== myChannel) return;   // 每块 stage 只听自己频道
+    if (frozen) return;   // 暂停：留在当前帧，新图等恢复后下一拍再上
     if (payload.entry) {
       showFrame(payload.entry, payload.dir, true);
     } else {

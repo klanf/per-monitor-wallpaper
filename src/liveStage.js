@@ -87,7 +87,43 @@ function stageBounds(ch) {
     w: Math.round(dip.width * sf),
     h: Math.round(dip.height * sf),
   };
-  return { dip, phys };
+  // displayId 也要带出去：全屏暂停按「显示器」算（fullscreenWatch 的判定单位
+  // 是 Electron display），stage 窗口必须知道自己挂在哪块屏才知道听不听暂停
+  return { dip, phys, displayId: disp.id };
+}
+
+/* ---------------------------------------------------------------- 暂停状态 */
+
+/**
+ * 全屏 / 挂机暂停（阶段 3）。fullscreenWatch 按显示器算出暂停集合，
+ * 这里负责翻译成「每块 stage 冻不冻」并广播。
+ * 语义（拍板）：全停 —— 冻结 = 渲染层停 rAF（含 Ken Burns），停在当前帧；
+ * 不卸载、不黑屏，恢复即续播。调度器照常走针，暂停中的舞台跳过新帧。
+ */
+const pauseDisplays = new Set();
+let pauseAway = false;
+
+function applyPauseState({ pausedIds, away, reasons } = {}) {
+  pauseDisplays.clear();
+  for (const id of Array.isArray(pausedIds) ? pausedIds : []) pauseDisplays.add(id);
+  pauseAway = Boolean(away);
+  for (const [id, rec] of stages) {
+    if (rec.win && !rec.win.isDestroyed()) {
+      try {
+        rec.win.webContents.send('stage:pause', { paused: pauseDisplays.has(rec.displayId) });
+      } catch { /* 窗口正在销毁 */ }
+    }
+  }
+  if (pauseDisplays.size || pauseAway) {
+    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway}`,
+      Object.keys(reasons || {}).length ? JSON.stringify(reasons) : '');
+  } else {
+    console.log('[live-stage] 暂停解除：全部舞台恢复');
+  }
+}
+
+function isPausedForDisplay(displayId) {
+  return pauseDisplays.has(displayId);
 }
 
 /* ---------------------------------------------------------------- 广播 */
@@ -154,7 +190,13 @@ async function createStage(ch) {
     win.showInactive();                // 不抢焦点
     rec.fails = 0;
     rec.degraded = false;
-    win.webContents.send('stage:bind', { channelId: ch.id, monitorId: ch.monitorId });
+    // bind 带上初始暂停态：轮询事件只在「变化」时发，晚创建的窗口若只等
+    // 事件会错过当前状态（zm 的 get_wallpaper_media 补拉同款问题）
+    win.webContents.send('stage:bind', {
+      channelId: ch.id,
+      monitorId: ch.monitorId,
+      paused: isPausedForDisplay(sb.displayId),
+    });
     console.log(`[live-stage] 频道 ${ch.id} 的舞台已挂载（strategy=${choice.strategy}）`);
   } catch (err) {
     console.error('[live-stage] 创建失败:', err.message);
@@ -301,16 +343,19 @@ function isDegraded() {
 function stats() {
   return {
     running,
+    pausedDisplays: [...pauseDisplays],
+    away: pauseAway,
     stages: [...stages.entries()].map(([id, rec]) => ({
       id,
       mounted: Boolean(rec.hwnd && rec.anchor),
       degraded: rec.degraded,
       fails: rec.fails,
+      paused: pauseDisplays.has(rec.displayId),
       bounds: rec.bounds,
     })),
   };
 }
 
 module.exports = {
-  start, stop, syncTo, broadcast, isDegraded, stats,
+  start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
 };

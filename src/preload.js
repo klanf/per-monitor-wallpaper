@@ -168,6 +168,11 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('stage:bind', (_event, payload) => cb(payload));
   },
 
+  /** 主进程告诉 stage 窗口「暂停 / 恢复」（全屏占用 / 锁屏，阶段 3） */
+  onStagePause: (cb) => {
+    ipcRenderer.on('stage:pause', (_event, payload) => cb(payload));
+  },
+
   /** 主进程主动弹提示（右键菜单操作、托盘操作的结果） */
   onNotice: (cb) => {
     ipcRenderer.on('notice', (_event, payload) => cb(payload));
