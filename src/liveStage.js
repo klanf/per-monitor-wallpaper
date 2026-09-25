@@ -129,11 +129,21 @@ function isPausedForDisplay(displayId) {
 /* ---------------------------------------------------------------- 广播 */
 
 function broadcast(type, payload) {
+  let sent = 0;
   for (const st of stages.values()) {
     if (st.win && !st.win.isDestroyed()) {
-      try { st.win.webContents.send(type, payload); } catch { /* 窗口正在销毁 */ }
+      try { st.win.webContents.send(type, payload); sent += 1; } catch { /* 窗口正在销毁 */ }
     }
   }
+  if (!broadcast._logged) broadcast._logged = true;
+  if (type === 'channel:tick') {
+    const key = '_tickLogged';
+    if (!broadcast[key]) {
+      broadcast[key] = true;
+      console.log(`[live-stage] 首次 tick 广播: 舞台数=${stages.size} 实发=${sent}`);
+    }
+  }
+  return sent;
 }
 
 /* ---------------------------------------------------------------- 创建 / 销毁 */
@@ -169,6 +179,10 @@ async function createStage(ch) {
     rec.win = win;
 
     win.on('closed', () => { if (stages.get(ch.id) === rec) stages.delete(ch.id); });
+    // 渲染端 console 转发到主进程 stdout（黑屏类问题没有这个就是盲区 —— 2026-09-25 踩）
+    win.webContents.on('console-message', (_e, _lvl, message, line, source) => {
+      console.log(`[stage-render] ${message} (${source}:${line})`);
+    });
     // 渲染进程崩了（GPU 驱动复位之类）→ 重载页面；窗口与挂载都还在
     win.webContents.on('render-process-gone', () => {
       if (running && rec.win && !rec.win.isDestroyed()) rec.win.webContents.reload();

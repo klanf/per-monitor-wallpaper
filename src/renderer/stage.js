@@ -264,6 +264,10 @@ async function showFrame(entry, dir, animate) {
   if (token !== animToken) { bmp.close(); return; }   // 等待期间又被切走了
 
   const incomingKey = active === 'A' ? 'B' : 'A';
+  if (!showFrame._logged) {
+    showFrame._logged = true;
+    console.log(`[stage] 首帧上屏: ${entry.path}`);
+  }
   const incoming = layers[incomingKey];
   const outgoing = layers[active];
   paintLayer(incoming, bmp);
@@ -302,7 +306,20 @@ function applyChannelConfig() {
 }
 
 async function applyChannels(list) {
-  channels = Array.isArray(list) ? list : [];
+  /*
+   * 兼容两种形态：数组（channels:changed 载荷）与 {channels:[...]} 整包
+   * （listChannels 的返回值）。2026-09-25 实测：stage:bind 回调里直接
+   * listChannels().then(applyChannels) 传进来整包对象 → channels 被清成 []、
+   * currentEntry=null，舞台停在首帧（canvas 不清屏所以看起来「冻结」）。
+   * 与其要求每个调用点都记得拆包，不如这里统一兜底。
+   */
+  channels = Array.isArray(list) ? list
+    : (list && Array.isArray(list.channels)) ? list.channels
+    : [];
+  if (!applyChannels._logged) {
+    applyChannels._logged = true;
+    console.log(`[stage] applyChannels#1 channels=${channels.length} myChannel=${myChannel}`);
+  }
   if (!myChannel) {
     // 没收到 bind（例如手动把 stage 页开在普通窗口里）：退回第一个可用频道
     const pick = channels.find((c) => c.enabled !== false && c.count > 0) || channels[0];
@@ -338,6 +355,7 @@ function onResize() {
 }
 
 async function init() {
+  console.log(`[stage] init 开始 ua-ok=${Boolean(window.wp)}`);
   layers.A = {
     root: document.getElementById('layerA'),
     canvas: document.querySelector('#layerA canvas'),
@@ -365,7 +383,18 @@ async function init() {
   window.wp.onChannelsChanged(async (payload) => {
     await applyChannels(payload && payload.channels);
   });
-  window.wp.onChannelTick((payload) => {
+  /*
+   * ⚠️ 必须是具名函数再挂 `_logged`：箭头匿名回调里写 `onChannelTick._logged`
+   * 是裸标识符引用（渲染层没有这个名字）→ 每拍 tick 一进来就
+   * ReferenceError: onChannelTick is not defined，永远走不到 showFrame
+   * （2026-09-25 真机实锤：桌面永远停在启动首帧，「后续都没有改」）。
+   * console-message 转发日志里表现为 preload.js:163 的 Uncaught Error。
+   */
+  function onTick(payload) {
+    if (!onTick._logged) {
+      onTick._logged = true;
+      console.log(`[stage] 收到首个 tick: id=${payload && payload.id} myChannel=${myChannel} frozen=${frozen}`);
+    }
     if (!payload || payload.id !== myChannel) return;   // 每块 stage 只听自己频道
     if (frozen) return;   // 暂停：留在当前帧，新图等恢复后下一拍再上
     if (payload.entry) {
@@ -373,9 +402,15 @@ async function init() {
     } else {
       currentEntry = null;   // 频道空了（相簿被清空）→ 黑屏
     }
-  });
+  }
+  window.wp.onChannelTick(onTick);
 
-  await applyChannels(await window.wp.listChannels());
+  // ⚠️ listChannels 返回的是 {channels:[...],...} 整包，不是数组 —— 直接传会把
+  // channels 清空成 []（2026-09-25 实测：init 后 channels=0、currentEntry=null，
+  // 舞台黑屏，靠后面 channels:changed 才可能补救；第二块屏没补到就一直黑）
+  const listRes = await window.wp.listChannels();
+  await applyChannels(Array.isArray(listRes) ? listRes : (listRes && listRes.channels) || []);
+  console.log(`[stage] init 完成 myChannel=${myChannel} channels=${channels.length} currentEntry=${currentEntry ? currentEntry.path : 'null'}`);
   ensureRaf();
 }
 

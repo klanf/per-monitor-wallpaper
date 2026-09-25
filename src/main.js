@@ -1711,11 +1711,13 @@ if (!gotLock) {
       resolveUnifiedTarget,
       onEvent: (type, payload) => {
         if (type === 'tick') {
+          console.log(`[tick-bus] tick id=${payload.id} index=${payload.index}/${payload.count}`);
           send('channel:tick', payload);
           // stage 窗口也收全量 tick，各自按频道 id 过滤（每块屏只听自己的频道）
           liveStage.broadcast('channel:tick', payload);
           tray.refresh(scheduler.list());
         } else {
+          console.log(`[tick-bus] ${type} reason=${payload.reason} channels=${(payload.channels || []).length}`);
           const broadcast = channelBroadcast(payload);
           send('channels:changed', broadcast);
           liveStage.broadcast('channels:changed', broadcast);
