@@ -63,6 +63,12 @@ const DEFAULTS = {
   shuffle: false,
   autoPlay: true,
   applyToSystem: true,     // 总开关：是否真正写系统壁纸
+  /**
+   * 视频播完再切：当前条目是视频时等它播完（ended）才推进下一张，
+   * 不按 interval 定时切。只在动态桌面开着时有意义（系统壁纸显示不了视频，
+   * 没人播就没人报告 ended）。渲染端加载失败也会报告，视频坏掉不会卡死轮播。
+   */
+  videoPlayFull: false,
 
   /**
    * 动态桌面总开关：把渲染窗口挂到桌面图标**下面**实时渲染（Wallpaper Engine 那种活桌面）。
@@ -230,6 +236,7 @@ const PROFILE_KEYS = [
   'albumId', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
   'kenBurns',                  // 动态桌面舞台的 Ken Burns 微缩放开关（不写 = 默认开）
   'fpsCap',                    // 动态桌面舞台过渡帧率上限（不写 = 默认 60）
+  'videoPlayFull',             // 视频播完再切下一张（不写 = 默认关，按 interval 定时切）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */
@@ -355,6 +362,7 @@ const BOOL_KEYS = new Set([
   'tray', 'closeToTray', 'startHidden', 'launchAtLogin',
   'filmstrip', 'filmstripAutoCenter', 'infoPanel', 'contextMenu',
   'liveWallpaper',
+  'videoPlayFull',
 ]);
 
 /** 热键字段：值必须是非空字符串或空串，别让 undefined / 数字混进来 */

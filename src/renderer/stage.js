@@ -57,6 +57,7 @@ const cfg = {
   fit: 'cover',
   fpsCap: 60,         // 30 在 60Hz 屏上过渡明显掉帧；60 = 跟满垂直同步
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
+  videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
 };
 
 const layers = {
@@ -276,7 +277,7 @@ function kindOf(entry) {
   return 'image';
 }
 
-/** 取/建图层私有的 <video>（muted+loop —— 桌面壁纸必须静音） */
+/** 取/建图层私有的 <video>（muted —— 桌面壁纸必须静音；loop 由 videoPlayFull 决定） */
 function videoOf(layer) {
   if (!layer.video) {
     const v = document.createElement('video');
@@ -285,6 +286,14 @@ function videoOf(layer) {
     v.playsInline = true;
     v.autoplay = true;
     v.style.display = 'none';
+    // videoPlayFull：不循环，播完（ended 只在 loop=false 时触发）通知调度器推进。
+    // 推进失败（暂停中 / 当前已不是视频）就原地重播，视频不会停在最后一帧。
+    v.addEventListener('ended', async () => {
+      try {
+        const r = await window.wp.stageVideoEnded(myChannel);
+        if (!r || !r.advanced) { try { v.play().catch(() => {}); } catch (_) {} }
+      } catch (_) { /* 静默 */ }
+    });
     layer.root.appendChild(v);
     layer.video = v;
   }
@@ -463,10 +472,13 @@ async function showFrame(entry, dir, animate) {
     const v = videoOf(incoming);
     const url = window.wp.stageUrl(entry.path);
     if (v.src !== url) v.src = url;                     // 换 src 会自动重载
+    v.loop = !cfg.videoPlayFull;                        // 播完再切：不循环，ended 通知调度器
     try {
       await waitVideoReady(v);
     } catch {
       console.warn('[stage] 视频加载失败:', entry.path);
+      // 调度器在 videoPlayFull 下对视频不挂定时器，坏视频不上报会永远卡住这条频道
+      try { window.wp.stageVideoEnded(myChannel); } catch (_) { /* 静默 */ }
       return;   // 下一帧 tick 会带新条目来
     }
     if (token !== animToken) { v.pause(); return; }
@@ -546,6 +558,8 @@ function applyChannelConfig() {
   if (Number.isFinite(p.fpsCap)) cfg.fpsCap = p.fpsCap;
   // Ken Burns 开关（profile 不写 = 默认开）
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
+  // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
+  if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
 }
 
 async function applyChannels(list) {

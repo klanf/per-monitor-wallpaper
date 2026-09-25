@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('wp', {
   thumbUrl,
   /** 原图 URL（动态桌面舞台用；no-store，不进 Chromium 磁盘缓存） */
   stageUrl,
+  /** 舞台报告「当前视频播完了 / 加载失败了」（videoPlayFull 时调度器靠这个推进） */
+  stageVideoEnded: (channelId) => ipcRenderer.invoke('stage:video-ended', channelId),
   thumbStats: () => ipcRenderer.invoke('thumbs:stats'),
   thumbPrune: () => ipcRenderer.invoke('thumbs:prune'),
   thumbClear: () => ipcRenderer.invoke('thumbs:clear'),

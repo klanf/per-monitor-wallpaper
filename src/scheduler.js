@@ -647,6 +647,20 @@ class MonitorScheduler {
     clearTimeout(ch.timer);
     ch.timer = null;
     if (!ch.playing || ch.files.length < 2) return;
+    /*
+     * videoPlayFull（视频播完再切）：当前条目是视频且动态窗口正在显示它时，
+     * 不挂定时器 —— 等渲染端播完（ended）或加载失败时发 stage:video-ended，
+     * 由 videoEnded() 推进。动态没开 / 窗口已失效时视频根本没人播、没人报告，
+     * 照旧按 interval 走，否则频道会永远停在视频上不动。
+     */
+    const config = this.store.get();
+    const entry = ch.files[ch.index];
+    if (config.videoPlayFull === true
+      && config.liveWallpaper === true
+      && !this.isLiveDegraded()
+      && entry && kindFor(entry.ext) === 'video') {
+      return;
+    }
     const ms = Math.max(1, ch.profile.interval) * 1000;
     ch.timer = setTimeout(() => {
       ch.timer = null;
@@ -918,6 +932,23 @@ class MonitorScheduler {
     const ch = this.channels.get(id);
     if (!ch) return null;
     await this._advance(ch, dir >= 0 ? 1 : -1, 'command');
+    return ch.files[ch.index] || null;
+  }
+
+  /**
+   * 舞台渲染端报告「视频播完了 / 加载失败了」（stage:video-ended）。
+   * videoPlayFull 开启时调度器对视频条目不挂定时器（见 _schedule），全靠这里推进。
+   *
+   * 校验当前条目确实是视频且在播：配置切换瞬间旧渲染端迟到的报告、
+   * 或者暂停状态下播到头的视频，都不能把当前帧顶掉。
+   * 返回推进后的当前条目（没推进返回 null，渲染端据此决定要不要原地重播）。
+   */
+  async videoEnded(id) {
+    const ch = this.channels.get(id);
+    if (!ch || ch.retired || !ch.playing) return null;
+    const entry = ch.files[ch.index];
+    if (!entry || kindFor(entry.ext) !== 'video') return null;
+    await this._advance(ch, 1, 'video-ended');
     return ch.files[ch.index] || null;
   }
 
