@@ -79,6 +79,8 @@ const WS_BORDER = 0x00800000;
 const WS_DLGFRAME = 0x00400000;
 const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_TOOLWINDOW = 0x00000080;
+const WS_EX_TRANSPARENT = 0x00000020;   // 鼠标穿透：我们盖在图标层之上，不能吃掉桌面右键/框选/双击
+const HWND_TOP = null;                   // koffi 里空指针 = HWND_TOP(0)：置于同层兄弟最顶
 /** 扩展边框样式（zm-main 同款清单）：CLIENTEDGE 会在窗口四周画内嵌边线，
  *  WINDOWEDGE/DLGMODALFRAME 参与非客户区计算，挂子窗口前一并剥掉 */
 const WS_EX_CLIENTEDGE = 0x00000200;
@@ -589,7 +591,11 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
 
   const self = koffi.as(hwnd, 'void *');
   const parent = koffi.as(parentHwnd, 'void *');
-  const insertAfter = insertAfterHwnd ? koffi.as(insertAfterHwnd, 'void *') : null;
+  // ⚠️ 2026-09-26 实测改判：Win11(本机 25H2) 的 SHELLDLL_DefView **自己绘制壁纸且
+  //    不透明**，挂在它「之后(=之下)」的舞台会被完全盖住 —— 结构验证（父子关系、
+  //    Z 序、抓屏尺寸）全绿，但桌面肉眼一动不动。决定性实验：把舞台提到 DefView
+  //    之上，桌面立刻显示舞台内容。故改为置顶（HWND_TOP），不再用 insertAfter。
+  // （insertAfterHwnd 参数保留兼容调用方，但不再参与定位）
 
   // 1. 父子关系
   const prevParent = a.SetParent(self, parent);
@@ -612,7 +618,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   //    不抢焦点、不进 Alt+Tab
   const ex = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
   const newEx = (ex & ~(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME))
-    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT;
   a.SetWindowLongPtrW(self, GWL_EXSTYLE, newEx);
 
   // 4. 插到图标层之后。
@@ -630,7 +636,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   const pb = rectOf(parent);
   const b = bounds || { x: pb.x, y: pb.y, w: pb.w, h: pb.h };
   const relX = b.x - pb.x, relY = b.y - pb.y;
-  if (!a.SetWindowPos(self, insertAfter, relX, relY, b.w, b.h,
+  if (!a.SetWindowPos(self, HWND_TOP, relX, relY, b.w, b.h,
     SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED)) {
     return { ok: false, step: 'SetWindowPos', error: 'SetWindowPos 失败' };
   }
@@ -642,7 +648,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   const wr = rectOf(self);
   const dr = (wr.w - cs.w) - dl;                // 右边框
   const db = (wr.h - cs.h) - dt;                // 底边框
-  const okPos = a.SetWindowPos(self, insertAfter,
+  const okPos = a.SetWindowPos(self, HWND_TOP,
     relX - dl, relY - dt, b.w + dl + dr, b.h + dt + db,
     SWP_NOACTIVATE | SWP_SHOWWINDOW);
   console.log(`[desktop-host] 边框补偿: L=${dl} T=${dt} R=${dr} B=${db} 第二次SetWindowPos=${okPos ? 'ok' : 'FAIL'}`);
@@ -741,12 +747,16 @@ function isZOrderIntact(hwnd, anchorHwnd, harmless = null) {
   const okSet = harmless instanceof Set ? harmless
     : Array.isArray(harmless) ? new Set(harmless.map((h) => (typeof h === 'number' ? h : addr(h))))
     : null;
-  let cur = hwnd;
+  const selfNum = typeof hwnd === 'number' ? hwnd : addr(hwnd);
+  // 新语义（2026-09-26 实测定稿）：要求舞台位于锚点（图标层）**之上**。
+  // 从锚点沿 GW_HWNDPREV 往上层走，沿途只能是自己人（其余舞台），且必须碰到自己；
+  // 中途出现外人（Explorer 插进来的窗口）⇒ 判失效、重申置顶。
+  let cur = anchorHwnd;
   for (let i = 0; i < 64; i += 1) {          // 64 步封顶：防异常窗口树把这里变成死循环
     const prev = a.GetWindow(koffi.as(cur, 'void *'), GW_HWNDPREV);
     const prevNum = prev ? addr(prev) : 0;
-    if (!prevNum) return false;              // 走到链顶都没碰到锚点 ⇒ 失效
-    if (prevNum === anchorNum) return true;  // 到锚点为止沿途都是自己人
+    if (!prevNum) return false;              // 走到链顶都没碰到自己 ⇒ 被挤到锚点下面了
+    if (prevNum === selfNum) return true;    // 我们在锚点之上，且中间没夹外人
     if (okSet && okSet.has(prevNum)) { cur = prevNum; continue; }
     return false;                            // 中间夹了外人 ⇒ 被挤住了
   }
@@ -783,7 +793,7 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   return {
     ok: Boolean(a.SetWindowPos(
       self,
-      insertAfterHwnd ? koffi.as(insertAfterHwnd, 'void *') : null,
+      HWND_TOP,
       x, y, w, h,
       flags | SWP_NOACTIVATE
     )),
