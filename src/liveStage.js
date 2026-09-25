@@ -403,6 +403,19 @@ function stats() {
   };
 }
 
+/** 桌面右键补偿：舞台置顶吃掉了鼠标（穿透方案见 desktopHost 的 LAYERED 注释，
+ *  会让 Chromium 白屏），渲染端把 contextmenu 的 CSS(DIP) 屏幕坐标发上来，
+ *  这里换算成物理像素后转发给 SHELLDLL_DefView，Explorer 就会弹原生桌面菜单。 */
+function showDesktopContextMenu(dipX, dipY) {
+  const rec = stages.values().next().value;
+  const defViewHwnd = rec && rec.anchor && rec.anchor.insertAfterHwnd;
+  if (!defViewHwnd) return { ok: false, error: '没有已挂载的舞台，拿不到 DefView 句柄' };
+  const disp = screen.getDisplayNearestPoint({ x: Math.round(dipX), y: Math.round(dipY) });
+  const sf = (disp && disp.scaleFactor) || 1;
+  return desktopHost.postContextMenu(defViewHwnd, Math.round(dipX * sf), Math.round(dipY * sf));
+}
+
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
+  showDesktopContextMenu,
 };

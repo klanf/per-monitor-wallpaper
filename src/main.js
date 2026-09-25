@@ -1194,6 +1194,8 @@ async function runChannelCommand(id, command, payload) {
 
 function registerIpc() {
   ipcMain.handle('config:get', () => store.get());
+  // 舞台置顶吃掉了桌面右键：渲染端捕获后转发 DefView 弹原生菜单（见 liveStage）
+  ipcMain.handle('desktop:context-menu', (_e, x, y) => liveStage.showDesktopContextMenu(x, y));
   ipcMain.handle('config:set', (_e, patch) => applyConfigChange(patch || {}));
 
   // ---- 频道 ----

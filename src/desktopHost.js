@@ -331,6 +331,7 @@ function load() {
       SetWindowLongPtrW: u.func('intptr_t SetWindowLongPtrW(void *hWnd, int index, intptr_t value)'),
       SetWindowRgn: u.func('int SetWindowRgn(void *hWnd, void *hRgn, bool bRedraw)'),
       SetLayeredWindowAttributes: u.func('bool SetLayeredWindowAttributes(void *hWnd, uint32 crKey, uint8 bAlpha, uint32 dwFlags)'),
+      PostMessageW: u.func('bool PostMessageW(void *hWnd, uint32 msg, uintptr wParam, intptr lParam)'),
     };
   } catch (err) {
     loadError = err;
@@ -829,6 +830,20 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   };
 }
 
+/** 把桌面右键转发给 SHELLDLL_DefView，让 Explorer 弹原生桌面菜单。
+ *  背景：舞台必须置顶在图标层之上才可见，而 LAYERED 穿透会让 Chromium 整窗白屏
+ *  （USE_LAYERED_CLICK_THROUGH=false），鼠标注定被舞台吃掉 —— 右键由渲染端捕获后
+ *  经 liveStage → 这里还给 Explorer。x/y 为该屏**物理**屏幕坐标。
+ *  可行性探针：tools/tmp/probe-ctxmenu.js（#32768 菜单窗口出现+可取消）。 */
+function postContextMenu(hwnd, x, y) {
+  const a = load();
+  if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
+  const WM_CONTEXTMENU = 0x007B;
+  const lParam = ((y & 0xFFFF) << 16) | (x & 0xFFFF);   // 屏幕坐标（各 16 位）
+  const ok = Boolean(a.PostMessageW(koffi.as(hwnd, 'void *'), WM_CONTEXTMENU, hwnd, lParam));
+  return { ok, error: ok ? null : 'PostMessageW 失败' };
+}
+
 function diagnose() {
   return {
     ok: available(),
@@ -859,6 +874,7 @@ module.exports = {
   assertMount,
   isZOrderIntact,
   reaffirmZOrder,
+  postContextMenu,
   classNameOf,
   rectOf,
   pidOf,

@@ -612,6 +612,13 @@ async function init() {
   layers.B.ctx = layers.B.canvas.getContext('2d');
 
   window.addEventListener('resize', onResize);
+  // 舞台盖在图标层之上必然吃掉鼠标（LAYERED 穿透会让 Chromium 白屏，见 desktopHost）。
+  // 右键不能就这么吞了：preventDefault 后把屏幕坐标交给主进程转发给 DefView，
+  // Explorer 会照常弹出桌面菜单（探针 tools/tmp/probe-ctxmenu.js 已验证可行）。
+  window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    try { window.wp.desktopContextMenu(e.screenX, e.screenY); } catch (_) { /* 转发失败静默 */ }
+  }, true);
 
   window.wp.onStageBind((payload) => {
     myChannel = payload && payload.channelId;

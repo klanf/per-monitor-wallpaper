@@ -38,6 +38,8 @@ function stageUrl(filePath) {
 
 contextBridge.exposeInMainWorld('wp', {
   getConfig: () => ipcRenderer.invoke('config:get'),
+  /** 舞台吃掉的桌面右键 → 转发 Explorer DefView 弹桌面菜单（坐标为 CSS/DIP 屏幕坐标） */
+  desktopContextMenu: (x, y) => ipcRenderer.invoke('desktop:context-menu', x, y),
   setConfig: (patch) => ipcRenderer.invoke('config:set', patch),
 
   // ---- 频道 ----
