@@ -229,6 +229,7 @@ const DEFAULTS = {
 const PROFILE_KEYS = [
   'albumId', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
   'kenBurns',                  // 动态桌面舞台的 Ken Burns 微缩放开关（不写 = 默认开）
+  'fpsCap',                    // 动态桌面舞台过渡帧率上限（不写 = 默认 60）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */

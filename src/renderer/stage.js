@@ -53,9 +53,9 @@ let currentDir = 1;
 
 const cfg = {
   animation: 'slide',
-  duration: 520,
+  duration: 900,      // 过渡时长 ms：520/620 用户实测偏快，900 起才有「电影感」
   fit: 'cover',
-  fpsCap: 30,
+  fpsCap: 60,         // 30 在 60Hz 屏上过渡明显掉帧；60 = 跟满垂直同步
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
 };
 
@@ -311,6 +311,7 @@ function applyChannelConfig() {
   if (p.animation) cfg.animation = p.animation;
   if (Number.isFinite(p.duration)) cfg.duration = p.duration;
   if (p.fit) cfg.fit = p.fit;
+  if (Number.isFinite(p.fpsCap)) cfg.fpsCap = p.fpsCap;
   // Ken Burns 开关（profile 不写 = 默认开）
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
 }
