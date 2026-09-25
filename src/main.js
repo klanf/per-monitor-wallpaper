@@ -1835,6 +1835,9 @@ if (!gotLock) {
   });
 
   app.on('window-all-closed', () => {
+    // 动态桌面当班时不退出 —— Explorer 重启会连带销毁挂在其下的舞台窗口
+    // （window-all-closed 会先于看门狗重建触发），此时必须活着等看门狗把窗口建回来。
+    if (!quitting && store && store.get().liveWallpaper && liveStage.stats().running) return;
     // 托盘还在当班时不退出 —— 关窗口只是把界面收起来，桌面轮播继续
     if (!quitting && store && store.get().closeToTray && tray.isInstalled()) return;
     app.quit();

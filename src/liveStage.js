@@ -36,6 +36,14 @@ const DEGRADED_AFTER = 3;
 
 /** channelId → { win, hwnd, anchor, bounds, degraded, fails, creating } */
 const stages = new Map();
+/**
+ * 期望频道表（syncTo 过滤后的 wanted 集）。Explorer 死亡时 Windows 会**连带销毁**
+ * 挂在 Progman 下的子窗口 —— closed 事件随即把记录从 stages 删掉，看门狗的
+ * 「重挂」路径救不了已销毁的窗口，只能按这张表**重建**（DoD③ 实测 2026-09-25）。
+ */
+const expectedChannels = new Map();
+/** 每频道连续重建失败次数（超上限降级，防止 explorer 起不来时空转刷屏） */
+const recreateFails = new Map();
 let watchdogTimer = null;
 let running = false;
 
@@ -204,6 +212,7 @@ async function createStage(ch) {
     win.showInactive();                // 不抢焦点
     rec.fails = 0;
     rec.degraded = false;
+    recreateFails.delete(ch.id);       // 挂载成功 → 重建失败计数清零
     // bind 带上初始暂停态：轮询事件只在「变化」时发，晚创建的窗口若只等
     // 事件会错过当前状态（zm 的 get_wallpaper_media 补拉同款问题）
     win.webContents.send('stage:bind', {
@@ -236,6 +245,22 @@ function destroyStage(id) {
 /* ---------------------------------------------------------------- 看门狗 */
 
 function watchOnce() {
+  // ── 对账：期望频道还在、舞台记录没了 = 窗口本体被外部销毁（Explorer 死亡
+  //    连带销毁 Progman 子窗口）。重挂路径救不了已销毁的窗口，直接重建。
+  if (running) {
+    for (const [id, ch] of expectedChannels) {
+      if (stages.has(id)) continue;
+      const fails = (recreateFails.get(id) || 0) + 1;
+      recreateFails.set(id, fails);
+      if (fails <= DEGRADED_AFTER) {
+        console.log(`[live-stage] ${id} 舞台窗口丢失（父窗口被销毁/Explorer 重启），重建第 ${fails} 次`);
+        createStage(ch);   // 异步；creating 标记防重复
+      } else if (fails === DEGRADED_AFTER + 1) {
+        console.warn(`[live-stage] ${id} 连续重建失败 ${fails} 次，降级（系统壁纸兜底）`);
+      }
+    }
+  }
+
   for (const [id, rec] of stages) {
     try {
       if (!rec.hwnd || !rec.anchor) continue;
@@ -298,6 +323,8 @@ function start() {
 function stop() {
   running = false;
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  expectedChannels.clear();
+  recreateFails.clear();
   for (const id of [...stages.keys()]) destroyStage(id);
   console.log('[live-stage] 动态桌面已停止');
 }
@@ -320,8 +347,9 @@ function syncTo(channels) {
      * 每屏单独退出（monitors[id].enabled=false）与动态桌面叠加的
      * 语义留到阶段 2 再定义。
      */
-    if (!ch || ch.width === 0 || ch.count === 0) continue;
+    if (!ch || ch.width === 0 || ch.count === 0) { expectedChannels.delete(ch ? ch.id : ''); continue; }
     wanted.add(ch.id);
+    expectedChannels.set(ch.id, ch);
     const existing = stages.get(ch.id);
     if (!existing && !stages.has(ch.id)) {
       createStage(ch);   // 异步；creating 标记防重复创建
@@ -344,6 +372,9 @@ function syncTo(channels) {
   }
   for (const id of [...stages.keys()]) {
     if (!wanted.has(id)) destroyStage(id);
+  }
+  for (const id of [...expectedChannels.keys()]) {
+    if (!wanted.has(id)) { expectedChannels.delete(id); recreateFails.delete(id); }
   }
 }
 
