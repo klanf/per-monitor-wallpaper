@@ -45,7 +45,7 @@ function isMissingError(text) {
   return typeof text === 'string' && (text.includes('文件不存在') || text.includes('ENOENT'));
 }
 
-const { scanFolder } = require('./scanner');
+const { scanFolder, kindFor } = require('./scanner');
 const { resolveProfile, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
 const win32 = require('./win32');
@@ -791,6 +791,13 @@ class MonitorScheduler {
     for (let i = 0; i < MAX_WRITE_ATTEMPTS; i++) {
       entry = this._seekLiveEntry(ch, skipped).entry;
       if (!entry) break;
+
+      // 阶段 4/5：视频/网页条目系统壁纸吃不下（IDesktopWallpaper 只认图片）——
+      // 由动态窗口显示它们，系统壁纸保持上一次锚点图片兜底，绝不拿视频去写。
+      if (kindFor(entry.ext) !== 'image') {
+        result = { ok: true, method: 'non-image-skip', skipped: true, at: Date.now() };
+        break;
+      }
 
       if (previewOnly) {
         result = { ok: true, method: 'preview-only', skipped: true, why: liveGate.why, at: Date.now() };

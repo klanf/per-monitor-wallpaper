@@ -17,6 +17,20 @@ const IMAGE_EXT = new Set([
   '.webp', '.gif', '.avif', '.tif', '.tiff',
 ]);
 
+/** 阶段 4：视频壁纸（Chromium 原生能解的容器；mkv/avi 不保证，先不放行） */
+const VIDEO_EXT = new Set(['.mp4', '.webm']);
+
+/** 阶段 5：网页壁纸（目录里丢一个 html 就能当壁纸） */
+const DOC_EXT = new Set(['.html', '.htm']);
+
+/** 条目类型：渲染端据此决定画 canvas / 起视频 / 嵌 iframe */
+function kindFor(ext) {
+  if (IMAGE_EXT.has(ext)) return 'image';
+  if (VIDEO_EXT.has(ext)) return 'video';
+  if (DOC_EXT.has(ext)) return 'html';
+  return 'image';
+}
+
 /**
  * 排序器只建一次。
  * 十万张图规模下，逐次调用 String.prototype.localeCompare 会重新构造 Collator，
@@ -60,7 +74,7 @@ async function scanFolder(folder, options = {}) {
         }
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        if (IMAGE_EXT.has(ext)) {
+        if (IMAGE_EXT.has(ext) || VIDEO_EXT.has(ext) || DOC_EXT.has(ext)) {
           out.push({ path: full, name: entry.name, ext });
         }
       }
@@ -81,4 +95,4 @@ async function probeFile(filePath) {
   }
 }
 
-module.exports = { scanFolder, probeFile, IMAGE_EXT };
+module.exports = { scanFolder, probeFile, IMAGE_EXT, VIDEO_EXT, DOC_EXT, kindFor };

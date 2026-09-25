@@ -31,6 +31,9 @@ const MIME = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.jfif': 'image/jpeg',
   '.png': 'image/png', '.bmp': 'image/bmp', '.webp': 'image/webp',
   '.gif': 'image/gif', '.avif': 'image/avif', '.tif': 'image/tiff', '.tiff': 'image/tiff',
+  // 阶段 4/5：视频与网页
+  '.mp4': 'video/mp4', '.webm': 'video/webm',
+  '.html': 'text/html', '.htm': 'text/html',
 };
 
 function mimeFor(filePath) {
@@ -90,7 +93,36 @@ function handleProtocol() {
     }
     if (!stat.isFile()) return new Response('not a file', { status: 404 });
 
-    const stream = fs.createReadStream(imagePath);
+    // Range（阶段 4：<video> 的循环/seek 靠它，免得每次循环都全量重拉）
+    let start = 0;
+    let end = stat.size - 1;
+    let status = 200;
+    const extraHeaders = {};
+    const range = request.headers.get('range');
+    if (range) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (m && (m[1] !== '' || m[2] !== '')) {
+        if (m[1] === '') {
+          // 后缀形式 bytes=-N：最后 N 字节
+          const n = Math.min(parseInt(m[2], 10), stat.size);
+          start = stat.size - n;
+          end = stat.size - 1;
+        } else {
+          start = parseInt(m[1], 10);
+          end = m[2] !== '' ? Math.min(parseInt(m[2], 10), stat.size - 1) : stat.size - 1;
+        }
+        if (start > end || start >= stat.size) {
+          return new Response('range not satisfiable', {
+            status: 416,
+            headers: { 'content-range': `bytes */${stat.size}` },
+          });
+        }
+        status = 206;
+        extraHeaders['content-range'] = `bytes ${start}-${end}/${stat.size}`;
+      }
+    }
+
+    const stream = fs.createReadStream(imagePath, { start, end });
     // 流出错时若响应头已发出就无法改状态码了 —— 记日志即可；
     // 正常情况下渲染层只会请求调度器刚验过存活的文件（_seekLiveEntry 已摘掉死条目）
     stream.on('error', (err) => {
@@ -98,7 +130,7 @@ function handleProtocol() {
     });
 
     return new Response(stream, {
-      status: 200,
+      status,
       headers: {
         'content-type': mimeFor(imagePath),
         // 关键：绝不进 Chromium 磁盘缓存（默认在 C 盘）。见文件头注释
@@ -107,8 +139,10 @@ function handleProtocol() {
         // （实测：Failed to fetch）。img 标签不受限，但我们要 fetch→createImageBitmap，
         // 所以必须放行任意源 —— 本协议只回本地文件字节，源头放行没有风险面。
         'access-control-allow-origin': '*',
-        'content-length': String(stat.size),
+        'content-length': String(end - start + 1),
+        'accept-ranges': 'bytes',
         'last-modified': stat.mtime.toUTCString(),
+        ...extraHeaders,
       },
     });
   });

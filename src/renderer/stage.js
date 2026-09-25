@@ -69,6 +69,7 @@ let anim = null;               // { t0, duration, incoming, outgoing, v }
 let rafId = 0;
 let lastPaint = 0;             // fpsCap 时间闸门
 const ken = { start: 0 };      // Ken Burns 相位（永不重置 —— 重置就是跳变）
+let activeVideo = null;        // 当前在播的 <video>（视频壁纸时非空，图片/网页壁纸为 null）
 
 /** 全屏 / 锁屏暂停（stage:pause）：冻结 = 停 rAF，画面钉在当前帧 */
 let frozen = false;
@@ -223,6 +224,14 @@ function containRect(W, H, bw, bh) {
  * 位图用完必须 close() —— 由调用方负责。
  */
 function paintLayer(layer, bmp) {
+  drawSource(layer, bmp, bmp.width, bmp.height);
+}
+
+/**
+ * 通用绘制：src 可为 ImageBitmap（静态图，画一次就完）或 <video>（视频壁纸，
+ * rAF 每帧重画拿最新帧）。sw/sh = 源宽高（videoWidth/videoHeight）。
+ */
+function drawSource(layer, src, sw, sh) {
   const { w: W, h: H } = canvasSize(layer.canvas);
   const ctx = layer.ctx;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -233,15 +242,15 @@ function paintLayer(layer, bmp) {
     // 四周：同一张图 cover 画满 + 模糊（放大 12% 让模糊边缘落在画布外，不露透明底）
     ctx.save();
     ctx.filter = `blur(${Math.max(12, Math.round(Math.min(W, H) * 0.03))}px)`;
-    const bg = coverRect(W, H, bmp.width, bmp.height, 1.12);
-    ctx.drawImage(bmp, bg.x, bg.y, bg.w, bg.h);
+    const bg = coverRect(W, H, sw, sh, 1.12);
+    ctx.drawImage(src, bg.x, bg.y, bg.w, bg.h);
     ctx.restore();
     ctx.filter = 'none';
-    const core = containRect(W, H, bmp.width, bmp.height);
-    ctx.drawImage(bmp, core.x, core.y, core.w, core.h);
+    const core = containRect(W, H, sw, sh);
+    ctx.drawImage(src, core.x, core.y, core.w, core.h);
   } else {
-    const r = coverRect(W, H, bmp.width, bmp.height);
-    ctx.drawImage(bmp, r.x, r.y, r.w, r.h);
+    const r = coverRect(W, H, sw, sh);
+    ctx.drawImage(src, r.x, r.y, r.w, r.h);
   }
 }
 
@@ -254,6 +263,75 @@ async function fetchBitmap(entry) {
   const blob = await res.blob();
   const bmp = await createImageBitmap(blob);   // 解码在后台线程，不卡渲染
   return bmp;
+}
+
+/* ------------------------- 阶段 4/5：视频 / 网页壁纸 ------------------------- */
+
+/** 条目类型：video（.mp4/.webm）/ html（.html/.htm）/ image（其余） */
+function kindOf(entry) {
+  const m = /\.([a-z0-9]+)$/i.exec(entry.path || '');
+  const ext = m ? '.' + m[1].toLowerCase() : '';
+  if (ext === '.mp4' || ext === '.webm') return 'video';
+  if (ext === '.html' || ext === '.htm') return 'html';
+  return 'image';
+}
+
+/** 取/建图层私有的 <video>（muted+loop —— 桌面壁纸必须静音） */
+function videoOf(layer) {
+  if (!layer.video) {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.autoplay = true;
+    v.style.display = 'none';
+    layer.root.appendChild(v);
+    layer.video = v;
+  }
+  return layer.video;
+}
+
+/** 等 <video> 首帧解码完成；超时抛错 → 调度器下一轮换图 */
+function waitVideoReady(v, timeoutMs = 10000) {
+  if (v.readyState >= 2) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const ok = () => { cleanup(); resolve(); };
+    const bad = () => { cleanup(); reject(new Error('video load failed')); };
+    const timer = setTimeout(bad, timeoutMs);
+    function cleanup() {
+      clearTimeout(timer);
+      v.removeEventListener('loadeddata', ok);
+      v.removeEventListener('error', bad);
+    }
+    v.addEventListener('loadeddata', ok);
+    v.addEventListener('error', bad);
+  });
+}
+
+/** 取/建图层私有的 <iframe>（网页壁纸；盖在 canvas 上，过渡走 root 的 CSS 样式） */
+function iframeOf(layer, url) {
+  if (!layer.iframe) {
+    const f = document.createElement('iframe');
+    f.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;'
+      + 'border:0;background:#000;display:none;';
+    // 只给脚本权限：壁纸 html 是用户自己丢进去的，不该碰舞台 DOM（无 allow-same-origin）
+    f.setAttribute('sandbox', 'allow-scripts');
+    layer.root.appendChild(f);
+    layer.iframe = f;
+  }
+  if (layer.iframe.getAttribute('src') !== url) layer.iframe.setAttribute('src', url);
+  layer.iframe.style.display = 'block';
+  return layer.iframe;
+}
+
+/** 隐藏图层上的 iframe（换回图片/视频时） */
+function hideIframe(layer) {
+  if (layer.iframe) layer.iframe.style.display = 'none';
+}
+
+/** 停掉指定图层的视频（换图/切类型时释放解码器） */
+function stopLayerVideo(layer) {
+  if (layer.video && !layer.video.paused) layer.video.pause();
 }
 
 /* ------------------------------------------------------------------ rAF 循环 */
@@ -320,6 +398,11 @@ function ensureRaf() {
     if (gate(now)) {
       animTick(now);
       kenTick(now);
+      // 视频壁纸：每帧把 <video> 的当前画面画进活动层（过渡动画是 root 的
+      // CSS 样式，与 canvas 内容正交，两者并行不冲突）
+      if (activeVideo && currentEntry && kindOf(currentEntry) === 'video') {
+        drawSource(layers[active], activeVideo, activeVideo.videoWidth, activeVideo.videoHeight);
+      }
     }
     if (frozen) return;                    // 暂停：这一帧画完就停表
     if (anim || currentEntry) rafId = requestAnimationFrame(loop);
@@ -332,7 +415,9 @@ function setFrozen(next) {
   frozen = Boolean(next);
   if (frozen) {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (activeVideo) activeVideo.pause();          // 视频壁纸跟着冻结
   } else {
+    if (activeVideo) activeVideo.play().catch(() => {});
     ken.start = performance.now();         // 恢复：Ken Burns 重置起点，避免大跳
     ensureRaf();
   }
@@ -345,15 +430,7 @@ async function showFrame(entry, dir, animate) {
   currentEntry = entry;
   currentDir = dir >= 0 ? 1 : -1;
   const token = ++animToken;
-
-  let bmp;
-  try {
-    bmp = await fetchBitmap(entry);
-  } catch (err) {
-    console.warn('[stage] 取图失败:', entry.path, err.message);
-    return;   // 调度器已把死图摘掉，下一帧会带新图来
-  }
-  if (token !== animToken) { bmp.close(); return; }   // 等待期间又被切走了
+  const kind = kindOf(entry);
 
   const incomingKey = active === 'A' ? 'B' : 'A';
   if (!showFrame._logged) {
@@ -362,8 +439,58 @@ async function showFrame(entry, dir, animate) {
   }
   const incoming = layers[incomingKey];
   const outgoing = layers[active];
-  paintLayer(incoming, bmp);
-  bmp.close();                                       // 关键：立即释放解码位图
+
+  // ── 内容准备：图片=解码位图 / 视频=就绪可播 / 网页=iframe 就位 ──
+  let src = null, sw = 0, sh = 0;
+
+  if (kind === 'html') {
+    iframeOf(incoming, window.wp.stageUrl(entry.path));
+  } else {
+    hideIframe(incoming);
+  }
+
+  if (kind === 'image') {
+    let bmp;
+    try {
+      bmp = await fetchBitmap(entry);
+    } catch (err) {
+      console.warn('[stage] 取图失败:', entry.path, err.message);
+      return;   // 调度器已把死图摘掉，下一帧会带新图来
+    }
+    if (token !== animToken) { bmp.close(); return; }   // 等待期间又被切走了
+    src = bmp; sw = bmp.width; sh = bmp.height;
+  } else if (kind === 'video') {
+    const v = videoOf(incoming);
+    const url = window.wp.stageUrl(entry.path);
+    if (v.src !== url) v.src = url;                     // 换 src 会自动重载
+    try {
+      await waitVideoReady(v);
+    } catch {
+      console.warn('[stage] 视频加载失败:', entry.path);
+      return;   // 下一帧 tick 会带新条目来
+    }
+    if (token !== animToken) { v.pause(); return; }
+    try { await v.play(); } catch { /* muted 自动播放一般不会拒；拒了就停在首帧 */ }
+    if (token !== animToken) { v.pause(); return; }
+    src = v; sw = v.videoWidth || 1920; sh = v.videoHeight || 1080;
+  }
+
+  // ── 活动视频交接：旧的立刻停（解码器释放），video→video 才允许切 src 复用 ──
+  if (kind === 'video') {
+    if (activeVideo && activeVideo !== src) activeVideo.pause();
+    activeVideo = src;
+  } else if (activeVideo) {
+    activeVideo.pause();
+    activeVideo = null;
+  }
+
+  // ── 上屏（网页壁纸没有 canvas 内容，iframe 自己就是内容）──
+  if (kind === 'image') {
+    drawSource(incoming, src, sw, sh);
+    src.close();                                       // 关键：立即释放解码位图
+  } else if (kind === 'video') {
+    drawSource(incoming, src, sw, sh);                 // 先画上首帧，之后 rAF 接管
+  }
 
   const duration = animate ? Math.max(0, cfg.duration || 0) : 0;
   if (duration === 0) {
@@ -457,16 +584,17 @@ async function applyChannels(list) {
 function onResize() {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(async () => {
-    if (currentEntry) {
-      // canvas 尺寸变了，旧像素内容会被拉伸 —— 按新尺寸重画当前帧（不做过渡）
-      const token = ++animToken;
-      try {
-        const bmp = await fetchBitmap(currentEntry);
-        if (token !== animToken) { bmp.close(); return; }
-        paintLayer(layers[active], bmp);
-        bmp.close();
-      } catch { /* 下一帧 tick 会带新图来 */ }
-    }
+    if (!currentEntry) return;
+    // 视频：下一 rAF 自动按新画布尺寸重画；网页：iframe 100% 自适应 —— 都不用管
+    if (kindOf(currentEntry) !== 'image') return;
+    // canvas 尺寸变了，旧像素内容会被拉伸 —— 按新尺寸重画当前帧（不做过渡）
+    const token = ++animToken;
+    try {
+      const bmp = await fetchBitmap(currentEntry);
+      if (token !== animToken) { bmp.close(); return; }
+      paintLayer(layers[active], bmp);
+      bmp.close();
+    } catch { /* 下一帧 tick 会带新图来 */ }
   }, RESIZE_DEBOUNCE);
 }
 

@@ -261,6 +261,60 @@ function updatePlayIcon() {
 
 /* ------------------------------------------------------------ 解码预热 */
 
+/** 条目类型：video / html / image（与 stage.js 同一判定） */
+function kindOf(entry) {
+  const m = /\.([a-z0-9]+)$/i.exec(entry.path || '');
+  const ext = m ? '.' + m[1].toLowerCase() : '';
+  if (ext === '.mp4' || ext === '.webm') return 'video';
+  if (ext === '.html' || ext === '.htm') return 'html';
+  return 'image';
+}
+
+/**
+ * 预览层媒体切换：视频/网页条目时把 img 让位给 <video>/<iframe>（懒建，盖在
+ * img 上）。过渡动画作用于 root 的 CSS 样式，对 img / video / iframe 一视同仁。
+ * 返回实际类型；图片条目返回 'image' 并恢复 img 可见。
+ */
+function previewMedia(layer, entry) {
+  const kind = kindOf(entry);
+  if (layer._kind && layer._kind !== kind) {
+    if (layer.video) { layer.video.style.display = 'none'; layer.video.pause(); }
+    if (layer.iframe) layer.iframe.style.display = 'none';
+  }
+  layer._kind = kind;
+
+  if (kind === 'video') {
+    if (!layer.video) {
+      const v = document.createElement('video');
+      v.muted = true; v.loop = true; v.playsInline = true; v.autoplay = true;
+      v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;';
+      layer.root.appendChild(v);
+      layer.video = v;
+    }
+    if (layer.video.getAttribute('src') !== entry.url) layer.video.setAttribute('src', entry.url);
+    layer.video.style.display = 'block';
+    layer.video.play().catch(() => {});
+    layer.img.style.visibility = 'hidden';
+    return 'video';
+  }
+  if (kind === 'html') {
+    if (!layer.iframe) {
+      const f = document.createElement('iframe');
+      f.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;';
+      layer.root.appendChild(f);
+      layer.iframe = f;
+    }
+    if (layer.iframe.getAttribute('src') !== entry.url) layer.iframe.setAttribute('src', entry.url);
+    layer.iframe.style.display = 'block';
+    layer.img.style.visibility = 'hidden';
+    return 'html';
+  }
+  layer.img.style.visibility = '';
+  if (layer.video) { layer.video.style.display = 'none'; layer.video.pause(); }
+  if (layer.iframe) layer.iframe.style.display = 'none';
+  return 'image';
+}
+
 /**
  * 提前把图片解码进 Chromium 的图像缓存。
  * 这样真正切换时 <img src> 命中的是已解码资源，不会出现半张图。
@@ -446,9 +500,13 @@ async function render(index, dir, animate) {
   const outgoing = layers[state.active];
   const duration = animate ? Math.max(0, profile.duration || 0) : 0;
 
-  incoming.img.src = entry.url;
-  setBackdrop(incoming, entry);
-  updateSmartFit(preloaded, profile);
+  // 阶段 4/5：视频/网页条目由专用元素显示；图片才走 img + 垫底逻辑
+  const kind = previewMedia(incoming, entry);
+  if (kind === 'image') {
+    incoming.img.src = entry.url;
+    setBackdrop(incoming, entry);
+    updateSmartFit(preloaded, profile);
+  }
 
   if (duration === 0) {
     incoming.root.style.transition = 'none';
