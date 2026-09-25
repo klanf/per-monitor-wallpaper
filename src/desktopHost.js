@@ -844,6 +844,22 @@ function postContextMenu(hwnd, x, y) {
   return { ok, error: ok ? null : 'PostMessageW 失败' };
 }
 
+/** 解除桌面菜单。背景：转发出来的菜单是 Explorer 的模态菜单，正常靠「点击
+ *  落在别处」解除，但舞台把点击全吃掉了，菜单只能一直挂着 —— 用户实测
+ *  「点别处不消失，必须选一项」。舞台收到任何鼠标按下时调用本函数：找到
+ *  可见的 #32768 菜单窗口发 WM_CANCELMODE（probe-ctxmenu.js 验证过可干净取消）。
+ *  注意：FindWindowW 找的是全局菜单类，若别的应用恰有菜单开着，点舞台也会
+ *  关掉它 —— 这本来就是「点击别处」的自然语义，可接受。 */
+function cancelDesktopMenu() {
+  const a = load();
+  if (!a) return { ok: false, error: 'koffi 不可用' };
+  const menu = a.FindWindowW('#32768', null);
+  if (!menu || !a.IsWindowVisible(menu)) return { ok: true, closed: false };
+  const WM_CANCELMODE = 0x001F;
+  const ok = Boolean(a.PostMessageW(menu, WM_CANCELMODE, 0, 0));
+  return { ok, closed: ok, error: ok ? null : 'PostMessageW 失败' };
+}
+
 function diagnose() {
   return {
     ok: available(),
@@ -875,6 +891,7 @@ module.exports = {
   isZOrderIntact,
   reaffirmZOrder,
   postContextMenu,
+  cancelDesktopMenu,
   classNameOf,
   rectOf,
   pidOf,

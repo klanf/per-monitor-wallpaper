@@ -619,6 +619,12 @@ async function init() {
     e.preventDefault();
     try { window.wp.desktopContextMenu(e.screenX, e.screenY); } catch (_) { /* 转发失败静默 */ }
   }, true);
+  // 转发出来的桌面菜单是 Explorer 的模态菜单，等不到舞台上的点击，永远不消失
+  // （用户实测「点别处必须选一项才关」）。任何按下都通知主进程解除——右键按下
+  // 也发：若旧菜单还开着，正好先关旧的，随后的 contextmenu 再弹新的。
+  window.addEventListener('mousedown', () => {
+    try { window.wp.desktopCancelContextMenu(); } catch (_) { /* 静默 */ }
+  }, true);
 
   window.wp.onStageBind((payload) => {
     myChannel = payload && payload.channelId;

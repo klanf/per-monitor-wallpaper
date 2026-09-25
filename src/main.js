@@ -1196,6 +1196,8 @@ function registerIpc() {
   ipcMain.handle('config:get', () => store.get());
   // 舞台置顶吃掉了桌面右键：渲染端捕获后转发 DefView 弹原生菜单（见 liveStage）
   ipcMain.handle('desktop:context-menu', (_e, x, y) => liveStage.showDesktopContextMenu(x, y));
+  // 菜单是模态的、等不到舞台上的点击：任何按下时由渲染端通知这里解除
+  ipcMain.handle('desktop:cancel-context-menu', () => liveStage.cancelDesktopMenu());
   ipcMain.handle('config:set', (_e, patch) => applyConfigChange(patch || {}));
 
   // ---- 频道 ----

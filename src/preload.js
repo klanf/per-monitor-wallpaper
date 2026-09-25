@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('wp', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   /** 舞台吃掉的桌面右键 → 转发 Explorer DefView 弹桌面菜单（坐标为 CSS/DIP 屏幕坐标） */
   desktopContextMenu: (x, y) => ipcRenderer.invoke('desktop:context-menu', x, y),
+  /** 舞台任意鼠标按下时解除已弹出的桌面菜单（菜单等不到别处的点击） */
+  desktopCancelContextMenu: () => ipcRenderer.invoke('desktop:cancel-context-menu'),
   setConfig: (patch) => ipcRenderer.invoke('config:set', patch),
 
   // ---- 频道 ----

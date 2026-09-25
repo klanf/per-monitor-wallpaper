@@ -415,7 +415,13 @@ function showDesktopContextMenu(dipX, dipY) {
   return desktopHost.postContextMenu(defViewHwnd, Math.round(dipX * sf), Math.round(dipY * sf));
 }
 
+/** 舞台被点击时解除已弹出的桌面菜单（菜单等不到「别处的点击」，见上）。 */
+function cancelDesktopMenu() {
+  return desktopHost.cancelDesktopMenu();
+}
+
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
   showDesktopContextMenu,
+  cancelDesktopMenu,
 };
