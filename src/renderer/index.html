@@ -214,11 +214,21 @@
     <div class="settings-pane" data-pane="look" hidden>
       <div class="field unified-only">
         <label class="field-label">过渡动画</label>
-        <div class="seg" id="cfg-animation">
-          <button data-value="slide" class="seg-item">滑动</button>
-          <button data-value="fade" class="seg-item">淡入</button>
-          <button data-value="zoom" class="seg-item">缩放</button>
-        </div>
+        <select class="select" id="cfg-animation">
+          <option value="slide">滑动</option>
+          <option value="fade">淡入</option>
+          <option value="zoom">缩放</option>
+          <option value="zoom-in">放大收场</option>
+          <option value="zoom-out">缩小进场</option>
+          <option value="slide-zoom">滑动缩放</option>
+          <option value="wipe">幕布擦除</option>
+          <option value="iris">圆形展开</option>
+          <option value="blur-dissolve">模糊溶解</option>
+          <option value="clock">时钟扫描</option>
+          <option value="blinds">百叶窗</option>
+          <option value="split">上下合拢</option>
+          <option value="random">随机轮换</option>
+        </select>
       </div>
 
       <div class="field unified-only">

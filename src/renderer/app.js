@@ -296,23 +296,127 @@ function warmNeighbours() {
 
 /* ------------------------------------------------------------ 过渡动画 */
 
+/**
+ * 过渡变体（预览端，CSS transition 驱动；与 stage.js 的 rAF 版同一套观感）。
+ * 返回 { enterFrom, enterTo, exitTo, z }：
+ *  - enterFrom/enterTo：入场图层的起/终态（终态不再硬编码，clip 类必须有显式终点值，
+ *    否则 polygon → none 不可插值、过渡直接跳变）；
+ *  - exitTo：出场图层终态；
+ *  - z：true = 入场层要在上层（clip 揭示类动画的语义要求）。
+ * clip-path / filter / polygon 起终点顶点数一致时 CSS 可平滑插值。
+ */
 function variantFor(animation, dir) {
   const sign = dir >= 0 ? 1 : -1;
+  const rest = { transform: 'translate3d(0,0,0)', opacity: '1' };
   switch (animation) {
     case 'fade':
       return {
         enterFrom: { transform: 'translate3d(0,0,0)', opacity: '0' },
+        enterTo: rest,
         exitTo: { transform: 'translate3d(0,0,0)', opacity: '0' },
       };
     case 'zoom':
       return {
         enterFrom: { transform: 'scale(1.07)', opacity: '0' },
+        enterTo: rest,
         exitTo: { transform: 'scale(0.985)', opacity: '0' },
       };
+    case 'zoom-in':
+      return {
+        enterFrom: { transform: 'scale(1.18)', opacity: '0' },
+        enterTo: rest,
+        exitTo: { transform: 'translate3d(0,0,0)', opacity: '0' },
+      };
+    case 'zoom-out':
+      return {
+        enterFrom: { transform: 'scale(0.72)', opacity: '0' },
+        enterTo: rest,
+        exitTo: { transform: 'translate3d(0,0,0)', opacity: '0' },
+      };
+    case 'slide-zoom':
+      return {
+        enterFrom: { transform: `translate3d(${sign * 100}%,0,0) scale(1.12)`, opacity: '1' },
+        enterTo: rest,
+        exitTo: { transform: `translate3d(${-sign * 100}%,0,0)`, opacity: '1' },
+      };
+    case 'wipe':
+      return {
+        enterFrom: { clipPath: sign > 0 ? 'inset(0 100% 0 0)' : 'inset(0 0 0 100%)' },
+        enterTo: { clipPath: 'inset(0 0% 0 0)' },
+        exitTo: { opacity: '1' },
+        z: true,
+      };
+    case 'iris':
+      return {
+        enterFrom: { clipPath: 'circle(0% at 50% 50%)' },
+        enterTo: { clipPath: 'circle(75% at 50% 50%)' },
+        exitTo: { opacity: '1' },
+        z: true,
+      };
+    case 'blur-dissolve':
+      return {
+        enterFrom: { opacity: '0', filter: 'blur(24px)' },
+        enterTo: { opacity: '1', filter: 'blur(0px)' },
+        exitTo: { opacity: '0', filter: 'blur(18px)' },
+        z: true,
+      };
+    case 'clock': {
+      // 扇形多边形：起（0°）终（360°）顶点数一致 → CSS 逐点插值出扫表效果
+      const N = 60;
+      const sector = (e) => {
+        const th = e * Math.PI * 2;
+        const pts = ['50% 50%'];
+        for (let n = 0; n <= N; n += 1) {
+          const a = -Math.PI / 2 + th * (n / N);
+          pts.push(`${(50 + 75 * Math.cos(a)).toFixed(2)}% ${(50 + 75 * Math.sin(a)).toFixed(2)}%`);
+        }
+        return `polygon(${pts.join(',')})`;
+      };
+      return {
+        enterFrom: { clipPath: sector(0) },
+        enterTo: { clipPath: sector(1) },
+        exitTo: { opacity: '1' },
+        z: true,
+      };
+    }
+    case 'blinds': {
+      // 百叶窗：8 条横带同步向下揭开（蛇形多边形，起终顶点数一致）
+      const N = 8;
+      const bands = (e) => {
+        const B = 100 / N;
+        const r = e * B;
+        const pts = ['0% 0%', '100% 0%', `100% ${r.toFixed(2)}%`, `0% ${r.toFixed(2)}%`];
+        for (let n = 1; n < N; n += 1) {
+          const top = n * B;
+          pts.push(`0% ${top.toFixed(2)}%`, `100% ${top.toFixed(2)}%`,
+            `100% ${(top + r).toFixed(2)}%`, `0% ${(top + r).toFixed(2)}%`);
+        }
+        return `polygon(${pts.join(',')})`;
+      };
+      return {
+        enterFrom: { clipPath: bands(0) },
+        enterTo: { clipPath: bands(1) },
+        exitTo: { opacity: '1' },
+        z: true,
+      };
+    }
+    case 'split': {
+      const half = (e) => {
+        const r = (e * 50).toFixed(2);
+        return `polygon(0% 0%,100% 0%,100% ${r}%,0% ${r}%,0% ${100 - Number(r)}%,100% ${100 - Number(r)}%,100% 100%,0% 100%)`;
+      };
+      return {
+        enterFrom: { clipPath: half(0) },
+        enterTo: { clipPath: half(1) },
+        exitTo: { opacity: '1' },
+        z: true,
+      };
+    }
     case 'slide':
     default:
       return {
         enterFrom: { transform: `translate3d(${sign * 100}%,0,0)`, opacity: '1' },
+        enterTo: rest,
         exitTo: { transform: `translate3d(${-sign * 100}%,0,0)`, opacity: '1' },
       };
   }
@@ -346,35 +450,51 @@ async function render(index, dir, animate) {
 
   if (duration === 0) {
     incoming.root.style.transition = 'none';
-    applyVars(incoming.root, { transform: 'translate3d(0,0,0)', opacity: '1' });
+    applyVars(incoming.root, { transform: 'translate3d(0,0,0)', opacity: '1', clipPath: '', filter: '', zIndex: '' });
     outgoing.root.style.transition = 'none';
-    applyVars(outgoing.root, { opacity: '0' });
+    applyVars(outgoing.root, { opacity: '0', clipPath: '', filter: '', zIndex: '' });
   } else {
-    const { enterFrom, exitTo } = variantFor(profile.animation, dir);
-    const transition = `transform ${duration}ms var(--ease), opacity ${duration}ms var(--ease)`;
+    // random：每次预览切换随机抽一种（与 stage.js 的 RANDOM_POOL 同一清单）
+    const pool = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
+      'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
+    const animName = profile.animation === 'random'
+      ? pool[Math.floor(Math.random() * pool.length)]
+      : profile.animation;
+    const v = variantFor(animName, dir);
+    // 过渡属性带上 clip-path / filter：不参与时无副作用，clip 类必须有它们才能动
+    const transition = `transform ${duration}ms var(--ease), opacity ${duration}ms var(--ease), `
+      + `clip-path ${duration}ms var(--ease), filter ${duration}ms var(--ease)`;
 
-    // 第一帧先关掉过渡把入场图层摆到起始位置
+    // 第一帧先关掉过渡把入场图层摆到起始位置（z 序：揭示类要求入场层在上）。
+    // ⚠️ 揭示类的起/终态必须补上 transform/opacity 基准值 —— 图层复用时残留
+    // opacity=0（上一轮它是出场层被钉 0），不重置的话 clip 揭示的是透明层。
     incoming.root.style.transition = 'none';
-    applyVars(incoming.root, enterFrom);
+    applyVars(incoming.root, v.z
+      ? { transform: 'translate3d(0,0,0)', opacity: '1', ...v.enterFrom, zIndex: '2' }
+      : { ...v.enterFrom, zIndex: '' });
+    outgoing.root.style.transition = 'none';
+    applyVars(outgoing.root, { zIndex: v.z ? '1' : '' });
 
     // 强制样式结算，否则浏览器会把「起始位置 + 终点位置」合并成一次样式更新，动画不触发
     void incoming.root.offsetWidth;
 
     incoming.root.style.transition = transition;
     outgoing.root.style.transition = transition;
-    applyVars(incoming.root, { transform: 'translate3d(0,0,0)', opacity: '1' });
-    applyVars(outgoing.root, exitTo);
+    applyVars(incoming.root, v.enterTo);
+    applyVars(outgoing.root, v.z
+      ? { transform: 'translate3d(0,0,0)', opacity: '1', ...v.exitTo }
+      : v.exitTo);
   }
 
   state.active = incomingKey;
 
-  // 动画结束后把后层钉死在透明+原位，避免下次复用时残留位移
+  // 动画结束后把后层钉死在透明+原位，并清掉 clip/filter 残留，避免下次复用穿帮
   clearTimeout(state.cleanupTimer);
   state.cleanupTimer = setTimeout(() => {
     if (token !== state.animToken) return;
     const stale = layers[state.active === 'A' ? 'B' : 'A'];
     stale.root.style.transition = 'none';
-    applyVars(stale.root, { transform: 'translate3d(0,0,0)', opacity: '0' });
+    applyVars(stale.root, { transform: 'translate3d(0,0,0)', opacity: '0', clipPath: '', filter: '', zIndex: '' });
   }, duration + 60);
 }
 
@@ -1112,6 +1232,21 @@ function segHtml(field, value, options) {
   )).join('');
 }
 
+/** 过渡动画下拉的公共选项（全局设置与每屏卡片共用，与 stage.js 的变体清单一致） */
+const ANIMATIONS = [
+  ['slide', '滑动'], ['fade', '淡入'], ['zoom', '缩放'],
+  ['zoom-in', '放大收场'], ['zoom-out', '缩小进场'], ['slide-zoom', '滑动缩放'],
+  ['wipe', '幕布擦除'], ['iris', '圆形展开'], ['blur-dissolve', '模糊溶解'],
+  ['clock', '时钟扫描'], ['blinds', '百叶窗'], ['split', '上下合拢'],
+  ['random', '随机轮换'],
+];
+
+function animationOptions(value) {
+  return ANIMATIONS.map(([val, text]) => (
+    `<option value="${val}"${val === value ? ' selected' : ''}>${text}</option>`
+  )).join('');
+}
+
 function albumOf(id) {
   return state.albums.find((a) => a.id === id) || null;
 }
@@ -1237,7 +1372,7 @@ function cardHtml(ch) {
       <summary>更多设置</summary>
       <div class="mc-block">
         <label class="field-label">过渡动画</label>
-        <div class="seg" data-seg="animation">${segHtml('animation', p.animation, [['slide', '滑动'], ['fade', '淡入'], ['zoom', '缩放']])}</div>
+        <select class="select sm" data-field="animation" title="这块屏的过渡动画（随机轮换 = 每次换图随机抽一种）">${animationOptions(p.animation)}</select>
       </div>
       <div class="mc-block">
         <label class="field-label">动画时长</label>
@@ -1913,7 +2048,7 @@ function applyConfigToUI() {
   $('cfg-context-menu').checked = c.contextMenu !== false;
   $('cfg-info-panel').checked = c.infoPanel !== false;
 
-  setSegment('cfg-animation', c.animation);
+  $('cfg-animation').value = c.animation;
   setSegment('cfg-fit', c.fit);
   setSegment('cfg-shuffle', c.shuffle ? 'random' : 'order');
   setSegment('cfg-mode', c.perMonitor ? 'per-monitor' : 'unified');
@@ -2025,11 +2160,8 @@ function bindSettings() {
   });
   $('cfg-duration').addEventListener('change', (e) => save({ duration: Number(e.target.value) }));
 
-  $('cfg-animation').addEventListener('click', (e) => {
-    const item = e.target.closest('.seg-item');
-    if (!item) return;
-    setSegment('cfg-animation', item.dataset.value);
-    save({ animation: item.dataset.value });
+  $('cfg-animation').addEventListener('change', (e) => {
+    save({ animation: e.target.value });
   });
 
   $('cfg-fit').addEventListener('click', (e) => {
@@ -2310,12 +2442,16 @@ function bindSettings() {
     if (!field) return;
 
     if (e.target.tagName === 'SELECT') {
-      // 换相簿：写入频道 profile 并重建。scheduler 对同一相簿会保留播放位置
-      const album = albumOf(e.target.value);
-      await pushProfile(id, { albumId: e.target.value });
-      toast(album
-        ? `已切换到相簿「${album.name}」`
-        : '已清空这块屏的相簿（不再轮播图片）');
+      if (field === 'albumId') {
+        // 换相簿：写入频道 profile 并重建。scheduler 对同一相簿会保留播放位置
+        const album = albumOf(e.target.value);
+        await pushProfile(id, { albumId: e.target.value });
+        toast(album
+          ? `已切换到相簿「${album.name}」`
+          : '已清空这块屏的相簿（不再轮播图片）');
+      } else if (field === 'animation') {
+        await pushProfile(id, { animation: e.target.value });
+      }
     }
     else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
     else if (e.target.type === 'checkbox') await pushProfile(id, { [field]: e.target.checked });

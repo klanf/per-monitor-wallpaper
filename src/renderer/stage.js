@@ -97,7 +97,13 @@ function easeCubicBezier(p) {
   return by(t);
 }
 
-/** 过渡变体：与 app.js 的 variantFor 同一套观感，但改成可插值的结构化形式 */
+/**
+ * 过渡变体。两种形态：
+ *  - 变换型：{ u, fromT, fromO, toT, toO } —— animTick 用统一插值公式驱动（A 档 3 种沿用）；
+ *  - 自绘型：{ tick(incoming, outgoing, e) } —— 每帧自己写 clip-path / mask / filter
+ *    （clip 类动画没法用「位移+缩放+透明度」表达）。自绘型的图层 z 序由 showFrame
+ *    统一设为 incoming 在上（clip 揭示语义必须如此），结束/打断时 clearFx 清干净。
+ */
 function variantFor(animation, dir) {
   const sign = dir >= 0 ? 1 : -1;
   switch (animation) {
@@ -105,10 +111,81 @@ function variantFor(animation, dir) {
       return { u: 'px', fromT: { x: 0, y: 0, s: 1 }, fromO: 0, toT: { x: 0, y: 0, s: 1 }, toO: 0 };
     case 'zoom':
       return { u: 'px', fromT: { x: 0, y: 0, s: 1.07 }, fromO: 0, toT: { x: 0, y: 0, s: 0.985 }, toO: 0 };
+    case 'zoom-in':   // 新图从中心放大收进来盖住旧图
+      return { u: 'px', fromT: { x: 0, y: 0, s: 1.18 }, fromO: 0, toT: { x: 0, y: 0, s: 1 }, toO: 0 };
+    case 'zoom-out':  // 新图从小放大到满屏
+      return { u: 'px', fromT: { x: 0, y: 0, s: 0.72 }, fromO: 0, toT: { x: 0, y: 0, s: 1 }, toO: 0 };
+    case 'slide-zoom': // 滑动 + 新图从 1.12 缩到 1，进退感更强
+      return { u: '%', fromT: { x: sign * 100, y: 0, s: 1.12 }, fromO: 1, toT: { x: -sign * 100, y: 0, s: 1 }, toO: 1 };
     case 'slide':
+      return { u: '%', fromT: { x: sign * 100, y: 0, s: 1 }, fromO: 1, toT: { x: -sign * 100, y: 0, s: 1 }, toO: 1 };
+    case 'wipe': {     // 幕布擦除：dir=1 从左往右，dir=-1 从右往左
+      return { tick(i, o, e) {
+        const r = (100 - e * 100).toFixed(2);
+        i.root.style.clipPath = sign > 0 ? `inset(0 ${r}% 0 0)` : `inset(0 0 0 ${r}%)`;
+      } };
+    }
+    case 'iris':       // 圆形扩散（75% 半径盖住四角，对角线 70.7%）
+      return { tick(i, o, e) {
+        i.root.style.clipPath = `circle(${(e * 75).toFixed(2)}% at 50% 50%)`;
+      } };
+    case 'blur-dissolve': // 旧图模糊消散、新图从模糊中变清晰
+      return { tick(i, o, e) {
+        i.root.style.opacity = String(e);
+        i.root.style.filter = `blur(${((1 - e) * 24).toFixed(1)}px)`;
+        o.root.style.opacity = String(1 - e);
+        o.root.style.filter = `blur(${(e * 18).toFixed(1)}px)`;
+      } };
+    case 'clock': {    // 时钟扫描：以中心为轴顺时针扫一圈（扇形多边形，60 段足够圆滑）
+      const SEGS = 60;
+      return { tick(i, o, e) {
+        const th = e * Math.PI * 2;
+        const pts = ['50% 50%'];
+        for (let n = 0; n <= SEGS; n += 1) {
+          const a = -Math.PI / 2 + th * (n / SEGS);   // 12 点方向起扫
+          pts.push(`${(50 + 75 * Math.cos(a)).toFixed(2)}% ${(50 + 75 * Math.sin(a)).toFixed(2)}%`);
+        }
+        i.root.style.clipPath = `polygon(${pts.join(',')})`;
+      } };
+    }
+    case 'blinds': {   // 百叶窗：8 条横带同步向下揭开（蛇形多边形 = 不相交条带的单闭合路径）
+      const N = 8;
+      return { tick(i, o, e) {
+        const B = 100 / N;
+        const r = e * B;
+        const pts = ['0% 0%', '100% 0%', `100% ${r.toFixed(2)}%`, `0% ${r.toFixed(2)}%`];
+        for (let n = 1; n < N; n += 1) {
+          const top = n * B;
+          pts.push(`0% ${top.toFixed(2)}%`, `100% ${top.toFixed(2)}%`,
+            `100% ${(top + r).toFixed(2)}%`, `0% ${(top + r).toFixed(2)}%`);
+        }
+        i.root.style.clipPath = `polygon(${pts.join(',')})`;
+      } };
+    }
+    case 'split': {    // 分屏合拢：上下两半从屏幕外推进，在中线会合
+      return { tick(i, o, e) {
+        const r = (e * 50).toFixed(2);
+        i.root.style.clipPath =
+          `polygon(0% 0%,100% 0%,100% ${r}%,0% ${r}%,0% ${100 - Number(r)}%,100% ${100 - Number(r)}%,100% 100%,0% 100%)`;
+      } };
+    }
     default:
       return { u: '%', fromT: { x: sign * 100, y: 0, s: 1 }, fromO: 1, toT: { x: -sign * 100, y: 0, s: 1 }, toO: 1 };
   }
+}
+
+/** random：每轮换图随机挑一种（showFrame 时决定，同一次过渡内不变） */
+const RANDOM_POOL = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
+  'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
+
+/** 过渡结束/被打断后清掉所有自绘型残留（clip/mask/filter/z 序），回到干净静止态 */
+function clearFx(el) {
+  el.style.clipPath = '';
+  el.style.maskImage = '';
+  el.style.maskSize = '';
+  el.style.maskRepeat = '';
+  el.style.filter = '';
+  el.style.zIndex = '';
 }
 
 function setLayer(el, t, o, unit) {
@@ -213,17 +290,23 @@ function animTick(now) {
   const p = Math.min(1, (now - anim.t0) / anim.duration);
   const e = easeCubicBezier(p);
   const { incoming, outgoing, v } = anim;
-  setLayer(incoming.root,
-    { x: lerp(v.fromT.x, 0, e), y: lerp(v.fromT.y, 0, e), s: lerp(v.fromT.s, 1, e) },
-    lerp(v.fromO, 1, e), v.u);
-  setLayer(outgoing.root,
-    { x: lerp(0, v.toT.x, e), y: lerp(0, v.toT.y, e), s: lerp(1, v.toT.s, e) },
-    lerp(1, v.toO, e), v.u);
+  if (v.tick) {
+    v.tick(incoming, outgoing, e);          // 自绘型：clip/mask/filter 自己写
+  } else {
+    setLayer(incoming.root,
+      { x: lerp(v.fromT.x, 0, e), y: lerp(v.fromT.y, 0, e), s: lerp(v.fromT.s, 1, e) },
+      lerp(v.fromO, 1, e), v.u);
+    setLayer(outgoing.root,
+      { x: lerp(0, v.toT.x, e), y: lerp(0, v.toT.y, e), s: lerp(1, v.toT.s, e) },
+      lerp(1, v.toO, e), v.u);
+  }
   if (p >= 1) {
     // 两层都钉死在原位：后层透明避免残留位移；前层必须钉回 scale=1 ——
     // zoom 变体的 toT.s=0.985（终态略小一圈），不钉回去的话四边会永久留缝，
     // 露出底下的旧图层（2026-09-25 真机抓屏实测：左右下各 11px 缝，内容缩 1.5%）。
     // ⚠️ Ken Burns 相位**不重置**（缩放是连续函数，重置=瞬跳 —— 0925 实锤）。
+    clearFx(outgoing.root);
+    clearFx(incoming.root);
     setLayer(outgoing.root, REST, 0, 'px');
     setLayer(incoming.root, REST, 1, 'px');
     anim = null;
@@ -284,6 +367,8 @@ async function showFrame(entry, dir, animate) {
 
   const duration = animate ? Math.max(0, cfg.duration || 0) : 0;
   if (duration === 0) {
+    clearFx(incoming.root);
+    clearFx(outgoing.root);
     setLayer(incoming.root, REST, 1, 'px');
     setLayer(outgoing.root, REST, 0, 'px');
     active = incomingKey;
@@ -291,8 +376,28 @@ async function showFrame(entry, dir, animate) {
     return;
   }
 
-  const v = variantFor(cfg.animation, currentDir);
-  setLayer(incoming.root, v.fromT, v.fromO, v.u);    // 先摆到入场起点
+  // random：每次换图随机抽一种（profile.animation='random' 时）
+  const animName = cfg.animation === 'random'
+    ? RANDOM_POOL[Math.floor(Math.random() * RANDOM_POOL.length)]
+    : cfg.animation;
+  const v = variantFor(animName, currentDir);
+  // 清掉上一次过渡可能残留的自绘样式（快速连切时上一次可能没走到收尾分支）
+  clearFx(incoming.root);
+  clearFx(outgoing.root);
+  // 揭示类动画（clip）语义上要求新图盖在旧图上面；变换型统一也这样设，
+  // 观感一致且不受 DOM 固定顺序（A 在 B 前）影响
+  incoming.root.style.zIndex = '2';
+  outgoing.root.style.zIndex = '1';
+  if (v.tick) {
+    // 自绘型起点：两层都必须完整可见（揭示语义：新图带 clip 盖在旧图上）。
+    // ⚠️ 不能省 —— 图层复用时残留 opacity=0（上一轮它是出场层被钉 0），
+    // clip 揭示的其实是透明层 = 看不到任何变化。
+    setLayer(incoming.root, REST, 1, 'px');
+    setLayer(outgoing.root, REST, 1, 'px');
+    v.tick(incoming, outgoing, 0);                    // 再摆到入场起点（e=0）
+  } else {
+    setLayer(incoming.root, v.fromT, v.fromO, v.u);
+  }
   void incoming.root.offsetWidth;                    // 强制样式结算，否则起始态被合并掉
   anim = { t0: performance.now(), duration, incoming, outgoing, v };
   active = incomingKey;
