@@ -80,6 +80,15 @@ const WS_DLGFRAME = 0x00400000;
 const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_TOOLWINDOW = 0x00000080;
 const WS_EX_TRANSPARENT = 0x00000020;   // 鼠标穿透：我们盖在图标层之上，不能吃掉桌面右键/框选/双击
+// ⚠️ 2026-09-26 命中实测：**只加 WS_EX_TRANSPARENT 不生效**。WindowFromPoint 在
+//    桌面空白点仍返回我们的 Chrome_RenderWidgetHostHWND（即右键被舞台吃掉、桌面
+//    菜单不弹）。win32k 跨进程跳过命中的条件是 TRANSPARENT **且 LAYERED**。
+const WS_EX_LAYERED = 0x00080000;
+const LWA_ALPHA = 0x00000002;
+// 客户区比目标矩形四周多出的物理像素（over-scan）。目的：抵掉「隐形边框宽度的
+// 测量误差」——实测主屏左缘会露出 1px 系统壁纸（四舍五入/子像素导致 insets 少 1）。
+// 多出的部分随后由 SetWindowRgn 精确裁回目标矩形，因此不会越界压到相邻显示器。
+const OVERSCAN = 2;
 const HWND_TOP = null;                   // koffi 里空指针 = HWND_TOP(0)：置于同层兄弟最顶
 /** 扩展边框样式（zm-main 同款清单）：CLIENTEDGE 会在窗口四周画内嵌边线，
  *  WINDOWEDGE/DLGMODALFRAME 参与非客户区计算，挂子窗口前一并剥掉 */
@@ -316,6 +325,7 @@ function load() {
       GetWindowLongPtrW: u.func('intptr_t GetWindowLongPtrW(void *hWnd, int index)'),
       SetWindowLongPtrW: u.func('intptr_t SetWindowLongPtrW(void *hWnd, int index, intptr_t value)'),
       SetWindowRgn: u.func('int SetWindowRgn(void *hWnd, void *hRgn, bool bRedraw)'),
+      SetLayeredWindowAttributes: u.func('bool SetLayeredWindowAttributes(void *hWnd, uint32 crKey, uint8 bAlpha, uint32 dwFlags)'),
     };
   } catch (err) {
     loadError = err;
@@ -618,8 +628,11 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   //    不抢焦点、不进 Alt+Tab
   const ex = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
   const newEx = (ex & ~(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME))
-    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT;
+    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED;
   a.SetWindowLongPtrW(self, GWL_EXSTYLE, newEx);
+  // LAYERED 窗口必须给出 alpha 属性，否则可能整窗不可见（全透明）。
+  const okAlpha = a.SetLayeredWindowAttributes(self, 0, 255, LWA_ALPHA);
+  console.log(`[desktop-host] 鼠标穿透: LAYERED+TRANSPARENT alpha255 ok=${okAlpha ? 'ok' : 'FAIL'}`);
 
   // 4. 插到图标层之后。
   //    ⚠️ 坐标语义①：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
@@ -649,7 +662,8 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   const dr = (wr.w - cs.w) - dl;                // 右边框
   const db = (wr.h - cs.h) - dt;                // 底边框
   const okPos = a.SetWindowPos(self, HWND_TOP,
-    relX - dl, relY - dt, b.w + dl + dr, b.h + dt + db,
+    relX - dl - OVERSCAN, relY - dt - OVERSCAN,
+    b.w + dl + dr + 2 * OVERSCAN, b.h + dt + db + 2 * OVERSCAN,
     SWP_NOACTIVATE | SWP_SHOWWINDOW);
   console.log(`[desktop-host] 边框补偿: L=${dl} T=${dt} R=${dr} B=${db} 第二次SetWindowPos=${okPos ? 'ok' : 'FAIL'}`);
   // 缓存实测边框：reaffirmZOrder 之后必须用这份值（补偿状态下现场测量恒为 0）
@@ -661,9 +675,13 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   //    竖屏右缘，缝高 y=0..2170 与主屏外框底边 2170 完全一致，y>2170 竖屏自己
   //    画得好好的）。SetWindowRgn 把窗口占据的像素裁到客户区后，边框条不再
   //    属于本窗口，相邻屏恢复显示。区域是窗口相对坐标，窗口移动/重申都自适应。
-  const hrgn = a.CreateRectRgn(dl, dt, dl + b.w, dt + b.h);
+  //    区域坐标是**相对窗口外框**的：外框原点 = (b.x - dl - OVERSCAN)，
+  //    要让区域落在屏幕上的 [b.x, b.x+b.w]（= 目标矩形），起点须写成 dl + OVERSCAN。
+  const rz = dl + OVERSCAN;
+  const tz = dt + OVERSCAN;
+  const hrgn = a.CreateRectRgn(rz, tz, rz + b.w, tz + b.h);
   const okRgn = hrgn ? Boolean(a.SetWindowRgn(self, hrgn, true)) : false;
-  console.log(`[desktop-host] 窗口区域裁剪: (${dl},${dt})-(${dl + b.w},${dt + b.h}) ok=${okRgn}`);
+  console.log(`[desktop-host] 窗口区域裁剪: (${rz},${tz})-(${rz + b.w},${tz + b.h}) overscan=${OVERSCAN} ok=${okRgn}`);
 
   return {
     ok: Boolean(okPos),
@@ -682,6 +700,8 @@ function unmount(hwnd) {
   if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
   const self = koffi.as(hwnd, 'void *');
   a.SetWindowRgn(self, null, true);         // 撤掉 mount 的窗口区域裁剪，否则还原后的普通窗口仍被裁
+  const ex0 = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
+  a.SetWindowLongPtrW(self, GWL_EXSTYLE, ex0 & ~WS_EX_LAYERED);   // 撤掉穿透用的 LAYERED
   const style = Number(a.GetWindowLongPtrW(self, GWL_STYLE));
   a.SetWindowLongPtrW(self, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP);
   a.SetParent(self, null);
@@ -780,14 +800,15 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
     const parent = a.GetParent(self);
     const pb = parent ? rectOf(parent) : { x: 0, y: 0 };
     const inf = frameInsetsCache.get(hwnd) || frameInsetsOf(self);
-    x = bounds.x - pb.x - inf.l;
-    y = bounds.y - pb.y - inf.t;
-    w = bounds.w + inf.l + inf.r;
-    h = bounds.h + inf.t + inf.b;
+    x = bounds.x - pb.x - inf.l - OVERSCAN;
+    y = bounds.y - pb.y - inf.t - OVERSCAN;
+    w = bounds.w + inf.l + inf.r + 2 * OVERSCAN;
+    h = bounds.h + inf.t + inf.b + 2 * OVERSCAN;
     flags = 0;
     // 区域裁剪是窗口相对坐标，理论上随窗口自适应；这里幂等重申一次，
     // 防止被外部清掉后边框条重新越界压到相邻显示器（成本低）。
-    const hrgn = a.CreateRectRgn(inf.l, inf.t, inf.l + bounds.w, inf.t + bounds.h);
+    const rz = inf.l + OVERSCAN; const tz = inf.t + OVERSCAN;
+    const hrgn = a.CreateRectRgn(rz, tz, rz + bounds.w, tz + bounds.h);
     if (hrgn) a.SetWindowRgn(self, hrgn, true);
   }
   return {
