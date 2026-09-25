@@ -412,7 +412,34 @@ function showDesktopContextMenu(dipX, dipY) {
   if (!defViewHwnd) return { ok: false, error: '没有已挂载的舞台，拿不到 DefView 句柄' };
   const disp = screen.getDisplayNearestPoint({ x: Math.round(dipX), y: Math.round(dipY) });
   const sf = (disp && disp.scaleFactor) || 1;
-  return desktopHost.postContextMenu(defViewHwnd, Math.round(dipX * sf), Math.round(dipY * sf));
+  const r = desktopHost.postContextMenu(defViewHwnd, Math.round(dipX * sf), Math.round(dipY * sf));
+  if (r && r.ok) beginMenuDismissWatch();
+  return r;
+}
+
+/** 菜单解除看门狗：mousedown 链路被菜单的模态捕获拦住收不到（实测），
+ *  改为主动轮询 —— GetAsyncKeyState/GetCursorPos 是全局状态，不受捕获影响。
+ *  转发成功后启动；连续 3 秒见不到菜单就自停。 */
+let dismissTimer = null;
+let dismissLastSeen = 0;
+let dismissTick = 0;
+function beginMenuDismissWatch() {
+  if (dismissTimer) return;
+  dismissTick = 0;
+  dismissLastSeen = 0;
+  dismissTimer = setInterval(() => {
+    dismissTick += 1;
+    let st = null;
+    try { st = desktopHost.dismissDesktopMenuIfClickOutside(); } catch (_) { st = null; }
+    if (st && st.open) dismissLastSeen = dismissTick;
+    if (st && st.cancelled) {
+      // 菜单已解除（用户在菜单外按下且光标在菜单矩形外），无需额外动作
+    }
+    if (dismissTick - dismissLastSeen > 75) {   // 40ms × 75 = 3s 见不到菜单 ⇒ 自停
+      clearInterval(dismissTimer);
+      dismissTimer = null;
+    }
+  }, 40);
 }
 
 /** 舞台被点击时解除已弹出的桌面菜单（菜单等不到「别处的点击」，见上）。 */

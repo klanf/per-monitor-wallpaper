@@ -332,6 +332,8 @@ function load() {
       SetWindowRgn: u.func('int SetWindowRgn(void *hWnd, void *hRgn, bool bRedraw)'),
       SetLayeredWindowAttributes: u.func('bool SetLayeredWindowAttributes(void *hWnd, uint32 crKey, uint8 bAlpha, uint32 dwFlags)'),
       PostMessageW: u.func('bool PostMessageW(void *hWnd, uint32 msg, uintptr wParam, intptr lParam)'),
+      GetCursorPos: u.func('bool GetCursorPos(_Out_ WpDesktopHostPoint *pt)'),
+      GetAsyncKeyState: u.func('int16 GetAsyncKeyState(int vKey)'),
     };
   } catch (err) {
     loadError = err;
@@ -844,20 +846,75 @@ function postContextMenu(hwnd, x, y) {
   return { ok, error: ok ? null : 'PostMessageW 失败' };
 }
 
+const MENU_CLASS = '#32768';       // Win32 顶层菜单窗口类
+const WM_CANCELMODE = 0x001F;
+const WM_KEYDOWN = 0x0100;
+const VK_ESCAPE = 0x1B;
+const VK_LBUTTON = 0x01;
+const VK_RBUTTON = 0x02;
+
 /** 解除桌面菜单。背景：转发出来的菜单是 Explorer 的模态菜单，正常靠「点击
- *  落在别处」解除，但舞台把点击全吃掉了，菜单只能一直挂着 —— 用户实测
- *  「点别处不消失，必须选一项」。舞台收到任何鼠标按下时调用本函数：找到
- *  可见的 #32768 菜单窗口发 WM_CANCELMODE（probe-ctxmenu.js 验证过可干净取消）。
- *  注意：FindWindowW 找的是全局菜单类，若别的应用恰有菜单开着，点舞台也会
- *  关掉它 —— 这本来就是「点击别处」的自然语义，可接受。 */
+ *  落在别处」解除，但舞台把点击全吃掉了。发 WM_CANCELMODE + ESC（双保险，
+ *  probe-ctxmenu.js 验证过 CANCELMODE 可干净取消）。 */
 function cancelDesktopMenu() {
   const a = load();
   if (!a) return { ok: false, error: 'koffi 不可用' };
-  const menu = a.FindWindowW('#32768', null);
-  if (!menu || !a.IsWindowVisible(menu)) return { ok: true, closed: false };
-  const WM_CANCELMODE = 0x001F;
-  const ok = Boolean(a.PostMessageW(menu, WM_CANCELMODE, 0, 0));
-  return { ok, closed: ok, error: ok ? null : 'PostMessageW 失败' };
+  const menus = visibleMenus();
+  if (!menus.length) return { ok: true, menuFound: false, closed: false };
+  let closed = true;
+  for (const m of menus) {
+    const ok1 = Boolean(a.PostMessageW(m, WM_CANCELMODE, 0, 0));
+    const ok2 = Boolean(a.PostMessageW(m, WM_KEYDOWN, VK_ESCAPE, 0));
+    if (!ok1 && !ok2) closed = false;
+  }
+  return { ok: true, menuFound: true, closed, count: menus.length };
+}
+
+/** 枚举可见菜单窗口（#32768；主菜单/子菜单各是一个顶层窗口）。 */
+function visibleMenus() {
+  const a = load();
+  if (!a) return [];
+  const out = [];
+  let h = a.FindWindowExW(a.GetDesktopWindow(), null, MENU_CLASS, null);
+  let guard = 0;
+  while (h && guard < 16) {
+    guard += 1;
+    if (a.IsWindowVisible(h)) out.push(h);
+    h = a.FindWindowExW(a.GetDesktopWindow(), h, MENU_CLASS, null);
+  }
+  return out;
+}
+
+/** 轮询用：菜单开着且「物理光标在所有菜单矩形之外 + 鼠标键正按着」⇒ 解除。
+ *  ⚠️ 2026-09-26 实测：mousedown 解除链路没生效 —— 菜单的模态捕获很可能把
+ *  点击全拦在菜单侧，渲染端根本收不到 mousedown。但 GetAsyncKeyState 读的是
+ *  全局按键状态、GetCursorPos 是全局光标位置，都不受捕获影响 —— 这条路
+ *  不依赖任何事件送到我们窗口。 */
+function dismissDesktopMenuIfClickOutside() {
+  const a = load();
+  if (!a) return { open: false, error: 'koffi 不可用' };
+  const menus = visibleMenus();
+  if (!menus.length) return { open: false };
+  const ptBuf = koffi.alloc(PointTy, 1);
+  if (!a.GetCursorPos(ptBuf)) return { open: true, cancelled: false, error: 'GetCursorPos 失败' };
+  const pt = koffi.decode(ptBuf, PointTy);
+  for (const m of menus) {
+    const r = rectOf(m);
+    const inside = pt.x >= r.x && pt.x < r.x + r.w && pt.y >= r.y && pt.y < r.y + r.h;
+    if (inside) return { open: true, cancelled: false, reason: 'cursor-in-menu' };
+  }
+  const l = a.GetAsyncKeyState(VK_LBUTTON) < 0;   // 按下时最高位置位 ⇒ int16 为负
+  const rt = a.GetAsyncKeyState(VK_RBUTTON) < 0;
+  if (!l && !rt) return { open: true, cancelled: false, reason: 'no-button-down' };
+  let cancelled = false;
+  for (const m of menus) {
+    // ⚠️ 两个都要发，不能用 || 短路：实测单发 CANCELMODE 菜单不理，
+    //    CANCELMODE + ESC 才能关掉（2026-09-26 python 对照实验实锤）
+    const ok1 = Boolean(a.PostMessageW(m, WM_CANCELMODE, 0, 0));
+    const ok2 = Boolean(a.PostMessageW(m, WM_KEYDOWN, VK_ESCAPE, 0));
+    if (ok1 || ok2) cancelled = true;
+  }
+  return { open: true, cancelled, cursor: { x: pt.x, y: pt.y } };
 }
 
 function diagnose() {
@@ -892,6 +949,7 @@ module.exports = {
   reaffirmZOrder,
   postContextMenu,
   cancelDesktopMenu,
+  dismissDesktopMenuIfClickOutside,
   classNameOf,
   rectOf,
   pidOf,
