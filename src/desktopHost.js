@@ -74,8 +74,16 @@ const WS_VISIBLE = 0x10000000;
 const WS_CAPTION = 0x00C00000;
 /** 可调大小边框，同上必须剥掉 */
 const WS_THICKFRAME = 0x00040000;
+/** 细边框 / 无标题对话框边框（zm-main wallpaper.rs 同款清单）：一并剥掉 */
+const WS_BORDER = 0x00800000;
+const WS_DLGFRAME = 0x00400000;
 const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_TOOLWINDOW = 0x00000080;
+/** 扩展边框样式（zm-main 同款清单）：CLIENTEDGE 会在窗口四周画内嵌边线，
+ *  WINDOWEDGE/DLGMODALFRAME 参与非客户区计算，挂子窗口前一并剥掉 */
+const WS_EX_CLIENTEDGE = 0x00000200;
+const WS_EX_WINDOWEDGE = 0x00000100;
+const WS_EX_DLGMODALFRAME = 0x00000001;
 
 const SWP_NOSIZE = 0x0001;
 const SWP_NOMOVE = 0x0002;
@@ -591,16 +599,21 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   }
 
   // 2. 样式补 WS_CHILD（**SetParent 不会自动加**，少了它窗口挂上了但不显示）。
-  //    同时剥掉 WS_CAPTION / WS_THICKFRAME：子窗口带边框样式时，非客户区会
-  //    把客户区（网页内容区）内缩一圈（本机实测左/右/下各 11px、顶部 0），
-  //    窗口矩形看着是满屏的，内容却铺不满 → 桌面四周露出系统壁纸。
+  //    同时剥掉全部边框样式：WS_CAPTION/WS_THICKFRAME/WS_BORDER/WS_DLGFRAME
+  //    （zm-main wallpaper.rs 同款清单）。作为子窗口时 Chromium 的"抹边框"
+  //    消息处理不再生效，系统按残留样式算出非客户区，把客户区（= 网页内容
+  //    区）内缩一圈 → 桌面四周露出系统壁纸。
   const style = Number(a.GetWindowLongPtrW(self, GWL_STYLE));
-  const newStyle = ((style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE) & ~(WS_CAPTION | WS_THICKFRAME);
+  const newStyle = ((style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE)
+    & ~(WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME);
   a.SetWindowLongPtrW(self, GWL_STYLE, newStyle);
 
-  // 3. 扩展样式：不抢焦点、不进 Alt+Tab
+  // 3. 扩展样式：剥掉边框类（CLIENTEDGE/WINDOWEDGE/DLGMODALFRAME），加上
+  //    不抢焦点、不进 Alt+Tab
   const ex = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
-  a.SetWindowLongPtrW(self, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+  const newEx = (ex & ~(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME))
+    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+  a.SetWindowLongPtrW(self, GWL_EXSTYLE, newEx);
 
   // 4. 插到图标层之后。
   //    ⚠️ 坐标语义①：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
@@ -651,7 +664,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
     step: okPos ? 'done' : 'SetWindowPos',
     error: okPos ? null : 'SetWindowPos 失败',
     style: { before: style, after: newStyle },
-    exStyle: { before: ex, after: ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW },
+    exStyle: { before: ex, after: newEx },
     frame: { l: dl, t: dt, r: dr, b: db },      // 调试用：实测的隐形边框宽度
   };
 }
