@@ -47,6 +47,13 @@ const { PlaybackState } = require('./playbackState');
 
 const CACHE_DIR = path.join(os.tmpdir(), 'electron-wallpaper-cache');
 
+// 未处理 Promise 拒绝必须留痕 —— 2026-09-25 排障实测：whenReady 链上的静默
+// 中断（如启动序列中段抛错）在 Windows GUI 子系统下什么都不打印，主进程活着
+// 但启动流程断在半路，表象就是「功能没起来又没有报错」，极难排查。
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandled-rejection]', reason && reason.stack ? reason.stack : reason);
+});
+
 /*
  * 防降帧三连（阶段 0 PoC 的教训进生产）：
  * 舞台窗口挂进 Progman 之后就是个子窗口，Chromium 的「窗口遮挡检测」会把
