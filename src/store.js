@@ -58,7 +58,7 @@ const DEFAULTS = {
    * 默认应该落回用户上次看的那一页 —— 否则每次打开都要重新点一遍。
    */
   settingsTab: 'play',
-  animation: 'slide',      // slide | fade | zoom
+  animation: 'slide',      // 全清单见下方 ANIMATIONS（含 random 随机轮换）
   duration: 520,           // 毫秒
   shuffle: false,
   autoPlay: true,
@@ -446,7 +446,12 @@ function resolveProfile(config, monitorId) {
   };
 }
 
-const ANIMATIONS = new Set(['slide', 'fade', 'zoom']);
+// 过渡动画全清单 —— 必须与 renderer/app.js 顶部 ANIMATIONS 表（下拉框）保持一致；
+// 白名单外的值一律回落 slide（防旧配置/手改配置塞脏值炸调度器）。
+const ANIMATIONS = new Set([
+  'slide', 'fade', 'zoom', 'zoom-in', 'zoom-out', 'slide-zoom',
+  'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split', 'random',
+]);
 
 function clampInterval(value) {
   const n = Number(value);
