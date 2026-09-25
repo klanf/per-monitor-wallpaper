@@ -261,7 +261,30 @@ app.whenReady().then(async () => {
     check('画面在刷新（连拍跨过换图过渡）', maxDiff > 0.004, `最大帧差=${(maxDiff * 100).toFixed(2)}%`);
     const baseBlack = blackRatio(frames[frames.length - 1]);
     check('舞台内容可见（非黑屏）', baseBlack < 0.5, `黑占比=${(baseBlack * 100).toFixed(1)}%`);
-    const still = frames[frames.length - 1];
+
+    /*
+     * 遮挡窗口期间冻结舞台（stage:pause 语义：冻结 = 停 rAF，画面钉在当前帧）。
+     * 不冻结的话，「遮挡前快照 → 看门狗恢复」之间必然跨过 0~5 次换图
+     * （interval=2s，恢复要 0.5~10s），「恢复后与遮挡前一致」这个断言就
+     * 变成抛硬币 —— 2026-09-26 连续两轮都栽在这（帧差 99.9%，其实是换了图）。
+     * 冻结后内容静止，断言才真正测的是「看门狗恢复的是**同一块**舞台内容」。
+     */
+    liveStage.applyPauseState({ away: true });
+    await sleep(600);   // 等 stage:pause 落地（渲染端停表）
+    const still = grabScreen(RX, RY, RW, RH);   // 冻结后重取遮挡前基准
+    /*
+     * 外部动态内容自检：桌面上可能还挂着**另一个实例**的动态舞台
+     * （两套看门狗互相挤 Z 序，采样区看到的是别人家的内容，画面一直在动）。
+     * 冻结状态下自己不该动 —— 还在动就说明采样区被外部实例占着，
+     * 「内容一致性」断言测的不是我们，跳过（不伪装通过）。
+     */
+    await sleep(900);
+    const externalDrift = diffRatio(still, grabScreen(RX, RY, RW, RH));
+    const foreignContent = externalDrift > 0.3;
+    if (foreignContent) {
+      console.log(`  ⚠ 采样区存在外部动态内容（冻结自检帧差=${(externalDrift * 100).toFixed(1)}%）`
+        + ' —— 桌面上大概率还挂着另一个实例的舞台，内容一致性断言跳过');
+    }
 
     // ---- 4. 模拟 Explorer 插 WorkerW：黑窗口挂到 Progman、插到图标层之后 ----
     console.log('\n----- 3. 模拟 Explorer 插入 WorkerW（遮挡）-----');
@@ -311,11 +334,13 @@ app.whenReady().then(async () => {
     }
     check('看门狗重申 Z 序，画面恢复', healed !== null,
       healed ? `耗时 ${((Date.now() - healT0) / 1000).toFixed(1)}s` : '10s 内未恢复');
-    if (healed) {
+    if (healed && !foreignContent) {
       const drift = diffRatio(still, healed);
       check('恢复后仍是舞台内容（与遮挡前一致）', drift < 0.4,
-        `帧差=${(drift * 100).toFixed(2)}%（换图会导致小差异）`);
+        `帧差=${(drift * 100).toFixed(2)}%（遮挡窗口已冻结舞台，应为 0）`);
     }
+    liveStage.applyPauseState({ away: false });   // 解冻，后续段落照常换图
+    await sleep(300);
     const after = liveStage.stats();
     check('看门狗没有误报降级', after.stages.every((s) => !s.degraded));
 

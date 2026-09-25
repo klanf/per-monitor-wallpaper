@@ -40,6 +40,32 @@ function mimeFor(filePath) {
   return MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
 }
 
+/**
+ * Node 读流 → Web ReadableStream，全程吞异常。
+ *
+ * 【为什么不能把 createReadStream 直接塞给 Response】
+ *   Electron（undici 适配层）会在渲染端中途取消请求时（<video> 换 src、
+ *   abort、窗口销毁）把流 cancel 掉；随后流自然 end 时适配层再调
+ *   controller.close() → TypeError: ReadableStream is already closed →
+ *   主进程未捕获异常弹框（2026-09-26 实弹截图，调度被打断、画面静止）。
+ *   这是「取消」与「自然结束」的竞态，Electron 侧没兜住，只能我们自己包：
+ *   enqueue / close / error 全部 try/catch，cancel 时 destroy 源流，
+ *   任何时序的取消都到不了 uncaughtException。
+ */
+function toWebStream(nodeStream) {
+  return new ReadableStream({
+    start(controller) {
+      const safe = (fn) => { try { fn(); } catch (_) { /* 已关闭/已入队等竞态，忽略 */ } };
+      nodeStream.on('data', (chunk) => safe(() => controller.enqueue(chunk)));
+      nodeStream.on('end', () => safe(() => controller.close()));
+      nodeStream.on('error', (err) => safe(() => controller.error(err)));
+    },
+    cancel() {
+      try { nodeStream.destroy(); } catch (_) { /* 已销毁 */ }
+    },
+  });
+}
+
 /** 路径 → URL 安全的 token（编码必须与 preload.js 的 stageUrl 对应：UTF-16LE） */
 function encodePath(imagePath) {
   return Buffer.from(imagePath, 'utf16le').toString('base64url');
@@ -129,7 +155,7 @@ function handleProtocol() {
       console.warn('[stage-protocol] 读取失败:', imagePath, err.message);
     });
 
-    return new Response(stream, {
+    return new Response(toWebStream(stream), {
       status,
       headers: {
         'content-type': mimeFor(imagePath),

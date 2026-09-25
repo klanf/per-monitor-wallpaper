@@ -55,6 +55,19 @@ process.on('unhandledRejection', (reason) => {
 });
 
 /*
+ * 未捕获异常：记日志继续跑，绝不弹 Electron 的模态错误框。
+ *
+ * 背景（2026-09-26 实弹）：wpimg 流被渲染端取消后 undici 适配层竞态调
+ * controller.close() 抛 TypeError —— 没有处理器时 Electron 弹模态框，
+ * 壁纸应用的「模态框」弹在用户桌面上就是画面静止，比异常本身严重。
+ * 这类异常多半是单次竞态，主进程的事件循环和定时器都还活着，记下现场
+ * 继续跑是正确的降级（根因照样在 stageProtocol 里修）。
+ */
+process.on('uncaughtException', (err) => {
+  console.error('[uncaught-exception] 继续运行:', err && err.stack ? err.stack : err);
+});
+
+/*
  * 防降帧三连（阶段 0 PoC 的教训进生产）：
  * 舞台窗口挂进 Progman 之后就是个子窗口，Chromium 的「窗口遮挡检测」会把
  * 「被其它子窗口盖住」当成「用户看不见」而停止出帧 —— 表现和合成器死了一样。
