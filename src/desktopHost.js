@@ -274,9 +274,11 @@ function load() {
     ensureTypes();
     const u = koffi.load('user32.dll');
     const k32 = koffi.load('kernel32.dll');
+    const g32 = koffi.load('gdi32.dll');
     api = {
       u32: u,
       k32,
+      CreateRectRgn: g32.func('void *CreateRectRgn(int x1, int y1, int x2, int y2)'),
       GetDesktopWindow: u.func('void *GetDesktopWindow()'),
       FindWindowExW: u.func('void *FindWindowExW(void *parent, void *after, str16 cls, str16 title)'),
       FindWindowW: u.func('void *FindWindowW(str16 cls, str16 title)'),
@@ -303,6 +305,7 @@ function load() {
       // SetWindowLongPtrW 只在 x64 的 user32 里导出；本项目只发 x64 包
       GetWindowLongPtrW: u.func('intptr_t GetWindowLongPtrW(void *hWnd, int index)'),
       SetWindowLongPtrW: u.func('intptr_t SetWindowLongPtrW(void *hWnd, int index, intptr_t value)'),
+      SetWindowRgn: u.func('int SetWindowRgn(void *hWnd, void *hRgn, bool bRedraw)'),
     };
   } catch (err) {
     loadError = err;
@@ -633,6 +636,16 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   // 缓存实测边框：reaffirmZOrder 之后必须用这份值（补偿状态下现场测量恒为 0）
   frameInsetsCache.set(hwnd, { l: dl, t: dt, r: dr, b: db });
 
+  // 5. 窗口区域裁剪到客户区（= 目标矩形）：补偿把外框向四周扩了一圈边框宽度，
+  //    那圈「隐形边框」条会**越界压到相邻显示器上**且不渲染内容 —— 透出壁纸、
+  //    还把相邻屏的舞台盖在下面（2026-09-25 像素实锤：主屏外框左伸 10px 压住
+  //    竖屏右缘，缝高 y=0..2170 与主屏外框底边 2170 完全一致，y>2170 竖屏自己
+  //    画得好好的）。SetWindowRgn 把窗口占据的像素裁到客户区后，边框条不再
+  //    属于本窗口，相邻屏恢复显示。区域是窗口相对坐标，窗口移动/重申都自适应。
+  const hrgn = a.CreateRectRgn(dl, dt, dl + b.w, dt + b.h);
+  const okRgn = hrgn ? Boolean(a.SetWindowRgn(self, hrgn, true)) : false;
+  console.log(`[desktop-host] 窗口区域裁剪: (${dl},${dt})-(${dl + b.w},${dt + b.h}) ok=${okRgn}`);
+
   return {
     ok: Boolean(okPos),
     step: okPos ? 'done' : 'SetWindowPos',
@@ -649,6 +662,7 @@ function unmount(hwnd) {
   frameInsetsCache.delete(hwnd);            // 句柄值可能被系统复用，缓存必须跟着清
   if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
   const self = koffi.as(hwnd, 'void *');
+  a.SetWindowRgn(self, null, true);         // 撤掉 mount 的窗口区域裁剪，否则还原后的普通窗口仍被裁
   const style = Number(a.GetWindowLongPtrW(self, GWL_STYLE));
   a.SetWindowLongPtrW(self, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP);
   a.SetParent(self, null);
@@ -748,6 +762,10 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
     w = bounds.w + inf.l + inf.r;
     h = bounds.h + inf.t + inf.b;
     flags = 0;
+    // 区域裁剪是窗口相对坐标，理论上随窗口自适应；这里幂等重申一次，
+    // 防止被外部清掉后边框条重新越界压到相邻显示器（成本低）。
+    const hrgn = a.CreateRectRgn(inf.l, inf.t, inf.l + bounds.w, inf.t + bounds.h);
+    if (hrgn) a.SetWindowRgn(self, hrgn, true);
   }
   return {
     ok: Boolean(a.SetWindowPos(
