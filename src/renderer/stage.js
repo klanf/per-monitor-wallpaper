@@ -32,8 +32,14 @@
 
 const REST = { x: 0, y: 0, s: 1, o: 1 };   // 层的静止状态
 
-/** Ken Burns：一次完整「推进-退回」的周期。慢到几乎察觉不到在动，但桌面是活的 */
-const KEN = { period: 45_000, amplitude: 0.045, travel: 14 };
+/**
+ * Ken Burns：极慢的整体缩放呼吸（周期 45s，1.00→1.045→1.00）。
+ * 让桌面有「生命感」的效果。⚠️ 必须是**连续**的：
+ *  - 只缩放、无位移（缩放 ≥1 永不露边；位移要在四边留 travel 余量，还得靠基础放大盖住）；
+ *  - 相位永不重置（2026-09-25 真机：过渡结束 ken.start 归零 + 换随机方向 ⇒
+ *    画布从 scale=1/offset=0 瞬跳到 scale=1.02/offset=±14px ——「切换完成一瞬间整体偏移」）。
+ */
+const KEN = { period: 45_000, amplitude: 0.045 };
 
 /** resize 后重绘的防抖 */
 const RESIZE_DEBOUNCE = 200;
@@ -50,6 +56,7 @@ const cfg = {
   duration: 520,
   fit: 'cover',
   fpsCap: 30,
+  kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
 };
 
 const layers = {
@@ -61,7 +68,7 @@ let animToken = 0;             // 过渡令牌：新过渡让进行中的旧过�
 let anim = null;               // { t0, duration, incoming, outgoing, v }
 let rafId = 0;
 let lastPaint = 0;             // fpsCap 时间闸门
-const ken = { start: 0, dx: 1, dy: 0 };
+const ken = { start: 0 };      // Ken Burns 相位（永不重置 —— 重置就是跳变）
 
 /** 全屏 / 锁屏暂停（stage:pause）：冻结 = 停 rAF，画面钉在当前帧 */
 let frozen = false;
@@ -183,17 +190,22 @@ function gate(now) {
 }
 
 function kenTick(now) {
-  if (!currentEntry) return;
   const layer = layers[active];
+  if (!cfg.kenBurns) {
+    // 关掉时把画布钉回原位（只写一次，别每帧都碰样式）
+    if (!ken._cleared) {
+      layer.canvas.style.transform = 'none';
+      ken._cleared = true;
+    }
+    return;
+  }
+  ken._cleared = false;
+  if (!currentEntry) return;
   const t = ((now - ken.start) % (KEN.period * 2)) / KEN.period;
   const k = t <= 1 ? t : 2 - t;                       // 0→1→0 往返，无跳变
   const e = easeCubicBezier(k);
-  // 基础放大 1.02：位移 ±travel(14px) 必须被放大率盖住，否则 k=0（scale=1 且位移最大）
-  // 那一瞬间会露 14px 的边——放大 2% 后 W/2×0.02=16px ≥ 14px，任何时刻都不露底
-  const s = 1.02 + KEN.amplitude * e;
-  const tx = (k - 0.5) * 2 * KEN.travel * ken.dx;
-  const ty = (k - 0.5) * 2 * KEN.travel * ken.dy;
-  layer.canvas.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${s.toFixed(5)})`;
+  const s = 1 + KEN.amplitude * e;                    // ≥1，永不露边
+  layer.canvas.style.transform = `scale(${s.toFixed(5)})`;
 }
 
 function animTick(now) {
@@ -210,14 +222,11 @@ function animTick(now) {
   if (p >= 1) {
     // 两层都钉死在原位：后层透明避免残留位移；前层必须钉回 scale=1 ——
     // zoom 变体的 toT.s=0.985（终态略小一圈），不钉回去的话四边会永久留缝，
-    // 露出底下的旧图层（2026-09-25 真机抓屏实测：左右下各 11px 缝，内容缩 1.5%）
+    // 露出底下的旧图层（2026-09-25 真机抓屏实测：左右下各 11px 缝，内容缩 1.5%）。
+    // ⚠️ Ken Burns 相位**不重置**（缩放是连续函数，重置=瞬跳 —— 0925 实锤）。
     setLayer(outgoing.root, REST, 0, 'px');
     setLayer(incoming.root, REST, 1, 'px');
     anim = null;
-    ken.start = performance.now();   // Ken Burns 从新帧重新起算，方向也换一个
-    const ang = Math.random() * Math.PI * 2;
-    ken.dx = Math.cos(ang);
-    ken.dy = Math.sin(ang);
   }
 }
 
@@ -278,7 +287,6 @@ async function showFrame(entry, dir, animate) {
     setLayer(incoming.root, REST, 1, 'px');
     setLayer(outgoing.root, REST, 0, 'px');
     active = incomingKey;
-    ken.start = performance.now();
     ensureRaf();
     return;
   }
@@ -303,6 +311,8 @@ function applyChannelConfig() {
   if (p.animation) cfg.animation = p.animation;
   if (Number.isFinite(p.duration)) cfg.duration = p.duration;
   if (p.fit) cfg.fit = p.fit;
+  // Ken Burns 开关（profile 不写 = 默认开）
+  if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
 }
 
 async function applyChannels(list) {

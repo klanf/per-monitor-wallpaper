@@ -228,6 +228,7 @@ const DEFAULTS = {
 /** 构成「一路轮播」的字段 —— 单屏覆盖只允许出现在这些键上 */
 const PROFILE_KEYS = [
   'albumId', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
+  'kenBurns',                  // 动态桌面舞台的 Ken Burns 微缩放开关（不写 = 默认开）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */

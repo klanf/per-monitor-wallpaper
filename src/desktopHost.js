@@ -418,6 +418,11 @@ function clientOriginScreen(hWnd) {
 /**
  * 实测当前窗口的隐形边框（Electron frameless 天生带：外框 - 客户区）。
  * 与窗口当前位置无关，随时可测。返回 {l,t,r,b} 物理像素。
+ *
+ * ⚠️ 只允许在「未补偿」状态下测（mount 流程内）。补偿完成后客户区原点已经
+ * 贴合目标矩形，再测恒为 0 —— reaffirmZOrder 若现场重量就会把补偿打回原形
+ * （2026-09-25 二次实锤：mount 补偿 ok → 看门狗重申 → 左/右/下 10px 缝复发）。
+ * 补偿后的重申一律用 mount 缓存值（frameInsetsCache）。
  */
 function frameInsetsOf(hWnd) {
   const wr = rectOf(hWnd);                  // GetWindowRect 对子窗口也返回屏幕坐标（本机实测）
@@ -427,6 +432,9 @@ function frameInsetsOf(hWnd) {
   const t = co.y - wr.y;
   return { l, t, r: wr.w - cs.w - l, b: wr.h - cs.h - t };
 }
+
+/** hwnd → {l,t,r,b}：mount 时实测的隐形边框缓存（补偿后的重申必须用它） */
+const frameInsetsCache = new Map();
 
 /** 顶层窗口句柄列表（Z 序，最前面的先出）。
  *  ⚠️ 不用 `GetWindow(hwnd, GW_HWNDFIRST)` —— 那常量是「同级里的第一个」，
@@ -622,6 +630,8 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
     relX - dl, relY - dt, b.w + dl + dr, b.h + dt + db,
     SWP_NOACTIVATE | SWP_SHOWWINDOW);
   console.log(`[desktop-host] 边框补偿: L=${dl} T=${dt} R=${dr} B=${db} 第二次SetWindowPos=${okPos ? 'ok' : 'FAIL'}`);
+  // 缓存实测边框：reaffirmZOrder 之后必须用这份值（补偿状态下现场测量恒为 0）
+  frameInsetsCache.set(hwnd, { l: dl, t: dt, r: dr, b: db });
 
   return {
     ok: Boolean(okPos),
@@ -636,6 +646,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
 /** 把窗口脱离桌面树并恢复成普通窗口（退出/回滚时用） */
 function unmount(hwnd) {
   const a = load();
+  frameInsetsCache.delete(hwnd);            // 句柄值可能被系统复用，缓存必须跟着清
   if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
   const self = koffi.as(hwnd, 'void *');
   const style = Number(a.GetWindowLongPtrW(self, GWL_STYLE));
@@ -718,8 +729,10 @@ function isZOrderIntact(hwnd, anchorHwnd, harmless = null) {
 /** 重申 Z 序：把窗口重新插到锚点之后（Progman 重绘后不需要重挂，只需要这一句）。
  *  bounds 是虚拟桌面物理坐标，内部换算成父客户区相对坐标（同 mount，见那里）。
  *  ⚠️ 带 bounds 时**必须做隐形边框补偿**（同 mount）：否则看门狗每次重申都会把
- *  mount 里补偿好的外框矩形打回原形，客户区又被啃掉一圈（2026-09-25 实锤：
- *  「补偿成功 → 看门狗重申 → 外框复原 → 四周露壁纸」就是这么来的）。 */
+ *  mount 里补偿好的外框矩形打回原形，客户区又被啃掉一圈（2026-09-25 实锤）。
+ *  ⚠️ 补偿值用 mount 缓存（frameInsetsCache），**不能现场重新量**：补偿状态下
+ *  客户区原点已贴合目标矩形，量出来恒为 0，等于把补偿清零（左边 10px 缝复发）。
+ *  缓存缺失（理论不该发生）才回落现场测量。 */
 function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   const a = load();
   if (!a || !hwnd) return { ok: false, error: 'koffi 不可用或 hwnd 为空' };
@@ -729,7 +742,7 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
   if (bounds) {
     const parent = a.GetParent(self);
     const pb = parent ? rectOf(parent) : { x: 0, y: 0 };
-    const inf = frameInsetsOf(self);
+    const inf = frameInsetsCache.get(hwnd) || frameInsetsOf(self);
     x = bounds.x - pb.x - inf.l;
     y = bounds.y - pb.y - inf.t;
     w = bounds.w + inf.l + inf.r;
