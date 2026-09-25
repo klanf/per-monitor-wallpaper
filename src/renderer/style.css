@@ -78,6 +78,24 @@ html, body {
   pointer-events: none;
 }
 
+/*
+ * 智能完整显示（仅窗口预览）：fit=cover 且图片比例与舞台差得远（如竖图在横预览）
+ * 时，img 改 contain 保证全貌可见，裁掉的部分用同图模糊放大垫底。
+ * 由 app.js 的 updateSmartFit() 按每帧图片实时开关；写进显示器的 fit 不受影响。
+ * ⚠️ 本规则必须排在下方 fit-contain 之前 —— 用户显式选「完整显示」时要压住 smart。
+ */
+body.fit-smart .layer::before {
+  content: '';
+  position: absolute;
+  inset: -48px;                  /* 外扩垫底，防 blur 边缘露黑晕 */
+  z-index: -1;                   /* .layer 自带 transform = 独立层叠上下文，-1 垫在图下不穿帮 */
+  background-image: var(--backdrop, none);
+  background-size: cover;
+  background-position: center;
+  filter: blur(30px) brightness(0.5) saturate(1.15);
+}
+body.fit-smart .layer img { object-fit: contain; }
+
 body.fit-contain .layer img { object-fit: contain; }
 
 /* ---------------------------------------------------------------- 工具栏 */
@@ -601,17 +619,8 @@ body.mode-per-monitor .unified-only { display: none; }
 .mc-block { display: flex; flex-direction: column; gap: 6px; }
 .mc-block > .field-label { font-size: 11.5px; }
 
-details.mc-more > summary {
-  cursor: pointer;
-  font-size: 11.5px;
-  color: var(--text-dim);
-  list-style: none;
-  user-select: none;
-}
-details.mc-more > summary::-webkit-details-marker { display: none; }
-details.mc-more > summary::after { content: ' ▾'; color: var(--text-faint); }
-details.mc-more[open] > summary::after { content: ' ▴'; }
-details.mc-more[open] { display: flex; flex-direction: column; gap: 9px; }
+/* 「更多设置」区：原为 <details> 折叠，现已常开（只剩布局职责） */
+.mc-more { display: flex; flex-direction: column; gap: 9px; }
 
 .eye {
   appearance: none;

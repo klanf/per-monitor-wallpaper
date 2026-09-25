@@ -438,7 +438,7 @@ async function render(index, dir, animate) {
 
   const profile = profileOf(state.previewId);
   const token = ++state.animToken;
-  await preload(entry);
+  const preloaded = await preload(entry);
   if (token !== state.animToken) return;   // 等待期间又被切走了，放弃这一帧
 
   const incomingKey = state.active === 'A' ? 'B' : 'A';
@@ -447,6 +447,8 @@ async function render(index, dir, animate) {
   const duration = animate ? Math.max(0, profile.duration || 0) : 0;
 
   incoming.img.src = entry.url;
+  setBackdrop(incoming, entry);
+  updateSmartFit(preloaded, profile);
 
   if (duration === 0) {
     incoming.root.style.transition = 'none';
@@ -1003,6 +1005,36 @@ function setLayerEmpty() {
 function applyFit() {
   const profile = profileOf(state.previewId);
   document.body.classList.toggle('fit-contain', profile.fit === 'contain');
+  // 切到 contain 时清掉残留的智能垫底标记（下一帧 render 会按需重开）
+  if (profile.fit === 'contain') document.body.classList.remove('fit-smart');
+}
+
+/* ------------------------------------------------------------ 竖图预览友好模式 */
+
+/**
+ * fit=cover 的「忠实」预览会把超出舞台比例的部分裁掉 —— 竖图在横向预览窗里
+ * 只剩中间一条，看不到全貌。裁切比例超过阈值时改走「智能完整显示」：
+ * 图片以 contain 完整可见，被裁掉的部分用同图模糊放大垫底，全貌与铺满感兼得。
+ * ⚠️ 只影响窗口预览；写进显示器的仍然是 profile.fit 原样（stage.js 不感知此开关）。
+ */
+const SMART_FIT_CROP_RATIO = 1.35;   // 裁切超过 ~26% 才启用，常规比例仍忠实显示 cover
+
+function updateSmartFit(img, profile) {
+  let smart = false;
+  if (profile && profile.fit !== 'contain' && img && img.naturalWidth > 0) {
+    const stage = els.stage;
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const stageAspect = Math.max(1, stage.clientWidth) / Math.max(1, stage.clientHeight);
+    const crop = Math.max(imgAspect / stageAspect, stageAspect / imgAspect);
+    smart = crop >= SMART_FIT_CROP_RATIO;
+  }
+  document.body.classList.toggle('fit-smart', smart);
+}
+
+/** 每个图层各自记一份垫底图（过渡时新旧两层各垫各的，不会串图） */
+function setBackdrop(layer, entry) {
+  if (entry && entry.url) layer.root.style.setProperty('--backdrop', `url("${entry.url}")`);
+  else layer.root.style.removeProperty('--backdrop');
 }
 
 /** 统一走主进程：切换立刻写入对应屏幕，再由 tick 事件回到这里画过渡 */
@@ -1368,8 +1400,7 @@ function cardHtml(ch) {
         ${[30, 60, 300, 1800].map((s) => `<button type="button" class="preset-chip${p.interval === s ? ' active' : ''}" data-sec="${s}">${formatInterval(s)}</button>`).join('')}
       </div>
     </div>
-    <details class="mc-more"${ch._open ? ' open' : ''}>
-      <summary>更多设置</summary>
+    <div class="mc-more">
       <div class="mc-block">
         <label class="field-label">过渡动画</label>
         <select class="select sm" data-field="animation" title="这块屏的过渡动画（随机轮换 = 每次换图随机抽一种）">${animationOptions(p.animation)}</select>
@@ -1390,7 +1421,7 @@ function cardHtml(ch) {
         <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示']])}</div>
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
-    </details>
+    </div>
   </div>`;
 }
 
@@ -1403,14 +1434,6 @@ function renderCards() {
   // 用户正在拖滑块时不要重建 DOM，否则拖到一半会被替换掉
   const active = document.activeElement;
   if (active && active.type === 'range' && els.monitorCards.contains(active)) return;
-
-  // 记住哪些卡片的「更多设置」是展开的，重建后恢复
-  const openIds = new Set();
-  for (const details of els.monitorCards.querySelectorAll('details.mc-more[open]')) {
-    const card = details.closest('.monitor-card');
-    if (card) openIds.add(card.dataset.id);
-  }
-  for (const ch of state.channels) ch._open = openIds.has(ch.id);
 
   els.monitorCards.innerHTML = state.channels.map(cardHtml).join('');
 
