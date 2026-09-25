@@ -84,6 +84,11 @@ const WS_EX_TRANSPARENT = 0x00000020;   // 鼠标穿透：我们盖在图标层�
 //    桌面空白点仍返回我们的 Chrome_RenderWidgetHostHWND（即右键被舞台吃掉、桌面
 //    菜单不弹）。win32k 跨进程跳过命中的条件是 TRANSPARENT **且 LAYERED**。
 const WS_EX_LAYERED = 0x00080000;
+// ⚠️⚠️ 2026-09-26 实测：**对本窗口不能开 LAYERED**。虽然它是唯一能让 win32k 跨进程
+// 跳过命中（真穿透）的办法，但加上后两块屏的舞台**整片纯白、什么都看不见** ——
+// Chromium 窗口内容是 GPU 自绘的，标了 layered 之后 DWM 按分层窗口去合成，读不到
+// 那套内容。所以默认关闭，鼠标穿透改走「渲染端转发右键」的路子（见 liveStage）。
+const USE_LAYERED_CLICK_THROUGH = false;
 const LWA_ALPHA = 0x00000002;
 // 客户区比目标矩形四周多出的物理像素（over-scan）。目的：抵掉「隐形边框宽度的
 // 测量误差」——实测主屏左缘会露出 1px 系统壁纸（四舍五入/子像素导致 insets 少 1）。
@@ -628,11 +633,14 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
   //    不抢焦点、不进 Alt+Tab
   const ex = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
   const newEx = (ex & ~(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME))
-    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED;
+    | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
+    | (USE_LAYERED_CLICK_THROUGH ? WS_EX_LAYERED : 0);
   a.SetWindowLongPtrW(self, GWL_EXSTYLE, newEx);
-  // LAYERED 窗口必须给出 alpha 属性，否则可能整窗不可见（全透明）。
-  const okAlpha = a.SetLayeredWindowAttributes(self, 0, 255, LWA_ALPHA);
-  console.log(`[desktop-host] 鼠标穿透: LAYERED+TRANSPARENT alpha255 ok=${okAlpha ? 'ok' : 'FAIL'}`);
+  if (USE_LAYERED_CLICK_THROUGH) {
+    // LAYERED 窗口必须给出 alpha 属性，否则可能整窗不可见（全透明）。
+    const okAlpha = a.SetLayeredWindowAttributes(self, 0, 255, LWA_ALPHA);
+    console.log(`[desktop-host] 鼠标穿透: LAYERED+TRANSPARENT alpha255 ok=${okAlpha ? 'ok' : 'FAIL'}`);
+  }
 
   // 4. 插到图标层之后。
   //    ⚠️ 坐标语义①：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
@@ -701,7 +709,7 @@ function unmount(hwnd) {
   const self = koffi.as(hwnd, 'void *');
   a.SetWindowRgn(self, null, true);         // 撤掉 mount 的窗口区域裁剪，否则还原后的普通窗口仍被裁
   const ex0 = Number(a.GetWindowLongPtrW(self, GWL_EXSTYLE));
-  a.SetWindowLongPtrW(self, GWL_EXSTYLE, ex0 & ~WS_EX_LAYERED);   // 撤掉穿透用的 LAYERED
+  a.SetWindowLongPtrW(self, GWL_EXSTYLE, ex0 & ~WS_EX_LAYERED);   // 撤掉可能加过的 LAYERED
   const style = Number(a.GetWindowLongPtrW(self, GWL_STYLE));
   a.SetWindowLongPtrW(self, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP);
   a.SetParent(self, null);
