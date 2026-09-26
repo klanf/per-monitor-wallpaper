@@ -2106,6 +2106,8 @@ function applyConfigToUI() {
   // ---- 动态桌面 ----
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
+  $('cfg-breath').checked = c.breath === true;
+  $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2300,6 +2302,21 @@ function bindSettings() {
   $('cfg-video-play-full').addEventListener('change', async (e) => {
     await save({ videoPlayFull: e.target.checked });
     toast(e.target.checked ? '视频将播放完整再切下一张' : '视频恢复按间隔时间切换');
+  });
+
+  $('cfg-breath').addEventListener('change', async (e) => {
+    await save({ breath: e.target.checked });
+    toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
+  });
+
+  const TOD_LABEL = {
+    morning: '早晨 · 暖金斜阳', noon: '中午 · 顶光通透', overcast: '阴天 · 灰蓝低饱和',
+    dusk: '黄昏 · 落日橙紫', night: '夜晚 · 深蓝压暗',
+  };
+  $('cfg-timeofday').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    await save({ timeOfDay: v });
+    toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {

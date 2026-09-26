@@ -387,7 +387,19 @@
         <label class="field-label">动态桌面</label>
         <label class="check"><input type="checkbox" id="cfg-live-wallpaper"><span>启用动态桌面（把播放画面挂到桌面，切换实时可见）</span></label>
         <label class="check"><input type="checkbox" id="cfg-video-play-full"><span>视频播完再切下一个（视频不按间隔时间切）</span></label>
-        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。</div>
+        <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放（缓慢放大缩小，可与内置微缩放叠加）</span></label>
+        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span class="field-label" style="flex:0 0 auto">时段滤镜</span>
+          <select class="select" id="cfg-timeofday" style="flex:1">
+            <option value="">无滤镜</option>
+            <option value="morning">早晨 · 暖金斜阳</option>
+            <option value="noon">中午 · 顶光通透</option>
+            <option value="overcast">阴天 · 灰蓝低饱和</option>
+            <option value="dusk">黄昏 · 落日橙紫</option>
+            <option value="night">夜晚 · 深蓝压暗</option>
+          </select>
+        </div>
+        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。滤镜只作用于动态桌面画面，不写入系统壁纸。</div>
       </div>
 
       <!-- ---------------------------------------------------------- 后台驻留 -->
