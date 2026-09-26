@@ -2171,6 +2171,14 @@ function refreshMonitorTargets() {
   else hint.textContent = `已检测到 ${monitors.length} 台显示器。仅修改所选屏幕，其他屏幕保持原样。`;
 }
 
+/** 全局粒子设置保存时的提醒：有每屏覆盖的屏不跟随全局（用户真实踩过：全局设了樱花，
+ *  一块屏覆盖成 random、另一块覆盖成关闭+数量0，看上去就是「粒子没有生效」） */
+function particleOverrideNote() {
+  const n = Object.values((state.config && state.config.monitors) || {})
+    .filter((m) => m && m.particles !== undefined).length;
+  return n ? `。注意：${n} 块屏设了独立粒子覆盖（卡片里选「跟随全局」才会吃到这条设置）` : '';
+}
+
 function bindSettings() {
   const save = async (patch) => {
     state.config = await window.wp.setConfig(patch);
@@ -2310,7 +2318,7 @@ function bindSettings() {
   $('cfg-particles').addEventListener('change', async (e) => {
     const v = e.target.value;
     await save({ particles: v });
-    toast(v ? '粒子特效已开启（叠加在动态桌面画面上）' : '粒子特效已关闭');
+    toast(v ? `粒子特效已开启（叠加在动态桌面画面上）${particleOverrideNote()}` : `粒子特效已关闭${particleOverrideNote()}`);
   });
 
   $('cfg-particle-count').addEventListener('input', (e) => {
@@ -2321,6 +2329,7 @@ function bindSettings() {
     e.target.value = String(n);
     $('cfg-particle-count-out').textContent = `${n} 粒`;
     await save({ particleCount: n });
+    toast(`粒子数量已设为 ${n} 粒${particleOverrideNote()}`);
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {
