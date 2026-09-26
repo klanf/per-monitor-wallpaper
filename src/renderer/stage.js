@@ -243,16 +243,9 @@ function containRect(W, H, bw, bh) {
 }
 
 /**
- * 把解码位图画进 canvas（这一步就是降采样：位图多大都行，落点只有屏幕大小）。
- * 位图用完必须 close() —— 由调用方负责。
- */
-function paintLayer(layer, bmp) {
-  drawSource(layer, bmp, bmp.width, bmp.height);
-}
-
-/**
  * 通用绘制：src 可为 ImageBitmap（静态图，画一次就完）或 <video>（视频壁纸，
  * rAF 每帧重画拿最新帧）。sw/sh = 源宽高（videoWidth/videoHeight）。
+ * （把解码位图画进 canvas 这一步就是降采样：位图多大都行，落点只有屏幕大小。）
  */
 function drawSource(layer, src, sw, sh) {
   const { w: W, h: H } = canvasSize(layer.canvas);
@@ -550,6 +543,7 @@ async function showFrame(entry, dir, animate) {
 
   const duration = animate ? Math.max(0, cfg.duration || 0) : 0;
   if (duration === 0) {
+    anim = null;   // 快照式上屏作废进行中的过渡：两层刚被钉回原位，旧过渡的收尾帧不能再写它们
     clearFx(incoming.root);
     clearFx(outgoing.root);
     setLayer(incoming.root, REST, 1, 'px');
@@ -655,13 +649,14 @@ function onResize() {
     if (!currentEntry) return;
     // 视频：下一 rAF 自动按新画布尺寸重画；网页：iframe 100% 自适应 —— 都不用管
     if (kindOf(currentEntry) !== 'image') return;
-    // canvas 尺寸变了，旧像素内容会被拉伸 —— 按新尺寸重画当前帧（不做过渡）
-    const token = ++animToken;
+    // resize 后重画当前帧。⚠️ 必须走 showFrame 本尊，不能自己 ++animToken 再手动画：
+    // 手动画会 (a) 把取图途中的首帧 showFrame 整个作废 —— token 作废分支把它**静默**
+    // 丢掉；而 (b) 自己画进的是还没点亮（opacity=0）的图层 —— 两件事叠加就是
+    // 「启动后黑屏，必须等下一个 tick」（第 39 轮实锤：mount 物理取整差 / DPI 收敛的
+    // 一次 resize 正好撞上首帧取图，探针 tools/tmp/probe-startup-frame.js 复现）。
+    // showFrame 自己管理 token 互斥，且画完的图层一定是被点亮的那块。
     try {
-      const bmp = await fetchBitmap(currentEntry);
-      if (token !== animToken) { bmp.close(); return; }
-      paintLayer(layers[active], bmp);
-      bmp.close();
+      await showFrame(currentEntry, 1, false);
     } catch { /* 下一帧 tick 会带新图来 */ }
   }, RESIZE_DEBOUNCE);
 }

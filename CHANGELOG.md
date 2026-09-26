@@ -2025,6 +2025,61 @@ Electron 会 `RegisterClipboardFormat("CF_HDROP")` 注册一个**同名自定义
 - 桌面观感未实测：等用户重启实例肉眼验收（雨丝/花瓣的密度与配色都在 particles.js
   顶部区间表里，调参不用动结构）。
 
+## 第三十九轮：重启后黑屏——首帧被一次 resize 静默作废
+
+### 现象：重启后桌面黑屏，必须等满一个 interval
+
+用户重启（载入第三十八轮构建）后报：动态桌面黑屏，直到下一个轮播间隔才有壁纸；
+恢复之后一切正常。不是偶发——每次重启都撞。
+
+### 根因：onResize 的重画作废了取图途中的首帧，自己却画进未点亮的图层
+
+启动链路里有一个天然的 resize 竞态：舞台窗口按 DIP 创建、按**物理取整坐标**挂载
+（±1px，任务书 §2.4 的已知差），加上开机阶段 Windows 的 DPI 收敛，渲染层在首帧
+取图途中会收到一次 resize。onResize 的旧实现是：
+
+    const token = ++animToken;                       // ← 作废一切在途的 showFrame
+    const bmp = await fetchBitmap(currentEntry);
+    if (token !== animToken) { bmp.close(); return; }
+    paintLayer(layers[active], bmp);                 // ← 画进 active 图层
+
+首帧 showFrame 还在等 wpimg 流 / 解码时，这个 token 自增把它标记为「过期」——
+showFrame 的 token 校验分支随后把**已取到的首帧位图静默丢弃**（连「取图失败」
+的日志都没有）；而 onResize 自己的重画画进的是 active 图层，此刻它**从未被点亮
+（opacity 恒 0）**。两层都不可见、currentEntry 却已设置、rAF 里没有任何东西会再把
+图层点亮——桌面纯黑，直到下一个 tick 的 showFrame 正常走完。
+
+竞态窗口的宽窄由首帧图决定：用户图库普遍 2~6MB（流式 + 解码 200~800ms），
+mount 后的 resize 稳稳落进去；夹具图 10KB 解码几毫秒，窗口窄到之前的验证全部错过。
+这也解释了「时好时坏」：rescue 只取决于 resize 是否恰好落进取图窗口。
+
+### 复现（隐形探针）
+
+`python tools/run-electron.py tools/tmp/probe-startup-frame.js`——隔离 profile 起真实
+main.js：`interval=3600`（观察窗内**绝无 tick**）、大图 BMP 顶到 `files[0]`、把首帧的
+wpimg 流压住 3 秒（模拟慢盘 / 半同步文件），在「首帧上屏」日志出现（取图在途）时
+派发 resize。修复前判定 `no-first-frame-no-error`：25 秒内两层 opacity 恒 0、可见像素
+0、tick=0——黑屏坐实且无人兜底。探针全程不挂桌面、不写系统壁纸，用户实例运行中
+也安全。
+
+### 修复
+
+- `stage.js onResize`：重画当前帧改走 `showFrame(currentEntry, 1, false)` 本尊——
+  token 互斥由它自己管理，画完的图层一定是被点亮的那块。不再手工
+  `++animToken` + `paintLayer`（那正是「作废首帧 + 画进暗层」的组合）；
+  `paintLayer` 随之失去唯一调用点，删除。
+- `showFrame` 的 duration=0 快照式上屏补 `anim = null`：两层刚被钉回原位，
+  进行中的旧过渡的收尾帧不能再写它们（此前这条路径会留下僵尸过渡）。
+- 视频/网页壁纸仍走原早退路径（下一 rAF 自动按新画布重画 / iframe 自适应），行为不变。
+
+### 验证
+
+- 复现探针修复前/后对照：`no-first-frame-no-error` → `first-frame-ok`
+  （可见像素 0 → 320/320，tick 恒 0，同一套恶劣条件：首帧流压 3 秒 + resize 打进取图途中）。
+- 纯 Node 全绿：test-scheduler **159** / test-live-desktop **42** / check-wiring **37** /
+  test-particles **28** / verify-resume **28**。
+- 桌面观感：重启实例后首帧应立即可见，不再等 interval。
+
 ## 尚未迁移的功能
 
 - 文件监控（原版有 `file_check_timer` 自动感知文件被删）——
