@@ -41,6 +41,13 @@ NODE_FALLBACK = pathlib.Path(r"C:\Users\MyPC\.workbuddy\binaries\node\versions\2
 # 本机 npm 缓存默认在 C 盘 %LOCALAPPDATA%\npm-cache；偏好大文件落 D 盘。
 NPM_CACHE_D = r"D:\workbuddy\.npm-cache"
 
+# electron-builder 的组件（electron zip / winCodeSign / nsis）默认走 GitHub Releases，
+# 国内网络下经常 600s 超时（2026-09-26 实测卡死一次）。默认改走 npmmirror，
+# 用户环境里已显式设置的值不受影响（setdefault 只补缺）。
+os.environ.setdefault("ELECTRON_MIRROR", "https://npmmirror.com/mirrors/electron/")
+os.environ.setdefault("ELECTRON_BUILDER_BINARIES_MIRROR",
+                      "https://npmmirror.com/mirrors/electron-builder-binaries/")
+
 # 一次删除超过这个数量的目标，不少运行环境会弹确认/直接拦停；脚本据此改用改名。
 BULK_DELETE_SOFT_LIMIT = 50
 
