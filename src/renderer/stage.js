@@ -41,13 +41,6 @@ const REST = { x: 0, y: 0, s: 1, o: 1 };   // 层的静止状态
  */
 const KEN = { period: 45_000, amplitude: 0.045 };
 
-/**
- * 呼吸缩放（profile.breath）：比 Ken Burns 快一档的匀称呼吸（6s 一吸一呼，±2%）。
- * 与 Ken Burns 叠加时是两个振荡相乘，视觉上「大潮」里带「小潮」。
- * ⚠️ 同样必须连续：用 cos 从 0 相位起步（scale 从 1 平滑出发），永不重置相位。
- */
-const BREATH = { period: 6_000, amplitude: 0.02 };
-
 /** 时段滤镜：色温罩在 #tod（CSS 渐变 + mix-blend-mode），去饱和/压暗写在 .layer 的 filter */
 const TOD_FILTERS = {
   morning:  'brightness(1.04) saturate(1.05)',
@@ -75,6 +68,8 @@ const cfg = {
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
+  breathPeriod: 6000,          // 呼吸周期 ms（profile.breathPeriod；收紧 2000~15000 在下方 guards）
+  breathAmplitude: 2,          // 呼吸幅度 %（profile.breathAmplitude，±%；收紧 0.5~5）
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
   particles: '',               // 粒子特效（profile.particles：''/rain/sakura/random）
   particleCount: 256,          // 粒子数量（profile.particleCount；收紧 0~1000 在 particles.js）
@@ -390,8 +385,9 @@ function kenTick(now) {
   }
   if (cfg.breath) {
     // cos 从 0 相位起步：scale 从 1 平滑出发，不重置相位（重置=瞬跳，KEN 的教训）
-    const ph = (now % BREATH.period) / BREATH.period;   // 0..1
-    s += BREATH.amplitude * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
+    // 47 轮：周期/幅度由 profile.breathPeriod / breathAmplitude 驱动
+    const ph = (now % cfg.breathPeriod) / cfg.breathPeriod;   // 0..1
+    s += (cfg.breathAmplitude / 100) * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
   }
   layer.canvas.style.transform = `scale(${s.toFixed(5)})`;
 }
@@ -601,6 +597,13 @@ function applyChannelConfig() {
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
   if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
+  // 呼吸节奏（47 轮：周期/幅度可配；profile 不写 = 6000ms / ±2%）
+  if (Number.isFinite(Number(p.breathPeriod))) {
+    cfg.breathPeriod = Math.min(Math.max(Math.round(Number(p.breathPeriod)), 2000), 15000);
+  }
+  if (Number.isFinite(Number(p.breathAmplitude))) {
+    cfg.breathAmplitude = Math.min(Math.max(Number(p.breathAmplitude), 0.5), 5);
+  }
   // 时段滤镜（profile 不写 = 无）
   if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
   // 粒子特效：种类白名单与数量收紧都在 particles.js 里做，这里透传。

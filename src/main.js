@@ -106,10 +106,16 @@ function listMonitors() {
     ok: result.ok,
     error: result.error,
     backend: desktopWallpaper.backendName(),
-    monitors: (result.monitors || []).map((m) => ({
-      id: m.id, index: m.index, label: m.label, width: m.width, height: m.height,
-      x: m.x, y: m.y, primary: m.primary, current: m.current,
-    })),
+    // 幻影显示器过滤：系统偶尔会枚举出「没有当前分辨率」的幽灵输出
+    // （断开的显示器 / 远程会话残留），频道建出来预览能切过去但写入永不生效，
+    // 用户看到的就是「只有一块屏却显示两个显示器」（2026-09-26 用户实测）。
+    // 没有有效宽高的一律不当成显示器。
+    monitors: (result.monitors || [])
+      .filter((m) => m && m.id && m.width > 0 && m.height > 0)
+      .map((m) => ({
+        id: m.id, index: m.index, label: m.label, width: m.width, height: m.height,
+        x: m.x, y: m.y, primary: m.primary, current: m.current,
+      })),
   };
 }
 
@@ -1126,7 +1132,7 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
  * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
  */
-const UI_ONLY_KEYS = ['settingsTab'];
+  const UI_ONLY_KEYS = ['settingsTab', 'expandedMonitors'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */

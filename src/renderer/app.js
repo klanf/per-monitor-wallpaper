@@ -1123,6 +1123,12 @@ async function setPreview(id) {
   const previous = channelById(state.previewId);
   state.previewId = id;
   state.firstPaintDone = false;
+  // 预览哪块屏就展开哪块卡的设置（并记住），其余卡片维持原折叠状态（47 轮）
+  const openList = new Set(state.config.expandedMonitors || []);
+  if (!openList.has(id)) {
+    openList.add(id);
+    state.config = await window.wp.setConfig({ expandedMonitors: [...openList] });
+  }
   renderCards();
   updateBadges();
   await loadPreviewChannel();
@@ -1364,8 +1370,12 @@ function cardHtml(ch) {
   const p = ch.profile;
   // 「跟随全局」要显示的是有没有**原始覆盖**，resolveProfile 合并后的值区分不出来 —— 直接读 monitors
   const ov = (state.config && state.config.monitors && state.config.monitors[ch.id]) || {};
+  // 折叠状态记在 config.expandedMonitors（UI_ONLY，不触发重建）：默认全折叠，
+  // 预览哪块屏就展开哪块，重进还保持（47 轮）
+  const open = (state.config.expandedMonitors || []).includes(ch.id);
   const previewing = ch.id === state.previewId;
   const classes = ['monitor-card'];
+  if (open) classes.push('open');
   if (previewing) classes.push('previewing');
   if (!p.enabled) classes.push('off');
 
@@ -1399,6 +1409,9 @@ function cardHtml(ch) {
         <div class="mc-title">${escapeHtml(channelName(ch))}</div>
         <div class="mc-res">@ ${ch.x},${ch.y}${ch.primary ? ' · 主屏' : ''}</div>
       </div>
+      <button class="eye mc-toggle" data-act="toggle-open" title="${open ? '折叠这块屏的设置' : '展开这块屏的设置'}">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
       <button class="eye" data-act="preview" title="把窗口预览切到这块屏">
         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6">
           <path d="M1 8s2.6-4.4 7-4.4S15 8 15 8s-2.6 4.4-7 4.4S1 8 1 8z"/><circle cx="8" cy="8" r="1.8"/>
@@ -1715,6 +1728,7 @@ function openSettings() {
   document.body.classList.remove('idle');
   closeAlbumsPage();              // 两个覆盖层互斥，别叠在一起
   refreshThumbStats();
+  refreshMemLabel();              // 「释放内存」旁边常驻显示缓存有多大（47 轮）
   refreshTrayState();
   refreshHotkeys();
 }
@@ -1800,6 +1814,15 @@ async function refreshThumbStats() {
   } catch (err) {
     els.thumbStats.textContent = `读取失败：${err.message}`;
   }
+}
+
+/** 「释放内存」旁的状态条：缓存大小常驻，释放后附带主进程内存读数 */
+async function refreshMemLabel(mem) {
+  try {
+    const s = await window.wp.thumbStats();
+    els.memLabel.textContent = (mem ? `主进程 RSS ${mem.rss} MB · ` : '')
+      + `缩略图缓存 ${s.mb} MB（${s.files.toLocaleString('zh-CN')} 张）`;
+  } catch { /* 缓存统计拿不到就算了，别在装饰性信息上弹错误 */ }
 }
 
 async function refreshTrayState() {
@@ -2090,7 +2113,13 @@ function applyConfigToUI() {
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
-  $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
+  // 呼吸节奏滑条：默认与 stage.js 的 cfg 默认保持一致（6000ms / ±2%）
+  const bp = Math.round(Number(c.breathPeriod));
+  $('cfg-breath-period').value = String(Number.isFinite(bp) ? Math.min(Math.max(bp, 2000), 15000) / 1000 : 6);
+  $('cfg-breath-period-out').textContent = `${$('cfg-breath-period').value} 秒/周期`;
+  const ba = Number(c.breathAmplitude);
+  $('cfg-breath-amplitude').value = String(Number.isFinite(ba) ? Math.min(Math.max(ba, 0.5), 5) : 2);
+  $('cfg-breath-amplitude-out').textContent = `±${$('cfg-breath-amplitude').value}%`;
   // 粒子数量滑条：上限/默认与 particles.js 的 COUNT_MAX / COUNT_DEFAULT 保持一致
   $('cfg-particles').value = typeof c.particles === 'string' ? c.particles : '';
   const pc = Math.round(Number(c.particleCount));
@@ -2141,6 +2170,11 @@ function applyConfigToUI() {
   document.body.classList.toggle('mode-per-monitor', Boolean(c.perMonitor));
   document.body.classList.toggle('fit-contain', c.fit === 'contain');
   document.body.classList.toggle('filmstrip-off', c.filmstrip === false);
+  // 单屏机器：隐藏「统一/每屏」切换（refreshChannelInfo 会自动落到每屏语义，
+  // 单屏下两种模式本来就等价，隐藏掉省得选）
+  const displayCount = (state.backendInfo && state.backendInfo.monitors && state.backendInfo.monitors.length)
+    || state.channels.length || 1;
+  document.body.classList.toggle('single-monitor', displayCount <= 1);
 }
 
 /** 统一模式的目标下拉框：动态追加具体显示器 */
@@ -2305,14 +2339,19 @@ function bindSettings() {
     toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
   });
 
-  const TOD_LABEL = {
-    morning: '早晨 · 暖金斜阳', noon: '中午 · 顶光通透', overcast: '阴天 · 灰蓝低饱和',
-    dusk: '黄昏 · 落日橙紫', night: '夜晚 · 深蓝压暗',
-  };
-  $('cfg-timeofday').addEventListener('change', async (e) => {
-    const v = e.target.value;
-    await save({ timeOfDay: v });
-    toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
+  // 呼吸节奏（47 轮）：周期/幅度滑条，落 profile 键，每屏卡片也能单独覆盖
+  $('cfg-breath-period').addEventListener('input', (e) => {
+    $('cfg-breath-period-out').textContent = `${e.target.value} 秒/周期`;
+  });
+  $('cfg-breath-period').addEventListener('change', async (e) => {
+    await save({ breathPeriod: Math.round(Number(e.target.value) * 1000) });
+  });
+
+  $('cfg-breath-amplitude').addEventListener('input', (e) => {
+    $('cfg-breath-amplitude-out').textContent = `±${e.target.value}%`;
+  });
+  $('cfg-breath-amplitude').addEventListener('change', async (e) => {
+    await save({ breathAmplitude: Number(e.target.value) });
   });
 
   $('cfg-particles').addEventListener('change', async (e) => {
@@ -2614,6 +2653,14 @@ function bindSettings() {
       case 'preview':
         await setPreview(id);
         break;
+      case 'toggle-open': {
+        // 折叠状态记在 config.expandedMonitors（UI_ONLY，不触发重建）
+        const list = new Set(state.config.expandedMonitors || []);
+        if (list.has(id)) list.delete(id); else list.add(id);
+        state.config = await window.wp.setConfig({ expandedMonitors: [...list] });
+        renderCards();
+        break;
+      }
       case 'pick': {
         // folder:pick 的语义是「选目录加入这块屏的相簿」（没有相簿会自动建一个）
         const folder = await window.wp.pickFolder(id);
@@ -2640,7 +2687,8 @@ function bindSettings() {
 
   $('btn-free-memory').addEventListener('click', async () => {
     const mem = await window.wp.freeMemory();
-    els.memLabel.textContent = `主进程 RSS ${mem.rss} MB · 堆 ${mem.heap} MB`;
+    await refreshThumbStats();
+    await refreshMemLabel(mem);
     toast(`已清理缓存   ·   主进程内存 ${mem.rss} MB`);
   });
 
@@ -2743,6 +2791,14 @@ function pokeBars() {
 async function refreshChannelInfo() {
   const info = await window.wp.listChannels();
   state.backendInfo = info;
+  // 单屏机器：自动落到「每屏独立」语义 —— 单屏下统一/每屏等价，但只有每屏语义
+  // 显示器卡片才可编辑；模式切换在单屏时由 CSS 隐藏（见 applyConfigToUI）。
+  // 一次性写盘，之后条件不成立不会反复触发。
+  const monitorCount = (info.monitors || []).length;
+  if (monitorCount > 0 && monitorCount <= 1 && state.config && state.config.perMonitor !== true) {
+    state.config = await window.wp.setConfig({ perMonitor: true });
+    applyConfigToUI();
+  }
   refreshMonitorTargets();
   applyChannelInfo(info);
 }

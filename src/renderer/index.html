@@ -129,7 +129,7 @@
 
   <div class="settings-body" id="settings-body">
     <div class="settings-pane" data-pane="play">
-      <div class="field">
+      <div class="field" id="mode-field">
         <label class="field-label">轮播模式</label>
         <div class="seg" id="cfg-mode">
           <button data-value="unified" class="seg-item">统一配置</button>
@@ -156,6 +156,67 @@
           <option value="720">每 12 小时</option>
         </select>
         <div class="field-hint" id="cfg-auto-scan-hint"></div>
+      </div>
+
+      <!-- 特效与动画（47 轮从「外观/系统」集中到轮播，与显示器卡片控件一一对应）：
+           过渡动画/时长是全局默认，每屏模式下由卡片接管所以只在统一模式显示；
+           粒子始终显示 —— 卡片里选「跟随全局」的屏吃这里的设置 -->
+      <div class="field unified-only">
+        <label class="field-label">过渡动画</label>
+        <select class="select" id="cfg-animation">
+          <option value="slide">滑动</option>
+          <option value="fade">淡入</option>
+          <option value="zoom">缩放</option>
+          <option value="zoom-in">放大收场</option>
+          <option value="zoom-out">缩小进场</option>
+          <option value="slide-zoom">滑动缩放</option>
+          <option value="wipe">幕布擦除</option>
+          <option value="iris">圆形展开</option>
+          <option value="blur-dissolve">模糊溶解</option>
+          <option value="clock">时钟扫描</option>
+          <option value="blinds">百叶窗</option>
+          <option value="split">上下合拢</option>
+          <option value="random">随机轮换</option>
+        </select>
+      </div>
+
+      <div class="field unified-only">
+        <label class="field-label">动画时长</label>
+        <div class="field-row">
+          <input type="range" id="cfg-duration" min="120" max="1500" step="20">
+          <output class="field-value" id="cfg-duration-out">520 ms</output>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">粒子特效</label>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 auto">种类</span>
+          <select class="select" id="cfg-particles" style="flex:1">
+            <option value="">关闭</option>
+            <option value="rain">雨落</option>
+            <option value="sakura">樱花落</option>
+            <option value="snow">雪</option>
+            <option value="fireflies">萤火虫</option>
+            <option value="stars">星空流星</option>
+            <option value="bubbles">泡泡</option>
+            <option value="leaves">落叶</option>
+            <option value="fluff">柳絮</option>
+            <option value="dust">光粒漂浮</option>
+            <option value="confetti">彩带纸屑</option>
+            <option value="fireworks">烟花</option>
+            <option value="embers">火焰灰烬</option>
+            <option value="splash">雨落水花</option>
+            <option value="raindrops">雨滴挂屏</option>
+            <option value="random">随机（每次换图抽一种）</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 auto">数量</span>
+          <input type="range" id="cfg-particle-count" min="0" max="1000" step="4" style="flex:1">
+          <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
+        </div>
+        <div class="field-hint">全局默认，显示器卡片里可按屏覆盖（「跟随全局」的屏吃这里）；烟花数量内置（最多同时 5 发）。</div>
       </div>
 
       <!-- 每屏模式：每台显示器一张卡片 -->
@@ -211,33 +272,6 @@
     </div>
 
     <div class="settings-pane" data-pane="look" hidden>
-      <div class="field unified-only">
-        <label class="field-label">过渡动画</label>
-        <select class="select" id="cfg-animation">
-          <option value="slide">滑动</option>
-          <option value="fade">淡入</option>
-          <option value="zoom">缩放</option>
-          <option value="zoom-in">放大收场</option>
-          <option value="zoom-out">缩小进场</option>
-          <option value="slide-zoom">滑动缩放</option>
-          <option value="wipe">幕布擦除</option>
-          <option value="iris">圆形展开</option>
-          <option value="blur-dissolve">模糊溶解</option>
-          <option value="clock">时钟扫描</option>
-          <option value="blinds">百叶窗</option>
-          <option value="split">上下合拢</option>
-          <option value="random">随机轮换</option>
-        </select>
-      </div>
-
-      <div class="field unified-only">
-        <label class="field-label">动画时长</label>
-        <div class="field-row">
-          <input type="range" id="cfg-duration" min="120" max="1500" step="20">
-          <output class="field-value" id="cfg-duration-out">520 ms</output>
-        </div>
-      </div>
-
       <div class="field unified-only">
         <label class="field-label">图片填充方式</label>
         <div class="seg" id="cfg-fit">
@@ -388,43 +422,16 @@
         <label class="check"><input type="checkbox" id="cfg-video-play-full"><span>视频播完再切下一个（视频不按间隔时间切）</span></label>
         <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放（缓慢放大缩小，可与内置微缩放叠加）</span></label>
         <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
-          <span class="field-label" style="flex:0 0 auto">时段滤镜</span>
-          <select class="select" id="cfg-timeofday" style="flex:1">
-            <option value="">无滤镜</option>
-            <option value="morning">早晨 · 暖金斜阳</option>
-            <option value="noon">中午 · 顶光通透</option>
-            <option value="overcast">阴天 · 灰蓝低饱和</option>
-            <option value="dusk">黄昏 · 落日橙紫</option>
-            <option value="night">夜晚 · 深蓝压暗</option>
-          </select>
+          <span class="field-label" style="flex:0 0 auto">呼吸速度</span>
+          <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
+          <span class="muted" id="cfg-breath-period-out" style="flex:0 0 auto">6 秒/周期</span>
         </div>
         <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
-          <span class="field-label" style="flex:0 0 auto">粒子特效</span>
-          <select class="select" id="cfg-particles" style="flex:1">
-            <option value="">关闭</option>
-            <option value="rain">雨落</option>
-            <option value="sakura">樱花落</option>
-            <option value="snow">雪</option>
-            <option value="fireflies">萤火虫</option>
-            <option value="stars">星空流星</option>
-            <option value="bubbles">泡泡</option>
-            <option value="leaves">落叶</option>
-            <option value="fluff">柳絮</option>
-            <option value="dust">光粒漂浮</option>
-            <option value="confetti">彩带纸屑</option>
-            <option value="fireworks">烟花</option>
-            <option value="embers">火焰灰烬</option>
-            <option value="splash">雨落水花</option>
-            <option value="raindrops">雨滴挂屏</option>
-            <option value="random">随机（每次换图抽一种）</option>
-          </select>
+          <span class="field-label" style="flex:0 0 auto">呼吸幅度</span>
+          <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
+          <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 auto">±2%</span>
         </div>
-        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
-          <span class="field-label" style="flex:0 0 auto">粒子数量</span>
-          <input type="range" id="cfg-particle-count" min="0" max="1000" step="4" style="flex:1">
-          <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
-        </div>
-        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。滤镜与粒子只作用于动态桌面画面，不写入系统壁纸；粒子跟随帧率上限与暂停体系（全屏/锁屏时一并冻结）。烟花数量内置（最多同时 5 发），数量滑条对它不生效。</div>
+        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。粒子特效在「轮播」页配置；特效只作用于动态桌面画面，不写入系统壁纸。</div>
       </div>
 
       <!-- ---------------------------------------------------------- 后台驻留 -->

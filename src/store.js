@@ -58,6 +58,13 @@ const DEFAULTS = {
    * 默认应该落回用户上次看的那一页 —— 否则每次打开都要重新点一遍。
    */
   settingsTab: 'play',
+
+  /**
+   * 每屏卡片哪些是展开的（频道 id 数组）。默认全折叠 —— 卡片多了以后
+   * 全展开就是一条长列；常调的那块屏展开一次，重进还保持。
+   * 纯界面状态（UI_ONLY_KEYS），改动不触发频道重建。
+   */
+  expandedMonitors: [],
   animation: 'slide',      // 全清单见下方 ANIMATIONS（含 random 随机轮换）
   duration: 520,           // 毫秒
   shuffle: false,
@@ -254,6 +261,8 @@ const PROFILE_KEYS = [
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
   'particles',                 // 舞台粒子特效：rain/sakura（不写 = 关；白名单收紧在渲染端 particles.js）
   'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
+  'breathPeriod',              // 呼吸缩放周期 ms（不写 = 渲染端默认 6000；收紧 2000~15000）
+  'breathAmplitude',           // 呼吸缩放幅度 %（不写 = 渲染端默认 2，即 ±2%；收紧 0.5~5）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */

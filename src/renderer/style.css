@@ -646,6 +646,15 @@ body.mode-per-monitor .unified-only { display: none; }
 .eye:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
 .monitor-card.previewing .eye { color: var(--accent); border-color: rgba(91, 140, 255, 0.45); }
 
+/* ---- 每屏卡片折叠（47 轮）：默认只留头 + 相簿行 + 状态条，展开才出全部控件。
+     折叠状态记在 config.expandedMonitors，预览一块屏会自动展开它 ---- */
+.mc-toggle svg { transition: transform 0.15s ease; }
+.monitor-card.open .mc-toggle svg { transform: rotate(180deg); }
+.monitor-card:not(.open) .mc-row,
+.monitor-card:not(.open) .mc-block,
+.monitor-card:not(.open) .mc-more,
+.monitor-card:not(.open) .check { display: none; }
+
 /* ==========================================================================
    胶片条（缩略图导航）
    替换原来的「播放历史」功能：一条时间线上同时能看到「看过的」「当前」「即将播放的」，

@@ -54,7 +54,7 @@ const orphanFields = [...block.matchAll(/^ {2}<div class="field[ "]/gm)];
 check('没有字段块漏在分类页外面', orphanFields.length === 0, `漏了 ${orphanFields.length} 个`);
 
 const fieldCount = (block.match(/^ {6}<div class="field[ "]/gm) || []).length;
-check('22 个字段块都归进了某一页', fieldCount === 22, String(fieldCount));
+check('23 个字段块都归进了某一页', fieldCount === 23, String(fieldCount));
 
 // 每个页至少有一个字段块
 const perPane = {};
@@ -76,7 +76,8 @@ const paneOf = (needle) => {
 };
 check('轮播模式在「轮播」页', paneOf('id="cfg-mode"') === 'play', String(paneOf('id="cfg-mode"')));
 check('显示器卡片在「轮播」页', paneOf('id="monitor-cards"') === 'play', String(paneOf('id="monitor-cards"')));
-check('过渡动画在「外观」页', paneOf('id="cfg-animation"') === 'look', String(paneOf('id="cfg-animation"')));
+check('过渡动画在「轮播」页（47 轮集中）', paneOf('id="cfg-animation"') === 'play', String(paneOf('id="cfg-animation"')));
+check('粒子特效在「轮播」页（47 轮集中）', paneOf('id="cfg-particles"') === 'play', String(paneOf('id="cfg-particles"')));
 check('胶片条在「外观」页', paneOf('id="cfg-filmstrip"') === 'look', String(paneOf('id="cfg-filmstrip"')));
 check('热键在「操作」页', paneOf('id="hotkey-list"') === 'action', String(paneOf('id="hotkey-list"')));
 check('快捷文件夹在「操作」页', paneOf('id="quick-section"') === 'action', String(paneOf('id="quick-section"')));
@@ -122,7 +123,7 @@ check('设置面板本身不再整块滚动', /\.settings \{[\s\S]*?overflow: hi
 
 // ---- 主进程：切页不该重建频道 ----
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab'\]/.test(MAIN));
+check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'expandedMonitors'\]/.test(MAIN));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
