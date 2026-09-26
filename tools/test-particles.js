@@ -43,11 +43,11 @@ check("clampType('rain') 原样保留", pt.clampType('rain') === 'rain');
 check("clampType('sakura') 原样保留", pt.clampType('sakura') === 'sakura');
 check("clampType('meteor_shower') 白名单外 → 关闭", pt.clampType('meteor_shower') === '');
 check('clampType(undefined) → 关闭', pt.clampType(undefined) === '');
-check('种类白名单 = 13 种注册特效',
+check('种类白名单 = 14 种注册特效',
   JSON.stringify(pt.PARTICLE_TYPES) === JSON.stringify([
     'rain', 'sakura', 'snow', 'fireflies', 'stars',
-    'bubbles', 'leaves', 'fluff', 'dust', 'confetti', 'storm',
-    'rays', 'halo',
+    'bubbles', 'leaves', 'fluff', 'dust', 'confetti',
+    'fireworks', 'embers', 'splash', 'raindrops',
   ]));
 
 // ---- §2 spawn：初始铺满全屏、字段在约定区间、同种子可复现 ----
@@ -103,9 +103,8 @@ check('全种类 spawn 数量受控（≤请求数）、坐标有限',
     const parts = pt.spawn(t, 10, W, H, seeded(5));
     return parts.length >= 1 && parts.length <= 10 && parts.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
   }));
-check('光效类数量内置：rays 封顶 6、halo 封顶 4',
-  pt.spawn('rays', 1000, W, H, seeded(5)).length === 6
-  && pt.spawn('halo', 1000, W, H, seeded(5)).length === 4);
+check('大场面数量内置：fireworks 封顶 5 发',
+  pt.spawn('fireworks', 1000, W, H, seeded(5)).length === 5);
 check('普通类数量原样：rain 10 粒就是 10 粒', pt.spawn('rain', 10, W, H, seeded(5)).length === 10);
 check('全种类 step 推进两帧不炸、坐标仍有限',
   pt.PARTICLE_TYPES.every((t) => {
@@ -114,8 +113,31 @@ check('全种类 step 推进两帧不炸、坐标仍有限',
     pt.step(parts, t, 33.3, W, H, seeded(6));
     return parts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   }));
-check('storm 里藏着闪电载体（大种群下必有）',
-  pt.spawn('storm', 1000, W, H, seeded(9)).some((p) => p.kind === 'flash'));
+check('烟花会走完 wait → rocket → burst 三段人生',
+  (() => {
+    const parts = pt.spawn('fireworks', 5, W, H, seeded(8));
+    const kinds = new Set();
+    for (let i = 0; i < 400; i += 1) {          // 400 × 16.7ms ≈ 6.7s，足够走完一轮
+      pt.step(parts, 'fireworks', 16.7, W, H, seeded(8));
+      for (const p of parts) kinds.add(p.kind);
+    }
+    return kinds.has('wait') && kinds.has('rocket') && kinds.has('burst');
+  })());
+check('水花粒子会从雨丝变成水冠再变回雨丝',
+  (() => {
+    const parts = pt.spawn('splash', 5, W, H, seeded(3));
+    for (const p of parts) { p.y = H - 1; p.v = 1000; }   // 全部顶到地面
+    let sawSplash = false;
+    let sawRespawn = false;
+    for (let i = 0; i < 60 && !(sawSplash && sawRespawn); i += 1) {
+      pt.step(parts, 'splash', 16.7, W, H, seeded(3));
+      for (const p of parts) {
+        if (p.kind === 'splash') sawSplash = true;
+        else if (sawSplash && p.y < 0) sawRespawn = true; // 水冠结束 → 顶上重来的雨丝
+      }
+    }
+    return sawSplash && sawRespawn;
+  })());
 check('fluff/stars/leaves 都有左右摆动（sway > 0）',
   ['fluff', 'leaves'].every((t) => pt.spawn(t, 5, W, H, seeded(4)).every((p) => p.sway > 0)));
 

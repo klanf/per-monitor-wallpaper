@@ -1,8 +1,9 @@
 'use strict';
 
 /**
- * 舞台粒子/光效图层 —— 雨 / 樱花 / 雪 / 萤火虫 / 星空流星 / 泡泡 / 落叶 / 柳絮 /
- * 光粒 / 彩带 / 雷雨 / 丁达尔光束 / 光晕（profile.particles / profile.particleCount）。
+ * 舞台粒子图层 —— 雨 / 樱花 / 雪 / 萤火虫 / 星空流星 / 泡泡 / 落叶 / 柳絮 /
+ * 光粒 / 彩带 / 烟花 / 火焰灰烬 / 雨落水花 / 雨滴挂屏
+ * （profile.particles / profile.particleCount）。
  *
  * 定位（交接文档 11.7 #9 的拍板 + 第 41/42 轮扩容）：
  *   · 独立 <canvas id="particles">，盖在两个 .layer（图片层）之上、#tod（时段滤镜）
@@ -14,16 +15,15 @@
  *
  * 结构：**类型注册表** —— 每种特效在 TYPES 里登记 make（造粒子）/ step（推进一帧，
  * 含出屏回收）/ draw（画一个粒子），可选 begin/end（批次级 ctx 状态，如混合模式）
- * 与 cap（光效类数量内置：丁达尔 6 根、光晕 3 团，不随数量滑条走）。
+ * 与 cap（大场面特效数量内置：烟花 5 发，不随数量滑条走）。
  * 纯逻辑（clamp / spawn / step）与绘制分离：tools/test-particles.js 在纯 Node 里
  * require 本文件直接测前半，不需要 canvas；probe-particles.js 在真 Chromium 里
  * 逐种验证「真的出像素」。
  * 文件必须 require-safe：渲染层 <script> 挂 window.WPParticles，Node 里 require
  * 拿到同一份导出（无打包器，两种加载方式共用一个文件）。
  *
- * 性能口径（保守）：默认 256 粒、上限 1000。绘制只走 2d 路径（线段/圆/椭圆/多边形）
- * 加惰性软边贴图（丁达尔），不用 shadow、不用每粒子多层渐变 ——
- * 桌面是常驻图层，预算按「用户零感知」给。
+ * 性能口径（保守）：默认 256 粒、上限 1000。绘制只走 2d 路径
+ * （线段/圆/椭圆/多边形）—— 桌面是常驻图层，预算按「用户零感知」给。
  */
 
 (function (global, factory) {
@@ -36,8 +36,8 @@
    *  「random」不在这里 —— 那是 stage.js 的抽取逻辑（每次换图重抽一种实际种类）。 */
   const PARTICLE_TYPES = [
     'rain', 'sakura', 'snow', 'fireflies', 'stars',
-    'bubbles', 'leaves', 'fluff', 'dust', 'confetti', 'storm',
-    'rays', 'halo',
+    'bubbles', 'leaves', 'fluff', 'dust', 'confetti',
+    'fireworks', 'embers', 'splash', 'raindrops',
   ];
 
   const COUNT_MIN = 0;
@@ -501,150 +501,233 @@
     },
   };
 
-  /* 雷雨：加密加急的雨 + 低频全屏闪电（fTimer 倒数 → fDur 亮一瞬） */
-  TYPES.storm = {
-    make(W, H, r, anywhere) {
-      if (r() < 0.02) {                             // ~2% 携带闪电计时器
-        return { kind: 'flash', x: 0, y: 0, fTimer: 3 + r() * 8, fDur: 0 };
-      }
-      const v = 1100 + r() * 500;
-      return {
-        x: r() * W,
-        y: anywhere ? r() * H : -30 - r() * H * 0.15,
-        v,
-        vx: v * (0.12 + r() * 0.12),                // 风更急
-        len: 14 + r() * 18,
-        alpha: 0.25 + r() * 0.3,
-      };
+  /* 雷雨下线（44 轮，用户拍板）；原位置让给烟花 */
+
+  /* 烟花：火箭升空 → 空中炸开一簇彩色火花（阻力减速 + 重力 + 渐灭 + 末段闪烁）
+     → 候场再来。一条粒子 = 一发烟花的三段人生（wait/rocket/burst），
+     数量 cap=5 —— 烟花是大场面特效，256 发齐炸没有意义 */
+  const FIREWORK_COLORS = ['#ff6b6b', '#ffd23f', '#6be3a2', '#6a89cc', '#f78fb3', '#c39bd3'];
+  TYPES.fireworks = {
+    cap: 5,
+    make(W, H, r) {
+      return { kind: 'wait', x: 0, y: 0, wait: r() * 2.5 };
     },
     step(p, dt, W, H, r) {
-      if (p.kind === 'flash') {
-        p.fTimer -= dt;
-        if (p.fTimer <= 0 && p.fDur <= 0) p.fDur = 0.09 + r() * 0.06;
-        if (p.fDur > 0) {
-          p.fDur -= dt;
-          if (p.fDur <= 0) p.fTimer = 4 + r() * 8;
+      if (p.kind === 'wait') {
+        p.wait -= dt;
+        if (p.wait <= 0) {                          // 升空：别贴边炸，升到上半屏
+          p.kind = 'rocket';
+          p.x = W * (0.12 + r() * 0.76);
+          p.y = H + 10;
+          p.vy = -(H * 0.42 + r() * H * 0.2) / 1.1; // ~1.1s 升到顶
+          p.targetY = H * (0.12 + r() * 0.3);
+          p.color = pick(r, FIREWORK_COLORS);
         }
         return;
       }
-      TYPES.rain.step(p, dt, W, H, r);
+      if (p.kind === 'rocket') {
+        p.y += p.vy * dt;
+        if (p.y <= p.targetY) {                     // 到顶 → 炸
+          const n = 36 + ((r() * 26) | 0);
+          const sparks = [];
+          for (let i = 0; i < n; i += 1) {
+            const a = (i / n) * TAU + r() * 0.2;
+            const sp = 70 + r() * 190;
+            sparks.push({ x: p.x, y: p.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
+          }
+          p.kind = 'burst';
+          p.sparks = sparks;
+          p.life = 1.5 + r() * 0.5;
+          p.age = 0;
+        }
+        return;
+      }
+      p.age += dt;                                  // burst：火花减速下坠、渐灭
+      for (const s of p.sparks) {
+        s.vx *= (1 - 1.6 * dt);
+        s.vy = s.vy * (1 - 1.6 * dt) + 260 * dt;
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+      }
+      if (p.age >= p.life) {
+        p.kind = 'wait';
+        p.wait = 0.6 + r() * 2.4;
+      }
     },
-    begin(ctx) {
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = '#d6e6ff';
+    begin(ctx) { ctx.globalCompositeOperation = 'lighter'; },
+    end(ctx) { ctx.globalCompositeOperation = 'source-over'; },
+    draw(ctx, p) {
+      if (p.kind === 'wait') return;
+      if (p.kind === 'rocket') {                    // 上升亮点 + 短尾
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = '#ffe9b0';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x, p.y + 12);
+        ctx.stroke();
+        return;
+      }
+      const t = p.age / p.life;
+      if (p.age < 0.12) {                           // 炸开瞬间的闪光
+        ctx.globalAlpha = 0.35 * (1 - p.age / 0.12);
+        ctx.fillStyle = '#fff2c8';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 26 * (p.age / 0.12), 0, TAU);
+        ctx.fill();
+      }
+      ctx.globalAlpha = Math.max(0, (1 - t) * (0.7 + 0.3 * Math.sin(p.age * 30 + p.x)));
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 1.6;
+      for (const s of p.sparks) {
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(s.x - s.vx * 0.02, s.y - s.vy * 0.02);
+        ctx.stroke();
+      }
+    },
+  };
+
+  /* 火焰灰烬：从底部升起的橙红火屑，摇曳上飘、闪烁、越高越淡（火源在画面下方）。
+     lighter 混合让重叠的火屑发亮；44 轮新增 */
+  const EMBER_COLORS = ['#ffb14a', '#ff7a3c', '#ffd28a', '#ff5a2e'];
+  TYPES.embers = {
+    make(W, H, r, anywhere) {
+      return {
+        x: r() * W,
+        y: anywhere ? r() * H : H + 6 + r() * 20,
+        vy: 20 + r() * 55,                          // 上升 20~75 px/s
+        sway: 10 + r() * 26,
+        freq: 0.6 + r() * 1.6,
+        phase: r() * TAU,
+        size: 1 + r() * 2.2,
+        flicker: 2 + r() * 5,                       // 闪烁频率
+        fp: r() * TAU,
+        color: pick(r, EMBER_COLORS),
+        alpha: 0.5 + r() * 0.5,
+      };
+    },
+    step(p, dt, W, H, r) {
+      p.phase += p.freq * dt;
+      p.fp += p.flicker * dt;
+      p.y -= p.vy * dt;
+      p.x += Math.sin(p.phase) * p.sway * dt;
+      if (p.y < -10) {                              // 飘出顶边 → 从底边重来（火源在下面）
+        p.x = r() * W;
+        p.y = H + 6 + r() * 20;
+      }
+      wrapX(p, W, 8);
+    },
+    begin(ctx) { ctx.globalCompositeOperation = 'lighter'; },
+    end(ctx) { ctx.globalCompositeOperation = 'source-over'; },
+    draw(ctx, p, W, H) {
+      const flick = 0.55 + 0.45 * Math.sin(p.fp);
+      const hFade = Math.max(0.15, Math.min(1, p.y / (H * 0.85)));   // 越高越淡
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.alpha * flick * hFade * 0.3;                   // 火光晕
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * 2.6, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = p.alpha * flick * hFade;                          // 核心火屑
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, TAU);
+      ctx.fill();
+    },
+  };
+
+  /* 雨落水花：雨丝落到「地面」那一刻炸开一圈小水冠，然后雨丝从顶上再来。
+     一条粒子两段人生（drop → splash → drop），数组长度恒定；
+     44 轮新增（复用 rain 的造型与运动，只有触地一段是自己的） */
+  TYPES.splash = {
+    make(W, H, r, anywhere) {
+      return TYPES.rain.make(W, H, r, anywhere);    // 起手是雨丝
+    },
+    step(p, dt, W, H, r) {
+      if (p.kind === 'splash') {                    // 水冠展开 ~0.3s 后变回雨丝
+        p.t += dt;
+        if (p.t >= p.dur) {
+          Object.assign(p, TYPES.rain.make(W, H, r, false));
+          delete p.kind;
+        }
+        return;
+      }
+      p.y += p.v * dt;
+      p.x += p.vx * dt;
+      wrapX(p, W, 4);
+      if (p.y >= H) {                               // 触地 → 水花
+        p.kind = 'splash';
+        p.sx = p.x;
+        p.t = 0;
+        p.dur = 0.22 + r() * 0.16;
+      }
     },
     draw(ctx, p, W, H) {
-      if (p.kind === 'flash') {
-        if (p.fDur > 0) {                           // 全屏亮一瞬（叠了白不算突兀）
-          ctx.globalAlpha = 0.12;
-          ctx.fillStyle = '#eaf1ff';
-          ctx.fillRect(0, 0, W, H);
-        }
+      if (p.kind === 'splash') {
+        const k = Math.min(1, p.t / p.dur);
+        ctx.globalAlpha = (1 - k) * 0.7;
+        ctx.strokeStyle = '#cfe4ff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(p.sx, H - 1, 2 + k * 7, Math.PI, TAU);   // 向上张开的半圆水冠
+        ctx.stroke();
         return;
       }
       TYPES.rain.draw(ctx, p);
     },
   };
 
-  /* ---- 光效类（42 轮新增）：不是粒子雨，是大面积、低透明度、慢呼吸的光 ----
-     数量内置（cap），不随「粒子数量」滑条走；lighter 混合叠在壁纸上提亮 */
-
-  /* 丁达尔光束：从顶部斜插下来的暖光柱，缓慢摆动 + 呼吸式强弱。
-     软边靠惰性预渲染的贴图（横向高斯式衰减 × 纵向渐隐，destination-in 做乘法），
-     每帧只是一次 drawImage + rotate，比每帧拼两层渐变便宜也更好看 */
-  TYPES.rays = {
-    cap: 6,                                         // 6 根封顶：多了一屏全白
-    make(W, H, r) {
-      const dir = r() < 0.5 ? -1 : 1;
-      return {
-        x: r() * W,                                 // 顶部出发点
-        y: -40,                                     // 亮端留在屏外，屏内只见衰减段
-        baseAng: dir * (0.18 + r() * 0.38),         // 与竖直的夹角
-        w: 90 + r() * 150,                          // 光柱宽度（43 轮加宽）
-        len: Math.max(W, H) * 1.5,                  // 一定要斜穿出屏
-        osc: 0.03 + r() * 0.05,                     // 摆幅（弧度）
-        bfreq: 0.08 + r() * 0.2,                    // 呼吸频率
-        phase: r() * TAU,
-        alpha: 0.10 + r() * 0.07,                   // 0.10~0.17（原 0.05~0.11）
-      };
-    },
-    step(p, dt) {
-      p.phase += dt;
-    },
-    sprite() {                                      // 惰性软边贴图（幂等，进程内只做一次）
-      const T = TYPES.rays;
-      if (T._sprite) return T._sprite;
-      if (typeof document === 'undefined') return null;   // 纯 Node（单测）不画，无此对象
-      const c = document.createElement('canvas');
-      const w = 256;
-      const h = 1024;
-      c.width = w;
-      c.height = h;
-      const g = c.getContext('2d');
-      const gx = g.createLinearGradient(0, 0, w, 0);      // 横向：两边透明中间亮
-      gx.addColorStop(0, 'rgba(255,240,200,0)');
-      gx.addColorStop(0.5, 'rgba(255,240,200,1)');
-      gx.addColorStop(1, 'rgba(255,240,200,0)');
-      g.fillStyle = gx;
-      g.fillRect(0, 0, w, h);
-      g.globalCompositeOperation = 'destination-in';      // 纵向：顶亮底透（乘法遮罩）
-      const gy = g.createLinearGradient(0, 0, 0, h);
-      gy.addColorStop(0, 'rgba(0,0,0,1)');
-      gy.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = gy;
-      g.fillRect(0, 0, w, h);
-      T._sprite = c;
-      return c;
-    },
-    draw(ctx, p) {
-      const sp = TYPES.rays.sprite();
-      if (!sp) return;
-      const breathe = 0.35 + 0.65 * Math.sin(p.phase * 0.5 + p.x * 0.01);
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      ctx.rotate(p.baseAng + Math.sin(p.phase * 0.35) * p.osc);
-      ctx.globalAlpha = p.alpha * Math.max(0.35, breathe);
-      ctx.drawImage(sp, -p.w / 2, 0, p.w, p.len);
-      ctx.restore();
-    },
-  };
-
-  /* 光晕：大型柔光团（暖白）在画面上部极慢漂移，微呼吸；radial gradient 每帧 3~4 个，
-     开销可忽略。位置锚定上部 —— 那是光源（太阳/月亮）该在的地方。43 轮提亮一倍 */
-  TYPES.halo = {
-    cap: 4,
-    make(W, H, r) {
+  /* 雨滴挂屏：挂在「玻璃」上的水珠 —— 停一会儿、缓缓下滑一小段、再挂一会儿。
+     玻璃质感全靠左上高光点 + 下滑时的渐隐拖尾；44 轮新增 */
+  TYPES.raindrops = {
+    make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: r() * H * 0.7,
-        r: 200 + r() * 220,                         // 200~420 px 半径
-        vx: (r() - 0.5) * 10,
-        vy: (r() - 0.5) * 6,
-        freq: 0.15 + r() * 0.25,
-        phase: r() * TAU,
-        alpha: 0.11 + r() * 0.08,                   // 0.11~0.19（原 0.05~0.11）
+        y: r() * H,
+        size: 1.6 + r() * 3.4,                      // 1.6~5 px 水珠
+        idle: r() * 4,                              // 挂着不动的时长（秒）
+        vy: 26 + r() * 70,                          // 下滑速度
+        slide: 0,                                   // 本次还能滑多久
+        slideMax: 0.25 + r() * 0.7,
+        alpha: 0.3 + r() * 0.35,
       };
     },
-    step(p, dt, W, H) {
-      p.phase += p.freq * dt;
-      p.x += (p.vx + Math.sin(p.phase) * 4) * dt;
-      p.y += p.vy * dt;
-      const m = p.r;                                // 整团飘出屏再从对侧回来
-      if (p.x > W + m) p.x = -m;
-      else if (p.x < -m) p.x = W + m;
-      if (p.y > H + m) p.y = -m * 0.5;
-      else if (p.y < -m) p.y = H * 0.5;
+    step(p, dt, W, H, r) {
+      if (p.idle > 0) { p.idle -= dt; return; }     // 挂着
+      if (p.slide > 0) {                            // 下滑一小段
+        p.slide -= dt;
+        p.y += p.vy * dt;
+        p.x += Math.sin(p.y * 0.045) * 8 * dt;
+        if (p.y > H + 6) {                          // 滑出屏 → 换个位置重新挂
+          p.x = r() * W;
+          p.y = r() * H * 0.85;
+          p.size = 1.6 + r() * 3.4;
+          p.idle = 0.4 + r() * 3.2;
+          p.slide = 0;
+        }
+        return;
+      }
+      p.slide = p.slideMax;                         // 挂够了：滑一小段
     },
-    begin(ctx) { ctx.globalCompositeOperation = 'lighter'; },
-    end(ctx) { ctx.globalCompositeOperation = 'source-over'; },
     draw(ctx, p) {
-      const breathe = 0.5 + 0.5 * Math.sin(p.phase);
-      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-      g.addColorStop(0, `rgba(255,244,214,${(p.alpha * breathe).toFixed(3)})`);
-      g.addColorStop(1, 'rgba(255,244,214,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+      ctx.globalAlpha = p.alpha;                    // 水珠本体
+      ctx.fillStyle = 'rgb(205,232,255)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = p.alpha * 0.9;              // 左上高光
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(p.x - p.size * 0.3, p.y - p.size * 0.32, Math.max(0.5, p.size * 0.3), 0, TAU);
+      ctx.fill();
+      if (p.slide > 0) {                            // 下滑拖尾
+        ctx.globalAlpha = p.alpha * 0.35;
+        ctx.strokeStyle = '#cfe4ff';
+        ctx.lineWidth = Math.max(1, p.size * 0.8);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - p.size * 4);
+        ctx.lineTo(p.x, p.y - p.size);
+        ctx.stroke();
+      }
     },
   };
 
