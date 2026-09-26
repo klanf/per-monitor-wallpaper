@@ -29,7 +29,6 @@ const els = {
   empty: $('empty'),
   folderLabel: $('folder-label'),
   previewBadges: $('preview-badges'),
-  todQuick: $('tod-quick'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
   counter: $('counter'),
@@ -1288,11 +1287,12 @@ function albumOf(id) {
   return state.albums.find((a) => a.id === id) || null;
 }
 
-/** 频道短名（顶栏徽章用）：显示器1 · 主屏 / 全部显示器 · 标签 */
+/** 频道短名（顶栏徽章用）：显示器1 · 主屏 · 2560×1600 / 全部显示器 · 标签 */
 function shortChannelName(ch) {
   if (!ch) return '—';
   if (ch.kind === 'monitor') {
-    return `显示器${(ch.monitorIndex || 0) + 1}${ch.primary ? ' · 主屏' : ''}`;
+    const res = ch.width && ch.height ? ` · ${ch.width}×${ch.height}` : '';
+    return `显示器${(ch.monitorIndex || 0) + 1}${ch.primary ? ' · 主屏' : ''}${res}`;
   }
   return ch.label && ch.label !== '全部显示器' ? `全部显示器 · ${ch.label}` : '全部显示器';
 }
@@ -2063,7 +2063,6 @@ function applyConfigToUI() {
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
   $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
-  if (els.todQuick) els.todQuick.value = $('cfg-timeofday').value;   // 顶栏快选同步
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2272,19 +2271,8 @@ function bindSettings() {
   $('cfg-timeofday').addEventListener('change', async (e) => {
     const v = e.target.value;
     await save({ timeOfDay: v });
-    if (els.todQuick) els.todQuick.value = v;   // 顶栏快选跟着走
     toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
   });
-
-  // ---- 顶栏滤镜快选（红框位）：与设置面板下拉写同一个配置 ----
-  if (els.todQuick) {
-    els.todQuick.addEventListener('change', async (e) => {
-      const v = e.target.value;
-      await save({ timeOfDay: v });
-      $('cfg-timeofday').value = v;               // 面板下拉跟着走
-      toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
-    });
-  }
 
   $('cfg-monitor').addEventListener('change', async (e) => {
     await save({ monitor: e.target.value });
@@ -2712,21 +2700,21 @@ function bindEvents() {
   $('btn-info').addEventListener('click', toggleInfo);
 
   /*
-   * 点面板以外的地方就关掉它（图片信息、设置都适用）。
+   * 点面板以外的地方就关掉它（设置适用；图片信息**不适用**）。
    *
    * 用 pointerdown + 捕获阶段：比 click 早一步，切换面板时不会出现
    * 「先开新的、又被旧面板的关闭逻辑带一下」这类错位。
-   * 但两个开关按钮必须放过 —— 否则「点开关想关面板」会先被这里关掉、
+   * 但开关按钮必须放过 —— 否则「点开关想关面板」会先被这里关掉、
    * 紧接着开关的 click 又把它打开，看起来像点了没反应。
+   *
+   * 2026-09-26 用户拍板：图片信息面板只认显式关闭 —— 点信息图标切换、
+   * 点面板右上角的 ✕、或按 Esc；点别处不再关（看图时容易误触把面板带没）。
    */
   document.addEventListener('pointerdown', (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (event.button !== 0) return;      // 只处理左键：右键要弹菜单，中键要滚动
 
-    if (state.infoOpen && !els.info.contains(target) && !target.closest('#btn-info')) {
-      closeInfo();
-    }
     if (state.settingsOpen && !els.settings.contains(target) && !target.closest('#btn-settings')) {
       closeSettings();
     }
