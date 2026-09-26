@@ -565,6 +565,8 @@ python tools/build-exe.py --open       # 打完打开 dist 目录
   },
   "videoPlayFull": false,           // 视频播完再切下一个（动态桌面下有意义）
   "breath": false,                  // 呼吸缩放特效（缓慢放大缩小）
+  "breathPeriod": 6000,             // 呼吸周期 ms（2000~15000）
+  "breathAmplitude": 2,             // 呼吸幅度 %（0.5~5，即 ±0.5%~±5%）
   "timeOfDay": "",                  // 时段滤镜：morning | noon | overcast | dusk | night
   "particles": "",                  // 粒子特效：14 种选一或 "random"（每次换图抽一种），"" = 关
   "particleCount": 256,             // 粒子数量 0~1000（烟花数量内置，最多同时 5 发）
