@@ -527,25 +527,36 @@
       }
       if (p.kind === 'rocket') {
         p.y += p.vy * dt;
-        if (p.y <= p.targetY) {                     // 到顶 → 炸
-          const n = 36 + ((r() * 26) | 0);
+        if (p.y <= p.targetY) {
+          // 到顶 → 炸。半径锚定屏幕短边（45 轮拍板：竖屏上直径至少占一半）：
+          // R = min(W,H) × 0.30~0.48；火花初速按「外圈恰好吃满 R」反推 ——
+          // 指数阻力下总位移 = v0·(1-e^(-kL))/k，取 k=0.9 反解 v0。
+          const R = Math.min(W, H) * (0.3 + r() * 0.18);
+          const k = 0.9;                            // 阻力系数
+          const L = 2.2 + r() * 0.6;                // 燃烧寿命（秒）
+          const v0max = (R * k) / (1 - Math.exp(-k * L));
+          const n = 60 + ((r() * 50) | 0);          // 60~110 颗：球面要填满才不像秃球
           const sparks = [];
           for (let i = 0; i < n; i += 1) {
             const a = (i / n) * TAU + r() * 0.2;
-            const sp = 70 + r() * 190;
+            const sp = v0max * (0.35 + r() * 0.65); // 快慢掺匀，外圈吃满 R、内圈填球
             sparks.push({ x: p.x, y: p.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
           }
           p.kind = 'burst';
           p.sparks = sparks;
-          p.life = 1.5 + r() * 0.5;
+          p.k = k;
+          p.g = Math.min(W, H) * 0.12;              // 重力也随屏幕走，大烟花才坠得自然
+          p.life = L;
           p.age = 0;
+          p.R = R;
         }
         return;
       }
       p.age += dt;                                  // burst：火花减速下坠、渐灭
+      const drag = Math.max(0, 1 - p.k * dt);
       for (const s of p.sparks) {
-        s.vx *= (1 - 1.6 * dt);
-        s.vy = s.vy * (1 - 1.6 * dt) + 260 * dt;
+        s.vx *= drag;
+        s.vy = s.vy * drag + p.g * dt;
         s.x += s.vx * dt;
         s.y += s.vy * dt;
       }
@@ -561,28 +572,28 @@
       if (p.kind === 'rocket') {                    // 上升亮点 + 短尾
         ctx.globalAlpha = 0.9;
         ctx.strokeStyle = '#ffe9b0';
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = 2.4;
         ctx.beginPath();
         ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p.x, p.y + 12);
+        ctx.lineTo(p.x, p.y + 20);
         ctx.stroke();
         return;
       }
       const t = p.age / p.life;
-      if (p.age < 0.12) {                           // 炸开瞬间的闪光
-        ctx.globalAlpha = 0.35 * (1 - p.age / 0.12);
+      if (p.age < 0.12) {                           // 炸开瞬间的闪光（半径随 R）
+        ctx.globalAlpha = 0.5 * (1 - p.age / 0.12);
         ctx.fillStyle = '#fff2c8';
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 26 * (p.age / 0.12), 0, TAU);
+        ctx.arc(p.x, p.y, p.R * 0.22 * (p.age / 0.12), 0, TAU);
         ctx.fill();
       }
       ctx.globalAlpha = Math.max(0, (1 - t) * (0.7 + 0.3 * Math.sin(p.age * 30 + p.x)));
       ctx.strokeStyle = p.color;
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 2.2;                          // 火花条加粗（45 轮：太细看不清）
       for (const s of p.sparks) {
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
-        ctx.lineTo(s.x - s.vx * 0.02, s.y - s.vy * 0.02);
+        ctx.lineTo(s.x - s.vx * 0.05, s.y - s.vy * 0.05);   // 拖尾拉长一倍半
         ctx.stroke();
       }
     },
