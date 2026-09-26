@@ -232,16 +232,17 @@
     },
   };
 
-  /* 星空流星：静星闪烁 + 低频划过的斜向光痕（候场流星在屏外倒数）。星点保持自然小 */
+  /* 星空流星：静星闪烁 + 低频划过的斜向光痕（候场流星在屏外倒数）。
+     43 轮按反馈调亮：星点放大提亮、流星占比/长度/亮度/频率全面上调 */
   TYPES.stars = {
     make(W, H, r) {
-      if (r() < 0.86) {                             // 86% 静星
+      if (r() < 0.78) {                             // 78% 静星
         return {
           kind: 'star',
           x: r() * W,
           y: r() * H,
-          size: 0.6 + r() * 1.3,
-          alpha: 0.4 + r() * 0.6,
+          size: 1.1 + r() * 1.6,                    // 1.1~2.7 px
+          alpha: 0.55 + r() * 0.45,
           freq: 0.3 + r() * 1.4,
           phase: r() * TAU,
         };
@@ -255,9 +256,9 @@
         vx: dir * v * 0.75,
         vy: v * 0.55,
         v,
-        len: 70 + r() * 100,
-        wait: r() * 6,                              // 候场：到点才入场
-        alpha: 0.5 + r() * 0.4,
+        len: 90 + r() * 130,                        // 90~220 px 拖尾
+        wait: r() * 5,                              // 候场：到点才入场
+        alpha: 0.7 + r() * 0.3,
       };
     },
     step(p, dt, W, H, r) {
@@ -271,12 +272,12 @@
       if (p.y - p.len > H || p.x < -p.len || p.x > W + p.len) {
         p.x = r() * W;
         p.y = -20 - r() * 40;
-        p.wait = 2 + r() * 8;                       // 2~10s 一颗
+        p.wait = 1 + r() * 4;                       // 1~5s 一颗（43 轮：更频繁）
       }
     },
     begin(ctx) {
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.8;
       ctx.lineCap = 'round';
     },
     draw(ctx, p) {
@@ -420,18 +421,18 @@
     },
   };
 
-  /* 光粒：极慢极淡的暖色小颗粒，几乎无感但加质感（本性就该小，仅微调） */
+  /* 光粒：极慢的暖色小颗粒，漂浮质感（43 轮按反馈提亮放大：隐约 → 可见） */
   TYPES.dust = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
         y: anywhere ? r() * H : -4 - r() * H * 0.15,
-        v: 3 + r() * 9,
-        size: 0.8 + r() * 1.2,                      // 0.8~2 px
+        v: 4 + r() * 12,
+        size: 1 + r() * 1.6,                        // 1~2.6 px
         drift: (r() - 0.5) * 6,
         freq: 0.2 + r() * 0.5,
         phase: r() * TAU,
-        alpha: 0.08 + r() * 0.18,
+        alpha: 0.16 + r() * 0.24,                   // 0.16~0.40（原 0.08~0.26）
       };
     },
     step(p, dt, W, H, r) {
@@ -560,12 +561,12 @@
         x: r() * W,                                 // 顶部出发点
         y: -40,                                     // 亮端留在屏外，屏内只见衰减段
         baseAng: dir * (0.18 + r() * 0.38),         // 与竖直的夹角
-        w: 70 + r() * 130,                          // 光柱宽度
+        w: 90 + r() * 150,                          // 光柱宽度（43 轮加宽）
         len: Math.max(W, H) * 1.5,                  // 一定要斜穿出屏
         osc: 0.03 + r() * 0.05,                     // 摆幅（弧度）
         bfreq: 0.08 + r() * 0.2,                    // 呼吸频率
         phase: r() * TAU,
-        alpha: 0.05 + r() * 0.06,
+        alpha: 0.10 + r() * 0.07,                   // 0.10~0.17（原 0.05~0.11）
       };
     },
     step(p, dt) {
@@ -599,30 +600,30 @@
     draw(ctx, p) {
       const sp = TYPES.rays.sprite();
       if (!sp) return;
-      const breathe = 0.55 + 0.45 * Math.sin(p.phase * 0.5 + p.x * 0.01);
+      const breathe = 0.35 + 0.65 * Math.sin(p.phase * 0.5 + p.x * 0.01);
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(p.baseAng + Math.sin(p.phase * 0.35) * p.osc);
-      ctx.globalAlpha = p.alpha * Math.max(0.15, breathe);
+      ctx.globalAlpha = p.alpha * Math.max(0.35, breathe);
       ctx.drawImage(sp, -p.w / 2, 0, p.w, p.len);
       ctx.restore();
     },
   };
 
-  /* 光晕：大型柔光团（暖白）在画面上部极慢漂移，微呼吸；radial gradient 每帧 3 个，
-     开销可忽略。位置锚定上部 —— 那是光源（太阳/月亮）该在的地方 */
+  /* 光晕：大型柔光团（暖白）在画面上部极慢漂移，微呼吸；radial gradient 每帧 3~4 个，
+     开销可忽略。位置锚定上部 —— 那是光源（太阳/月亮）该在的地方。43 轮提亮一倍 */
   TYPES.halo = {
-    cap: 3,
+    cap: 4,
     make(W, H, r) {
       return {
         x: r() * W,
         y: r() * H * 0.7,
-        r: 160 + r() * 220,                         // 160~380 px 半径
+        r: 200 + r() * 220,                         // 200~420 px 半径
         vx: (r() - 0.5) * 10,
         vy: (r() - 0.5) * 6,
         freq: 0.15 + r() * 0.25,
         phase: r() * TAU,
-        alpha: 0.05 + r() * 0.06,
+        alpha: 0.11 + r() * 0.08,                   // 0.11~0.19（原 0.05~0.11）
       };
     },
     step(p, dt, W, H) {
@@ -638,7 +639,7 @@
     begin(ctx) { ctx.globalCompositeOperation = 'lighter'; },
     end(ctx) { ctx.globalCompositeOperation = 'source-over'; },
     draw(ctx, p) {
-      const breathe = 0.6 + 0.4 * Math.sin(p.phase);
+      const breathe = 0.5 + 0.5 * Math.sin(p.phase);
       const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
       g.addColorStop(0, `rgba(255,244,214,${(p.alpha * breathe).toFixed(3)})`);
       g.addColorStop(1, 'rgba(255,244,214,0)');

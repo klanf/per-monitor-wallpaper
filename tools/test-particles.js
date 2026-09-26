@@ -103,9 +103,9 @@ check('全种类 spawn 数量受控（≤请求数）、坐标有限',
     const parts = pt.spawn(t, 10, W, H, seeded(5));
     return parts.length >= 1 && parts.length <= 10 && parts.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
   }));
-check('光效类数量内置：rays 封顶 6、halo 封顶 3',
+check('光效类数量内置：rays 封顶 6、halo 封顶 4',
   pt.spawn('rays', 1000, W, H, seeded(5)).length === 6
-  && pt.spawn('halo', 1000, W, H, seeded(5)).length === 3);
+  && pt.spawn('halo', 1000, W, H, seeded(5)).length === 4);
 check('普通类数量原样：rain 10 粒就是 10 粒', pt.spawn('rain', 10, W, H, seeded(5)).length === 10);
 check('全种类 step 推进两帧不炸、坐标仍有限',
   pt.PARTICLE_TYPES.every((t) => {
