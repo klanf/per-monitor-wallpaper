@@ -23,6 +23,7 @@
 const { protocol } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const videoOptimize = require('./videoOptimize');
 
 const SCHEME = 'wpimg';
 
@@ -95,7 +96,7 @@ function registerScheme() {
 
 /** 必须在 app ready 之后调用 */
 function handleProtocol() {
-  protocol.handle(SCHEME, (request) => {
+  protocol.handle(SCHEME, async (request) => {
     let imagePath;
     try {
       const url = new URL(request.url);
@@ -118,6 +119,22 @@ function handleProtocol() {
       return new Response(`not found: ${err.code || err.message}`, { status: 404 });
     }
     if (!stat.isFile()) return new Response('not a file', { status: 404 });
+
+    // 视频优化转码（遇到才转）：命中缓存副本 → 改服务副本；未命中且是候选
+    // （fps≥31 等）→ 顺手排进后台转码队列，本次照常播原件。探测/命中判断
+    // 有进程内记忆，稳态开销是一次 existsSync。任何异常都回退原件，不挡播放。
+    if (videoOptimize.VIDEO_EXTS.has(path.extname(imagePath).toLowerCase())) {
+      try {
+        const r = await videoOptimize.resolveForPlayback(imagePath);
+        if (r && r.servePath) {
+          const cachedStat = fs.statSync(r.servePath);
+          if (cachedStat.isFile() && cachedStat.size > 0) {
+            imagePath = r.servePath;
+            stat = cachedStat;
+          }
+        }
+      } catch (_) { /* 缓存侧任何问题都按「没优化过」处理 */ }
+    }
 
     // Range（阶段 4：<video> 的循环/seek 靠它，免得每次循环都全量重拉）
     let start = 0;

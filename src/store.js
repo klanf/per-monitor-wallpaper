@@ -71,6 +71,19 @@ const DEFAULTS = {
   videoPlayFull: false,
 
   /**
+   * 视频优化转码（遇到才转）：视频首次被播放时后台转一份 30fps 副本进缓存目录，
+   * 之后轮播永远直接服务副本，解码负载约减半（实测基线见 src/videoOptimize.js 头注释）。
+   * 源文件一字不动（库在 Syncthing 同步目录，原地替换会触发全量重同步）；
+   * 源删除/被改动后副本自动回收；副本总量超 optimizeCacheMaxGB 按 LRU 逐出。
+   * 首播那次照常播原件，体验零变化。
+   */
+  videoOptimize: true,
+  optimizeTargetFps: 30,                       // 目标帧率（60→30 是收益大头）
+  optimizeCacheDir: 'D:/video-optimize-cache', // 副本缓存目录（放 D 盘，不在 Syncthing 同步范围内）
+  optimizeCacheMaxGB: 40,                      // 缓存容量上限（超出按 lastUsed 逐出）
+  ffmpegPath: '',                              // 空 = 项目约定位置 D:/workbuddy/tools/bin/ffmpeg.exe → PATH
+
+  /**
    * 动态桌面总开关：把渲染窗口挂到桌面图标**下面**实时渲染（Wallpaper Engine 那种活桌面）。
    *
    * 挂法是 `SetParent` 到「持有 `SHELLDLL_DefView` 的那个窗口」（本机是 `Progman`），
@@ -363,6 +376,7 @@ const BOOL_KEYS = new Set([
   'filmstrip', 'filmstripAutoCenter', 'infoPanel', 'contextMenu',
   'liveWallpaper',
   'videoPlayFull',
+  'videoOptimize',
 ]);
 
 /** 热键字段：值必须是非空字符串或空串，别让 undefined / 数字混进来 */

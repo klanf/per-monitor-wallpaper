@@ -31,6 +31,7 @@ const fileActions = require('./fileActions');
 const tray = require('./tray');
 const shellMenu = require('./shellMenu');
 const stageProtocol = require('./stageProtocol');
+const videoOptimize = require('./videoOptimize');
 const liveStage = require('./liveStage');
 const fullscreenWatch = require('./fullscreenWatch');
 
@@ -1728,6 +1729,14 @@ if (!gotLock) {
     });
     thumbnails.handleProtocol();
     stageProtocol.handleProtocol();   // wpimg:// 动态桌面的原图通道（no-store）
+
+    // 视频优化转码（遇到才转）：协议层在服务视频前会调 resolveForPlayback，
+    // 这里只负责接上配置。getter 每次现取 config —— 改配置不用重启。
+    videoOptimize.configure({ getConfig: () => store.get() });
+    // 启动 10 分钟后清一次缓存：源已删除的副本跟着删、孤儿/半成品兜底、超容量 LRU
+    setTimeout(() => {
+      videoOptimize.cleanup().catch((e) => console.warn('[video-optimize] 清理失败:', e.message));
+    }, 10 * 60 * 1000);
 
     scheduler = new MonitorScheduler({
       store,
