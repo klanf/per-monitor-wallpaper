@@ -43,10 +43,11 @@ check("clampType('rain') 原样保留", pt.clampType('rain') === 'rain');
 check("clampType('sakura') 原样保留", pt.clampType('sakura') === 'sakura');
 check("clampType('meteor_shower') 白名单外 → 关闭", pt.clampType('meteor_shower') === '');
 check('clampType(undefined) → 关闭', pt.clampType(undefined) === '');
-check('种类白名单 = 11 种注册特效',
+check('种类白名单 = 13 种注册特效',
   JSON.stringify(pt.PARTICLE_TYPES) === JSON.stringify([
     'rain', 'sakura', 'snow', 'fireflies', 'stars',
     'bubbles', 'leaves', 'fluff', 'dust', 'confetti', 'storm',
+    'rays', 'halo',
   ]));
 
 // ---- §2 spawn：初始铺满全屏、字段在约定区间、同种子可复现 ----
@@ -61,7 +62,7 @@ check('风斜比在 8%~16%', rains.every((p) => p.vx / p.v >= 0.08 && p.vx / p.v
 check('同种子两次 spawn 逐字段相同',
   JSON.stringify(pt.spawn('rain', 50, W, H, seeded(7))) === JSON.stringify(rains));
 const sakuras = pt.spawn('sakura', 30, W, H, seeded(11));
-check('花瓣尺寸在 2.6~6 px', sakuras.every((p) => p.size >= 2.6 && p.size < 6));
+check('花瓣尺寸在 3.5~8 px（42 轮放大后）', sakuras.every((p) => p.size >= 3.5 && p.size < 8));
 check('花瓣颜色都是「r,g,b」形态', sakuras.every((p) => /^\d{3},\d{3},\d{3}$/.test(p.color)));
 
 // ---- §3 推进：匀速积分、DT_MAX 钳位、摆动/自旋有界 ----
@@ -95,13 +96,17 @@ const lenBefore = falling.length;
 pt.step(falling, 'rain', 40, W, H, seeded(3));
 check('step 不增删粒子（长度恒定）', falling.length === lenBefore);
 
-// ---- §5 全种类冒烟：11 种特效的 spawn / step 都必须可跑、坐标有限 ----
+// ---- §5 全种类冒烟：13 种特效的 spawn / step 都必须可跑、坐标有限 ----
 console.log('\n§5 全种类冒烟');
-check('全种类 spawn 数量原样、坐标有限',
+check('全种类 spawn 数量受控（≤请求数）、坐标有限',
   pt.PARTICLE_TYPES.every((t) => {
     const parts = pt.spawn(t, 10, W, H, seeded(5));
-    return parts.length === 10 && parts.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    return parts.length >= 1 && parts.length <= 10 && parts.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
   }));
+check('光效类数量内置：rays 封顶 6、halo 封顶 3',
+  pt.spawn('rays', 1000, W, H, seeded(5)).length === 6
+  && pt.spawn('halo', 1000, W, H, seeded(5)).length === 3);
+check('普通类数量原样：rain 10 粒就是 10 粒', pt.spawn('rain', 10, W, H, seeded(5)).length === 10);
 check('全种类 step 推进两帧不炸、坐标仍有限',
   pt.PARTICLE_TYPES.every((t) => {
     const parts = pt.spawn(t, 10, W, H, seeded(6));

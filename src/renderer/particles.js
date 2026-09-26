@@ -1,10 +1,10 @@
 'use strict';
 
 /**
- * 舞台粒子图层 —— 雨落 / 樱花落 / 雪 / 萤火虫 / 星空流星 / 泡泡 / 落叶 / 柳絮 /
- * 光粒 / 彩带 / 雷雨（profile.particles / profile.particleCount）。
+ * 舞台粒子/光效图层 —— 雨 / 樱花 / 雪 / 萤火虫 / 星空流星 / 泡泡 / 落叶 / 柳絮 /
+ * 光粒 / 彩带 / 雷雨 / 丁达尔光束 / 光晕（profile.particles / profile.particleCount）。
  *
- * 定位（交接文档 11.7 #9 的拍板 + 第 41 轮扩容）：
+ * 定位（交接文档 11.7 #9 的拍板 + 第 41/42 轮扩容）：
  *   · 独立 <canvas id="particles">，盖在两个 .layer（图片层）之上、#tod（时段滤镜）
  *     之下 —— 滤镜连粒子一起调色，画面是一体的；
  *   · 由 stage.js 的 rAF gate 块驱动：fpsCap 一起被限住；stage:pause 冻结 = 停 rAF，
@@ -13,15 +13,17 @@
  *   · pointer-events:none —— 右键/按下转发挂在 window 捕获阶段，与命中测试无关。
  *
  * 结构：**类型注册表** —— 每种特效在 TYPES 里登记 make（造粒子）/ step（推进一帧，
- * 含出屏回收）/ draw（画一个粒子），可选 begin/end（批次级 ctx 状态，如混合模式）。
+ * 含出屏回收）/ draw（画一个粒子），可选 begin/end（批次级 ctx 状态，如混合模式）
+ * 与 cap（光效类数量内置：丁达尔 6 根、光晕 3 团，不随数量滑条走）。
  * 纯逻辑（clamp / spawn / step）与绘制分离：tools/test-particles.js 在纯 Node 里
  * require 本文件直接测前半，不需要 canvas；probe-particles.js 在真 Chromium 里
  * 逐种验证「真的出像素」。
  * 文件必须 require-safe：渲染层 <script> 挂 window.WPParticles，Node 里 require
  * 拿到同一份导出（无打包器，两种加载方式共用一个文件）。
  *
- * 性能口径（保守）：默认 256 粒、上限 1000。绘制只走 2d 路径（线段/圆/椭圆/多边形），
- * 不用 shadow、不用每粒子渐变 —— 桌面是常驻图层，预算按「用户零感知」给。
+ * 性能口径（保守）：默认 256 粒、上限 1000。绘制只走 2d 路径（线段/圆/椭圆/多边形）
+ * 加惰性软边贴图（丁达尔），不用 shadow、不用每粒子多层渐变 ——
+ * 桌面是常驻图层，预算按「用户零感知」给。
  */
 
 (function (global, factory) {
@@ -35,6 +37,7 @@
   const PARTICLE_TYPES = [
     'rain', 'sakura', 'snow', 'fireflies', 'stars',
     'bubbles', 'leaves', 'fluff', 'dust', 'confetti', 'storm',
+    'rays', 'halo',
   ];
 
   const COUNT_MIN = 0;
@@ -84,7 +87,7 @@
         y: anywhere ? r() * H : -30 - r() * H * 0.15,
         v,
         vx: v * (0.08 + r() * 0.08),                // 风斜：横向 ≈ 纵向的 8%~16%
-        len: 12 + r() * 16,                         // 雨丝长 12~28px
+        len: 14 + r() * 18,                         // 雨丝长 14~32px
         alpha: 0.20 + r() * 0.28,
       };
     },
@@ -112,15 +115,16 @@
     },
   };
 
-  /* 樱花：慢落花瓣 + 横向摆动（速度项不是位移项：暂停恢复不跳）+ 自旋，三档固定粉 */
+  /* 樱花：慢落花瓣 + 横向摆动（速度项不是位移项：暂停恢复不跳）+ 自旋，三档固定粉。
+     第 42 轮整体放大：2.6~6 → 3.5~8，花瓣在 4K 物理像素下也要读得出来 */
   const SAKURA_COLORS = ['255,183,197', '255,203,214', '247,168,187'];
   TYPES.sakura = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: anywhere ? r() * H : -12 - r() * H * 0.15,
+        y: anywhere ? r() * H : -16 - r() * H * 0.15,
         v: 55 + r() * 70,                           // 55~125 px/s，慢慢飘
-        size: 2.6 + r() * 3.4,                      // 2.6~6 px（椭圆长半轴）
+        size: 3.5 + r() * 4.5,                      // 3.5~8 px（椭圆长半轴）
         sway: 18 + r() * 42,                        // 横摆速度幅值 px/s
         freq: 0.8 + r() * 1.6,                      // 摆动角频率 rad/s
         phase: r() * TAU,
@@ -150,14 +154,14 @@
     },
   };
 
-  /* 雪：白色圆片，比樱花更慢更素，带常驻微风漂移 */
+  /* 雪：白色圆片，比樱花更慢更素，带常驻微风漂移（42 轮放大：2~5） */
   TYPES.snow = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: anywhere ? r() * H : -10 - r() * H * 0.15,
+        y: anywhere ? r() * H : -12 - r() * H * 0.15,
         v: 30 + r() * 60,                           // 30~90 px/s
-        size: 1.2 + r() * 2.2,
+        size: 2 + r() * 3,                          // 2~5 px
         sway: 8 + r() * 16,
         freq: 0.4 + r() * 0.9,
         phase: r() * TAU,
@@ -184,7 +188,7 @@
     },
   };
 
-  /* 萤火虫：慢速游走的小光点，呼吸式明灭；lighter 混合让重叠处发亮 */
+  /* 萤火虫：慢速游走的小光点，呼吸式明灭；lighter 混合让重叠处发亮（42 轮核心加大） */
   TYPES.fireflies = {
     make(W, H, r) {
       return {
@@ -198,7 +202,7 @@
         pb: r() * TAU,
         pf: 0.4 + r() * 1.2,                        // 明灭频率
         pp: r() * TAU,
-        size: 1.2 + r() * 1.2,
+        size: 1.6 + r() * 1.6,                      // 1.6~3.2 px
         alpha: 0.5 + r() * 0.5,
       };
     },
@@ -219,7 +223,7 @@
       ctx.fillStyle = '#e8ff9c';
       ctx.globalAlpha = p.alpha * blink * 0.25;     // 光晕
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size * 3, 0, TAU);
+      ctx.arc(p.x, p.y, p.size * 3.2, 0, TAU);
       ctx.fill();
       ctx.globalAlpha = p.alpha * blink;            // 核心亮点
       ctx.beginPath();
@@ -228,7 +232,7 @@
     },
   };
 
-  /* 星空流星：静星闪烁 + 低频划过的斜向光痕（候场流星在屏外倒数） */
+  /* 星空流星：静星闪烁 + 低频划过的斜向光痕（候场流星在屏外倒数）。星点保持自然小 */
   TYPES.stars = {
     make(W, H, r) {
       if (r() < 0.86) {                             // 86% 静星
@@ -251,7 +255,7 @@
         vx: dir * v * 0.75,
         vy: v * 0.55,
         v,
-        len: 60 + r() * 90,
+        len: 70 + r() * 100,
         wait: r() * 6,                              // 候场：到点才入场
         alpha: 0.5 + r() * 0.4,
       };
@@ -294,14 +298,14 @@
     },
   };
 
-  /* 泡泡：自下而上的半透明圆环 + 左上高光点 */
+  /* 泡泡：自下而上的半透明圆环 + 左上高光点（42 轮放大：3~11） */
   TYPES.bubbles = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: anywhere ? r() * H : H + 10 + r() * H * 0.1,
+        y: anywhere ? r() * H : H + 12 + r() * H * 0.1,
         v: 20 + r() * 45,
-        size: 2 + r() * 5,
+        size: 3 + r() * 8,                          // 3~11 px
         sway: 6 + r() * 16,
         freq: 0.5 + r() * 1.2,
         phase: r() * TAU,
@@ -314,9 +318,9 @@
       p.x += Math.sin(p.phase) * p.sway * dt;
       if (p.y + p.size < 0) {                       // 飘出顶边 → 从底边再来
         p.x = r() * W;
-        p.y = H + 10 + r() * H * 0.1;
+        p.y = H + 12 + r() * H * 0.1;
       }
-      wrapX(p, W, 8);
+      wrapX(p, W, 10);
     },
     begin(ctx) {
       ctx.strokeStyle = '#ffffff';
@@ -330,20 +334,20 @@
       ctx.globalAlpha = p.alpha * 0.9;              // 高光
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(p.x - p.size * 0.35, p.y - p.size * 0.35, Math.max(0.5, p.size * 0.22), 0, TAU);
+      ctx.arc(p.x - p.size * 0.35, p.y - p.size * 0.35, Math.max(0.6, p.size * 0.22), 0, TAU);
       ctx.fill();
     },
   };
 
-  /* 落叶：大一号的叶片（椭圆 + 中脉），旋转 + 摆动，秋色系 */
+  /* 落叶：大叶片（椭圆 + 中脉），旋转 + 摆动，秋色系（42 轮放大：7~14，本就是「大」招牌） */
   const LEAF_COLORS = ['#c96f2f', '#b54d2a', '#d9a036', '#8f5a2a', '#9ca54e'];
   TYPES.leaves = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: anywhere ? r() * H : -16 - r() * H * 0.15,
+        y: anywhere ? r() * H : -20 - r() * H * 0.15,
         v: 60 + r() * 80,
-        size: 4.5 + r() * 6,
+        size: 7 + r() * 7,                          // 7~14 px
         sway: 20 + r() * 30,
         freq: 0.5 + r() * 1.0,
         phase: r() * TAU,
@@ -379,14 +383,14 @@
     },
   };
 
-  /* 柳絮：白色小绒点，极慢 + 大摆幅，光晕比本体大 */
+  /* 柳絮：白色小绒点，极慢 + 大摆幅，光晕比本体大（42 轮放大：2~4） */
   TYPES.fluff = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: anywhere ? r() * H : -8 - r() * H * 0.15,
+        y: anywhere ? r() * H : -10 - r() * H * 0.15,
         v: 15 + r() * 30,
-        size: 1.4 + r() * 1.8,
+        size: 2 + r() * 2,                          // 2~4 px
         sway: 25 + r() * 45,
         freq: 0.3 + r() * 0.7,
         phase: r() * TAU,
@@ -416,14 +420,14 @@
     },
   };
 
-  /* 光粒：极慢极淡的暖色小颗粒，几乎无感但加质感 */
+  /* 光粒：极慢极淡的暖色小颗粒，几乎无感但加质感（本性就该小，仅微调） */
   TYPES.dust = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
         y: anywhere ? r() * H : -4 - r() * H * 0.15,
         v: 3 + r() * 9,
-        size: 0.6 + r() * 1.0,
+        size: 0.8 + r() * 1.2,                      // 0.8~2 px
         drift: (r() - 0.5) * 6,
         freq: 0.2 + r() * 0.5,
         phase: r() * TAU,
@@ -449,16 +453,16 @@
     },
   };
 
-  /* 彩带纸屑：彩色小矩形，翻转下落 + 呼吸式落速，节日向 */
+  /* 彩带纸屑：彩色小矩形，翻转下落 + 呼吸式落速，节日向（42 轮放大） */
   const CONFETTI_COLORS = ['#ff5a5a', '#ffd23f', '#4ecdc4', '#6a89cc', '#f78fb3', '#a3cb38'];
   TYPES.confetti = {
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
-        y: anywhere ? r() * H : -14 - r() * H * 0.15,
+        y: anywhere ? r() * H : -18 - r() * H * 0.15,
         v: 80 + r() * 120,
-        w: 4 + r() * 5,
-        h: 2.5 + r() * 2.5,
+        w: 6 + r() * 6,                             // 6~12 px
+        h: 3.5 + r() * 3.5,                         // 3.5~7 px
         sway: 30 + r() * 50,
         freq: 1 + r() * 2,
         phase: r() * TAU,
@@ -477,7 +481,7 @@
         p.x = r() * W;
         p.y = -p.w * 2 - r() * H * 0.15;
       }
-      wrapX(p, W, 10);
+      wrapX(p, W, 12);
     },
     draw(ctx, p) {
       const c = Math.cos(p.rot);
@@ -542,7 +546,114 @@
     },
   };
 
+  /* ---- 光效类（42 轮新增）：不是粒子雨，是大面积、低透明度、慢呼吸的光 ----
+     数量内置（cap），不随「粒子数量」滑条走；lighter 混合叠在壁纸上提亮 */
+
+  /* 丁达尔光束：从顶部斜插下来的暖光柱，缓慢摆动 + 呼吸式强弱。
+     软边靠惰性预渲染的贴图（横向高斯式衰减 × 纵向渐隐，destination-in 做乘法），
+     每帧只是一次 drawImage + rotate，比每帧拼两层渐变便宜也更好看 */
+  TYPES.rays = {
+    cap: 6,                                         // 6 根封顶：多了一屏全白
+    make(W, H, r) {
+      const dir = r() < 0.5 ? -1 : 1;
+      return {
+        x: r() * W,                                 // 顶部出发点
+        y: -40,                                     // 亮端留在屏外，屏内只见衰减段
+        baseAng: dir * (0.18 + r() * 0.38),         // 与竖直的夹角
+        w: 70 + r() * 130,                          // 光柱宽度
+        len: Math.max(W, H) * 1.5,                  // 一定要斜穿出屏
+        osc: 0.03 + r() * 0.05,                     // 摆幅（弧度）
+        bfreq: 0.08 + r() * 0.2,                    // 呼吸频率
+        phase: r() * TAU,
+        alpha: 0.05 + r() * 0.06,
+      };
+    },
+    step(p, dt) {
+      p.phase += dt;
+    },
+    sprite() {                                      // 惰性软边贴图（幂等，进程内只做一次）
+      const T = TYPES.rays;
+      if (T._sprite) return T._sprite;
+      if (typeof document === 'undefined') return null;   // 纯 Node（单测）不画，无此对象
+      const c = document.createElement('canvas');
+      const w = 256;
+      const h = 1024;
+      c.width = w;
+      c.height = h;
+      const g = c.getContext('2d');
+      const gx = g.createLinearGradient(0, 0, w, 0);      // 横向：两边透明中间亮
+      gx.addColorStop(0, 'rgba(255,240,200,0)');
+      gx.addColorStop(0.5, 'rgba(255,240,200,1)');
+      gx.addColorStop(1, 'rgba(255,240,200,0)');
+      g.fillStyle = gx;
+      g.fillRect(0, 0, w, h);
+      g.globalCompositeOperation = 'destination-in';      // 纵向：顶亮底透（乘法遮罩）
+      const gy = g.createLinearGradient(0, 0, 0, h);
+      gy.addColorStop(0, 'rgba(0,0,0,1)');
+      gy.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = gy;
+      g.fillRect(0, 0, w, h);
+      T._sprite = c;
+      return c;
+    },
+    draw(ctx, p) {
+      const sp = TYPES.rays.sprite();
+      if (!sp) return;
+      const breathe = 0.55 + 0.45 * Math.sin(p.phase * 0.5 + p.x * 0.01);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.baseAng + Math.sin(p.phase * 0.35) * p.osc);
+      ctx.globalAlpha = p.alpha * Math.max(0.15, breathe);
+      ctx.drawImage(sp, -p.w / 2, 0, p.w, p.len);
+      ctx.restore();
+    },
+  };
+
+  /* 光晕：大型柔光团（暖白）在画面上部极慢漂移，微呼吸；radial gradient 每帧 3 个，
+     开销可忽略。位置锚定上部 —— 那是光源（太阳/月亮）该在的地方 */
+  TYPES.halo = {
+    cap: 3,
+    make(W, H, r) {
+      return {
+        x: r() * W,
+        y: r() * H * 0.7,
+        r: 160 + r() * 220,                         // 160~380 px 半径
+        vx: (r() - 0.5) * 10,
+        vy: (r() - 0.5) * 6,
+        freq: 0.15 + r() * 0.25,
+        phase: r() * TAU,
+        alpha: 0.05 + r() * 0.06,
+      };
+    },
+    step(p, dt, W, H) {
+      p.phase += p.freq * dt;
+      p.x += (p.vx + Math.sin(p.phase) * 4) * dt;
+      p.y += p.vy * dt;
+      const m = p.r;                                // 整团飘出屏再从对侧回来
+      if (p.x > W + m) p.x = -m;
+      else if (p.x < -m) p.x = W + m;
+      if (p.y > H + m) p.y = -m * 0.5;
+      else if (p.y < -m) p.y = H * 0.5;
+    },
+    begin(ctx) { ctx.globalCompositeOperation = 'lighter'; },
+    end(ctx) { ctx.globalCompositeOperation = 'source-over'; },
+    draw(ctx, p) {
+      const breathe = 0.6 + 0.4 * Math.sin(p.phase);
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+      g.addColorStop(0, `rgba(255,244,214,${(p.alpha * breathe).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(255,244,214,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    },
+  };
+
   /* ------------------------------------------------------------ 纯逻辑 API */
+
+  /** 光效类（cap）的数量内置：用户数量再大也封顶 */
+  function countFor(type, count) {
+    const def = TYPES[clampType(type)];
+    return def && def.cap ? Math.min(count, def.cap) : count;
+  }
 
   function newParticle(type, W, H, r, anywhere) {
     const def = TYPES[clampType(type)];
@@ -555,7 +666,8 @@
     const r = rand || Math.random;
     const out = [];
     if (!def) return out;
-    for (let i = 0; i < count; i += 1) out.push(def.make(W, H, r, true));
+    const n = countFor(type, count);
+    for (let i = 0; i < n; i += 1) out.push(def.make(W, H, r, true));
     return out;
   }
 
@@ -610,11 +722,11 @@
     /**
      * 种类/数量。两个参数都允许 undefined（= 保持现值；初始数量未定过则用默认）。
      * applyChannelConfig 在每次 channels:changed 都会调过来 —— 种类、数量都没变时
-     * 必须是无操作，不能整批重造。
+     * 必须是无操作，不能整批重造。光效类数量经 countFor 内置封顶。
      */
     function setConfig(rawType, rawCount) {
       const type = clampType(rawType === undefined ? st.type : String(rawType || ''));
-      const count = clampCount(rawCount !== undefined ? rawCount : (st.count || COUNT_DEFAULT));
+      const count = countFor(type, clampCount(rawCount !== undefined ? rawCount : (st.count || COUNT_DEFAULT)));
       if (type === st.type && count === st.count) return;
       if (type !== st.type) {
         st.parts = type ? spawn(type, count, st.W, st.H, rand) : [];   // 关 = 不养粒子

@@ -1354,7 +1354,8 @@ function particleOptions(value) {
     ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
     ['snow', '雪'], ['fireflies', '萤火虫'], ['stars', '星空流星'], ['bubbles', '泡泡'],
     ['leaves', '落叶'], ['fluff', '柳絮'], ['dust', '光粒漂浮'], ['confetti', '彩带纸屑'],
-    ['storm', '雷雨'], ['random', '随机（每次换图抽一种）'],
+    ['storm', '雷雨'], ['rays', '丁达尔光束'], ['halo', '光晕'],
+    ['random', '随机（每次换图抽一种）'],
   ];
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
 }
@@ -1458,7 +1459,7 @@ function cardHtml(ch) {
             placeholder="数量跟随全局" title="这块屏的粒子数量；留空 = 跟随全局（0~1000）"
             value="${ov.particleCount !== undefined ? ov.particleCount : ''}" style="width:118px;flex:0 0 auto">
         </div>
-        <div class="field-hint">随机 = 每次换图在雨落 / 樱花落之间抽一种；仅动态桌面开启时可见。</div>
+        <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；光效类（丁达尔/光晕）数量内置。</div>
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
     </div>
