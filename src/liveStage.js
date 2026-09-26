@@ -177,6 +177,10 @@ async function createStage(ch) {
     const b = sb.dip;
     rec.bounds = b;
     rec.boundsPhys = sb.phys;
+    // 49 轮实锤：displayId 此前从未写入 rec —— applyPauseState / isChannelFrozen
+    // 用 rec.displayId 对号入座，拿到的一直是 undefined，pauseDisplays.has(undefined)
+    // 恒 false：全屏/锁屏/电池暂停在舞台层从未生效（stage:pause 永远下发 paused:false）
+    rec.displayId = sb.displayId;
     const win = new BrowserWindow({
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
