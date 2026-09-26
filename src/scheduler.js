@@ -779,6 +779,11 @@ class MonitorScheduler {
   _timerFire(ch) {
     ch.timer = null;
     if (this.isFrozen && this.isFrozen(ch.id)) {
+      // 诊断日志（49 轮排障）：每频道 30 秒最多一条，别刷屏
+      if (!ch._freezeLogAt || Date.now() - ch._freezeLogAt > 30000) {
+        ch._freezeLogAt = Date.now();
+        console.log(`[scheduler] ${ch.id} 处于冻结（全屏/锁屏/电池），停表不走针`);
+      }
       ch.timer = setTimeout(() => this._timerFire(ch), 1000);
       return;
     }

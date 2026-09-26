@@ -123,7 +123,9 @@ function applyPauseState({ pausedIds, away, reasons } = {}) {
     }
   }
   if (pauseDisplays.size || pauseAway) {
-    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway}`,
+    // 诊断（49 轮排障）：点名哪些频道会被冻结，与调度器停表对账用
+    const hit = [...stages.entries()].filter(([, rec]) => pauseDisplays.has(rec.displayId)).map(([id]) => id);
+    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway} 受影响频道=[${hit.join(',') || '无'}]`,
       Object.keys(reasons || {}).length ? JSON.stringify(reasons) : '');
   } else {
     console.log('[live-stage] 暂停解除：全部舞台恢复');
