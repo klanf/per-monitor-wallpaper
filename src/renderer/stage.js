@@ -611,11 +611,11 @@ function applyChannelConfig() {
   if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
 }
 
-/** random：每次换图重抽一种（rain/sakura）。非 random 的值原样生效（含 '' = 关） */
+/** random：每次换图从全部种类里抽一种。非 random 的值原样生效（含 '' = 关） */
 function rollParticles() {
-  cfg.particlesActive = cfg.particles === 'random'
-    ? (Math.random() < 0.5 ? 'rain' : 'sakura')
-    : cfg.particles;
+  if (cfg.particles !== 'random') { cfg.particlesActive = cfg.particles; return; }
+  const pool = (window.WPParticles && window.WPParticles.PARTICLE_TYPES) || ['rain', 'sakura'];
+  cfg.particlesActive = pool[(Math.random() * pool.length) | 0] || 'rain';
 }
 
 async function applyChannels(list) {

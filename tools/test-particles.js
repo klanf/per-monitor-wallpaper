@@ -41,9 +41,13 @@ check('clampCount(300.6) → 四舍五入 301', pt.clampCount(300.6) === 301);
 check("clampCount('300') 字符串数字也认", pt.clampCount('300') === 300);
 check("clampType('rain') 原样保留", pt.clampType('rain') === 'rain');
 check("clampType('sakura') 原样保留", pt.clampType('sakura') === 'sakura');
-check("clampType('snow') 白名单外 → 关闭", pt.clampType('snow') === '');
+check("clampType('meteor_shower') 白名单外 → 关闭", pt.clampType('meteor_shower') === '');
 check('clampType(undefined) → 关闭', pt.clampType(undefined) === '');
-check('种类白名单恰好是 rain/sakura', JSON.stringify(pt.PARTICLE_TYPES) === JSON.stringify(['rain', 'sakura']));
+check('种类白名单 = 11 种注册特效',
+  JSON.stringify(pt.PARTICLE_TYPES) === JSON.stringify([
+    'rain', 'sakura', 'snow', 'fireflies', 'stars',
+    'bubbles', 'leaves', 'fluff', 'dust', 'confetti', 'storm',
+  ]));
 
 // ---- §2 spawn：初始铺满全屏、字段在约定区间、同种子可复现 ----
 console.log('\n§2 初始铺屏（spawn）');
@@ -90,6 +94,25 @@ check('从右缘出走的粒子从左缘绕回', sideOut[0].x === -4, `x=${sideO
 const lenBefore = falling.length;
 pt.step(falling, 'rain', 40, W, H, seeded(3));
 check('step 不增删粒子（长度恒定）', falling.length === lenBefore);
+
+// ---- §5 全种类冒烟：11 种特效的 spawn / step 都必须可跑、坐标有限 ----
+console.log('\n§5 全种类冒烟');
+check('全种类 spawn 数量原样、坐标有限',
+  pt.PARTICLE_TYPES.every((t) => {
+    const parts = pt.spawn(t, 10, W, H, seeded(5));
+    return parts.length === 10 && parts.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+  }));
+check('全种类 step 推进两帧不炸、坐标仍有限',
+  pt.PARTICLE_TYPES.every((t) => {
+    const parts = pt.spawn(t, 10, W, H, seeded(6));
+    pt.step(parts, t, 16.7, W, H, seeded(6));
+    pt.step(parts, t, 33.3, W, H, seeded(6));
+    return parts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  }));
+check('storm 里藏着闪电载体（大种群下必有）',
+  pt.spawn('storm', 1000, W, H, seeded(9)).some((p) => p.kind === 'flash'));
+check('fluff/stars/leaves 都有左右摆动（sway > 0）',
+  ['fluff', 'leaves'].every((t) => pt.spawn(t, 5, W, H, seeded(4)).every((p) => p.sway > 0)));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

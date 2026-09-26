@@ -1352,7 +1352,9 @@ function albumOptions(selectedId, withBlank = true) {
 function particleOptions(value) {
   const opts = [
     ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
-    ['random', '随机（每次换图抽一种）'],
+    ['snow', '雪'], ['fireflies', '萤火虫'], ['stars', '星空流星'], ['bubbles', '泡泡'],
+    ['leaves', '落叶'], ['fluff', '柳絮'], ['dust', '光粒漂浮'], ['confetti', '彩带纸屑'],
+    ['storm', '雷雨'], ['random', '随机（每次换图抽一种）'],
   ];
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
 }
