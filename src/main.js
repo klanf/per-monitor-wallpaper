@@ -1187,7 +1187,11 @@ async function applyConfigChange(patch) {
     if (liveAfter) {
       liveStage.start();
       liveStage.syncTo(scheduler.list());
+      // 全屏/锁屏/电池/挂机暂停轮询必须跟着启停（49 轮修：此前从未启动，
+      // 所有 pauseOn* 在生产里都是死的——最大化后照常切图就是它）
+      startFullscreenWatch();
     } else {
+      stopFullscreenWatch();
       liveStage.stop();
       // 关掉动态桌面：系统壁纸还停在最后一次锚点图 → 补写当前帧
       // （reason='stop' 在锚点白名单里，必定真写，见 liveDesktop.js）
@@ -1815,6 +1819,8 @@ if (!gotLock) {
     if (store.get().liveWallpaper) {
       liveStage.start();
       liveStage.syncTo(scheduler.list());
+      // 全屏 / 锁屏 / 电池 / 挂机暂停轮询（49 轮修：此前漏挂，所有 pauseOn* 都是死的）
+      startFullscreenWatch();
     }
 
     // 启动加速（48 轮）：舞台已经用「上次的清单」出画面了，后台再真扫一遍校准，

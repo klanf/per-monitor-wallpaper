@@ -125,6 +125,10 @@ check('设置面板本身不再整块滚动', /\.settings \{[\s\S]*?overflow: hi
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
 check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'expandedMonitors'\]/.test(MAIN));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
+// 全屏/锁屏/电池暂停轮询必须真的被启动（49 轮修：定义了却漏挂调用，所有 pauseOn* 形同虚设）
+check('全屏暂停轮询已接线（启动 + 开关切换两处调用）',
+  (MAIN.match(/startFullscreenWatch\(\);/g) || []).length >= 2,
+  `调用 ${(MAIN.match(/startFullscreenWatch\(\);/g) || []).length} 处`);
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
