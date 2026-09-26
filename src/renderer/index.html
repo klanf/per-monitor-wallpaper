@@ -25,9 +25,20 @@
 
 <header id="topbar" class="bar top">
   <div class="bar-group">
-    <button class="btn" id="btn-pick" title="添加图片目录到当前相簿（Ctrl+O）">添加目录</button>
     <button class="btn" id="btn-rescan" title="重新扫描（Ctrl+R）">重新扫描</button>
     <span class="muted ellipsis" id="folder-label">未选择相簿</span>
+  </div>
+  <!-- 中段：时段滤镜快选（红框位）。写的是同一个 timeOfDay 配置，与设置面板里的下拉双向同步 -->
+  <div class="bar-group">
+    <span class="badge" title="时段滤镜（只作用于动态桌面画面）">滤镜</span>
+    <select class="select sm" id="tod-quick" title="时段滤镜（动态桌面画面）">
+      <option value="">无</option>
+      <option value="morning">早晨</option>
+      <option value="noon">中午</option>
+      <option value="overcast">阴天</option>
+      <option value="dusk">黄昏</option>
+      <option value="night">夜晚</option>
+    </select>
   </div>
   <div class="bar-group">
     <button class="btn icon" id="btn-info" title="当前图片信息（Ctrl+I）">
@@ -36,9 +47,9 @@
     <button class="btn icon" id="btn-filmstrip" title="显示 / 隐藏缩略图胶片条（Ctrl+B）">
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="5" width="3" height="6" rx="0.8"/><rect x="6.5" y="4" width="3" height="8" rx="0.8"/><rect x="11" y="5" width="3" height="6" rx="0.8"/></svg>
     </button>
-    <button type="button" class="badge clickable" id="preview-badge" title="点击切换窗口预览哪块屏">预览：全部</button>
-    <span class="badge" id="backend-badge" title="系统壁纸写入通道">壁纸通道：检测中…</span>
-    <button class="btn" id="btn-albums" title="相簿管理">相簿</button>
+    <!-- 预览目标：所有显示器一字排开，点谁预览谁（不再单个徽章轮换） -->
+    <span id="preview-badges" class="badge-group"></span>
+    <button class="btn" id="btn-albums" title="相簿管理（添加目录在这里）">相簿</button>
     <button class="btn" id="btn-settings" title="设置（Ctrl+,）">设置</button>
   </div>
 </header>

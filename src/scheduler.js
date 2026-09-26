@@ -1112,19 +1112,16 @@ class MonitorScheduler {
     return { affected, rewritten };
   }
 
-  /** 丢掉相簿目录的扫描缓存并重建（适配「新增了图片」；顺带重新洗一次牌） */
+  /** 丢掉扫描缓存并重建（适配「新增了图片」；顺带重新洗一次牌） */
   async rescan(id) {
+    // 全量清缓存：rescan 的语义就是「磁盘上现在有什么就认什么」。只清本频道
+    // activeDirs 对应的键会漏掉共享缓存里其他频道/其他相簿的陈旧结果 ——
+    // 重建重扫 3 万张约 300ms（见 file-mutation 注释），这个代价 rescan 付得起。
+    this.scanCache.clear();
     if (id) {
-      const ch = this.channels.get(id);
-      if (ch) {
-        for (const dir of (ch.activeDirs || [])) {
-          this.scanCache.delete(`${dir}::${ch.profile.recursive ? 1 : 0}`);
-        }
-      }
       this.orders.delete(id);          // 重新扫描 = 重新洗牌，别把旧顺序按回去
       this.rounds.delete(id);
     } else {
-      this.scanCache.clear();
       this.orders.clear();
       this.rounds.clear();
     }

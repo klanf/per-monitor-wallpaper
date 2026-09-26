@@ -28,8 +28,8 @@ const els = {
   stage: $('stage'),
   empty: $('empty'),
   folderLabel: $('folder-label'),
-  backendBadge: $('backend-badge'),
-  previewBadge: $('preview-badge'),
+  previewBadges: $('preview-badges'),
+  todQuick: $('tod-quick'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
   counter: $('counter'),
@@ -1114,63 +1114,10 @@ async function goToIndex(index) {
 
 /* ------------------------------------------------------------ 预览目标选择 */
 
-/**
- * 点顶栏的「预览：xxx」弹出可选目标（统一频道 / 每一块屏）。
- *
- * 以前这个徽标只是一块牌子 —— 想换预览目标得滚到设置面板里、点每张卡片右上角
- * 那只小眼睛。现在点它就能直接选，当前正在预览的那一项会高亮。
+/*
+ * 顶栏现在是「所有显示器徽章一字排开、点谁预览谁」（updateBadges 渲染，
+ * bindEvents 里委托点击）—— 旧的「单徽章 + 弹出菜单两步走」整体退役。
  */
-function closePreviewMenu() {
-  const open = document.getElementById('preview-menu');
-  if (open) open.remove();
-}
-
-function openPreviewMenu() {
-  closePreviewMenu();
-  if (!state.channels.length) return;
-
-  const menu = document.createElement('div');
-  menu.className = 'preview-menu';
-  menu.id = 'preview-menu';
-  menu.setAttribute('role', 'menu');
-
-  for (const ch of state.channels) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'pm-item' + (ch.id === state.previewId ? ' active' : '');
-    item.setAttribute('role', 'menuitem');
-
-    const name = document.createElement('span');
-    name.textContent = channelName(ch);
-    item.appendChild(name);
-
-    const meta = document.createElement('span');
-    meta.className = 'pm-meta';
-    meta.textContent = `${ch.count} 张 · ${ch.profile.interval}s`;
-    item.appendChild(meta);
-
-    item.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      closePreviewMenu();
-      await setPreview(ch.id);
-    });
-    menu.appendChild(item);
-  }
-
-  // 挂在预览徽章自己身上（徽章 position:relative）：菜单左缘对齐徽章左缘，
-  // 以前挂在整组按钮的容器上，菜单会飘到「壁纸通道 / 相簿 / 设置」那边去，看着没对齐
-  els.previewBadge.appendChild(menu);
-
-  // 点别处关掉（捕获阶段，免得先被别的处理吃掉）
-  setTimeout(() => {
-    const away = (event) => {
-      if (event.target.closest('#preview-menu, #preview-badge')) return;
-      closePreviewMenu();
-      document.removeEventListener('pointerdown', away, true);
-    };
-    document.addEventListener('pointerdown', away, true);
-  }, 0);
-}
 
 async function setPreview(id) {
   if (id === state.previewId) return;
@@ -1341,40 +1288,48 @@ function albumOf(id) {
   return state.albums.find((a) => a.id === id) || null;
 }
 
+/** 频道短名（顶栏徽章用）：显示器1 · 主屏 / 全部显示器 · 标签 */
+function shortChannelName(ch) {
+  if (!ch) return '—';
+  if (ch.kind === 'monitor') {
+    return `显示器${(ch.monitorIndex || 0) + 1}${ch.primary ? ' · 主屏' : ''}`;
+  }
+  return ch.label && ch.label !== '全部显示器' ? `全部显示器 · ${ch.label}` : '全部显示器';
+}
+
 function updateBadges() {
   const ch = previewChannel();
   if (ch) {
     const album = albumOf(ch.profile.albumId);
-    els.previewBadge.textContent = `预览：${channelName(ch)}`;
-    els.previewBadge.title = [
-      `相簿：${album ? album.name : '（未选择）'}`,
-      album ? `目录 ${album.folders.length} 个（启用 ${album.folders.filter((f) => f.enabled).length} 个）` : '',
-      `共 ${ch.count} 张，当前第 ${ch.count ? ch.index + 1 : 0} 张`,
-      `间隔 ${formatInterval(ch.profile.interval)}`,
-      `接管：${ch.profile.enabled ? '是' : '否'}`,
-    ].filter(Boolean).join('\n');
     els.folderLabel.textContent = album
       ? `${album.name} · ${album.folders.filter((f) => f.enabled).length}/${album.folders.length} 目录`
       : '未选择相簿';
     els.folderLabel.title = album ? album.folders.map((f) => `${f.enabled ? '●' : '○'} ${f.path}`).join('\n') : '';
   } else {
-    els.previewBadge.textContent = '预览：—';
     els.folderLabel.textContent = '未选择相簿';
   }
 
-  const info = state.backendInfo;
-  if (!info) return;
-  const com = String(info.backend).startsWith('com:');
-  els.backendBadge.textContent = com
-    ? `壁纸通道：IDesktopWallpaper（${(info.monitors || []).length} 屏）`
-    : `壁纸通道：${info.backend}`;
-  els.backendBadge.classList.toggle('ok', com);
-  els.backendBadge.classList.toggle('warn', !com);
-  els.backendBadge.title = [
-    `平台：${info.platform}`,
-    `全局壁纸槽位：${info.globalWallpaper || '未能读取'}`,
-    ...(info.monitors || []).map((m) => `${m.label} → ${m.current || '(未单独设置)'}`),
-  ].join('\n');
+  /*
+   * 预览目标：所有频道一字排开，点谁预览谁（2026-09-26 拍板——
+   * 旧的单徽章 + 弹出菜单两步走太绕；壁纸通道徽章没人看，一并去掉）。
+   */
+  els.previewBadges.innerHTML = '';
+  for (const c of state.channels) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'badge clickable pm-badge' + (c.id === state.previewId ? ' active' : '');
+    b.dataset.previewId = c.id;
+    b.textContent = shortChannelName(c);
+    const album = albumOf(c.profile.albumId);
+    b.title = [
+      `相簿：${album ? album.name : '（未选择）'}`,
+      album ? `目录 ${album.folders.length} 个（启用 ${album.folders.filter((f) => f.enabled).length} 个）` : '',
+      `共 ${c.count} 张，当前第 ${c.count ? c.index + 1 : 0} 张`,
+      `间隔 ${formatInterval(c.profile.interval)}`,
+      `接管：${c.profile.enabled ? '是' : '否'}`,
+    ].filter(Boolean).join('\n');
+    els.previewBadges.appendChild(b);
+  }
 }
 
 /** 相簿下拉的公共选项（每屏卡片与统一模式共用同一份） */
@@ -2108,6 +2063,7 @@ function applyConfigToUI() {
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
   $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
+  if (els.todQuick) els.todQuick.value = $('cfg-timeofday').value;   // 顶栏快选同步
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2316,8 +2272,19 @@ function bindSettings() {
   $('cfg-timeofday').addEventListener('change', async (e) => {
     const v = e.target.value;
     await save({ timeOfDay: v });
+    if (els.todQuick) els.todQuick.value = v;   // 顶栏快选跟着走
     toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
   });
+
+  // ---- 顶栏滤镜快选（红框位）：与设置面板下拉写同一个配置 ----
+  if (els.todQuick) {
+    els.todQuick.addEventListener('change', async (e) => {
+      const v = e.target.value;
+      await save({ timeOfDay: v });
+      $('cfg-timeofday').value = v;               // 面板下拉跟着走
+      toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
+    });
+  }
 
   $('cfg-monitor').addEventListener('change', async (e) => {
     await save({ monitor: e.target.value });
@@ -2723,14 +2690,15 @@ async function refreshChannelInfo() {
 }
 
 function bindEvents() {
-  $('btn-pick').addEventListener('click', async () => {
-    const folder = await window.wp.pickFolder(state.previewId);
-    if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
-  });
-  $('empty-pick').addEventListener('click', () => $('btn-pick').click());
+  // 添加目录统一走「相簿」页（顶栏按钮已撤，空态大按钮和菜单都指向相簿）
+  $('empty-pick').addEventListener('click', () => $('btn-albums').click());
   $('btn-rescan').addEventListener('click', async () => {
-    if (!state.previewId) { $('btn-pick').click(); return; }
+    if (!state.previewId) { $('btn-albums').click(); return; }
     const result = await window.wp.channelCommand(state.previewId, 'rescan');
+    // rescan 后无条件重载文件列表：签名比对靠 count/rev，但「删了又加回同数」
+    // 这类变动签名不变，用户看到的就是「点了没反应」（2026-09-26 用户实测）。
+    // 置空 loadedSignature 让紧接着的 applyChannelInfo 必走 loadPreviewChannel。
+    state.loadedSignature = null;
     if (result && result.channels) applyChannelInfo({ channels: result.channels });
     toast('已重新扫描', false);
   });
@@ -2781,11 +2749,12 @@ function bindEvents() {
     toast(next ? '已显示缩略图胶片条' : '已隐藏缩略图胶片条');
   });
 
-  // ---- 顶栏「预览：xxx」：点开可以选预览哪一块屏 ----
-  els.previewBadge.addEventListener('click', (event) => {
+  // ---- 顶栏预览徽章组：点谁预览谁（updateBadges 渲染） ----
+  els.previewBadges.addEventListener('click', (event) => {
+    const b = event.target.closest('.pm-badge');
+    if (!b) return;
     event.stopPropagation();
-    if (document.getElementById('preview-menu')) closePreviewMenu();
-    else openPreviewMenu();
+    setPreview(b.dataset.previewId);
   });
 
   $('btn-next').addEventListener('click', () => command('next'));
@@ -2942,7 +2911,7 @@ function bindEvents() {
 
   window.wp.onMenuAction((action) => {
     switch (action) {
-      case 'pick-folder': $('btn-pick').click(); break;
+      case 'pick-folder': $('btn-albums').click(); break;
       case 'rescan': $('btn-rescan').click(); break;
       case 'prev': command('prev'); break;
       case 'next': command('next'); break;

@@ -268,7 +268,7 @@ function buildMenu() {
     {
       label: '文件',
       submenu: [
-        { label: '添加图片目录…', accelerator: 'CmdOrCtrl+O', click: () => action('pick-folder') },
+        { label: '相簿（添加图片目录）…', accelerator: 'CmdOrCtrl+O', click: () => action('pick-folder') },
         { label: '重新扫描', accelerator: 'CmdOrCtrl+R', click: () => action('rescan') },
         { type: 'separator' },
         { label: '打开配置目录', click: () => shell.openPath(app.getPath('userData')) },
