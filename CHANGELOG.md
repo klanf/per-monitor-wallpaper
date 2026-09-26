@@ -1970,6 +1970,61 @@ Electron 会 `RegisterClipboardFormat("CF_HDROP")` 注册一个**同名自定义
 12,723 张里 p50 = 4.7 MP、p90 = 11.7 MP、p99 = 34.8 MP、max = 66.7 MP，
 **超过 12 MP 阈值的只有 998 张（7.8%）**。
 
+## 第三十八轮：桌面上的雨与樱花（粒子系统）
+
+### 现象：动态桌面缺一层「活」的点缀
+
+用户拍板（交接文档 11.7 #9）：要雨落 / 樱花落 —— 独立 canvas 粒子图层，盖在图片层之上、
+交互层之下；接现有 rAF tick + stage:pause 暂停体系；粒子数/种类可配（profile 键）；
+默认保守 200~300 粒；Ken Burns 缩放不带动粒子。
+
+### 设计决定
+
+- **落点在舞台窗口（stage.html），不进预览窗口**：动态桌面特效（kenBurns / breath /
+  timeOfDay）全部只活在舞台，粒子同类。预览窗没有 rAF，不为它单开一条动画链路。
+- **层级用 z-index 钉死**：过渡期间 `.layer` 会被内联提到 `z-index:2`，粒子层 3 恒在其上；
+  `#tod` 从 auto 提到 4 —— 时段滤镜连粒子一起调色，画面是一体的。
+- **摆动是速度项不是位移项**：花瓣横摆按 `x += sin(phase)·sway·dt` 积分，stage:pause
+  恢复后相位连续不会瞬跳；单步 dt 一律钳到 ≤50ms。Ken Burns「重置即跳变」的教训
+  （2026-09-25 实锤）在粒子这边从第一天就避开。
+- **初始铺满全屏**：开启瞬间就是「正在下雨」，不是从零攒出来的空场。
+- **默认 256 粒、默认关闭**：数量收紧 0~1000（「保守 200~300」的拍板中值）；装饰效果不替
+  用户做主。绘制只走 2d 路径（线段/椭圆），不用 shadow、不用每粒子渐变 ——
+  常驻图层的预算按「用户零感知」给。
+- **纯逻辑与绘制分离 + require-safe**：`particles.js` 在 Node 里 require 直接测
+  clamp / spawn / step，在渲染层 `<script>` 挂 `window.WPParticles` ——
+  无打包器，两种加载方式共用一个文件。
+
+### 改动
+
+- 新增 `src/renderer/particles.js`（218 行）：雨 = 短线段雨丝带 8%~16% 风斜、900~1400 px/s；
+  樱花 = 慢落花瓣（55~125 px/s）+ 横摆 + 自旋、三档固定粉；出屏回收到顶部、左右绕回。
+- `stage.html`：两层 `.layer` 之后、`#tod` 之前插 `<canvas id="particles">`，
+  particles.js 先于 stage.js 加载；`stage.css`：`#particles` z-index:3 + pointer-events:none，
+  `#tod` 提到 z-index:4。
+- `stage.js`：rAF gate 块内 `particleFx.frame(now)` —— 与过渡/缓动共享 fpsCap 闸门，
+  stage:pause 停 rAF 即冻结，恢复的时间跳变由 DT_MAX 兜住；`applyChannelConfig` 透传
+  profile.particles / particleCount；resize 时同步粒子画布。Ken Burns 只 transform
+  图层的内层 canvas，兄弟画布天然不被带动。
+- `store.js`：PROFILE_KEYS 13 → 15（`particles` / `particleCount`，可每屏覆盖、
+  随 channels 载荷广播到舞台）。
+- 设置面板「系统 → 动态桌面」区块加「粒子特效」下拉（关闭/雨落/樱花落）与「粒子数量」
+  滑条（0~1000，步进 4）—— 控件并入现有字段块，字段块总数保持 22，check-wiring 期望不动。
+- 新增 `tools/test-particles.js`（96 行，28 项纯逻辑单测；`npm run verify:particles`）。
+
+### 验证
+
+- 纯 Node 全绿：test-scheduler **159** / test-live-desktop **42** / check-wiring **37** /
+  verify-resume **28** / test-particles **28**。
+- 真机隐形探针（`python tools/run-electron.py tools/tmp/probe-particles.js`，13 项，
+  隔离 profile、**不挂桌面不碰 Z 序** —— 用户实例运行中也安全）：真 Chromium 里雨/樱花
+  真的出像素（页内 getImageData 非透明像素统计，300 粒 ≈ 2 万像素）、同种子下 1000 粒
+  覆盖像素多于 100 粒、关闭态清屏 + display:none、脏值回落；真实 stage.html 的
+  `<script>` 相对路径加载成功、`#particles` z-index:3 / pointer-events:none 与
+  `#tod` z-index:4 计算样式生效、console 无 particle 相关报错。
+- 桌面观感未实测：等用户重启实例肉眼验收（雨丝/花瓣的密度与配色都在 particles.js
+  顶部区间表里，调参不用动结构）。
+
 ## 尚未迁移的功能
 
 - 文件监控（原版有 `file_check_timer` 自动感知文件被删）——

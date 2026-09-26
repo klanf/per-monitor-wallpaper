@@ -14,6 +14,7 @@
     "verify:unit": "node tools/test-scheduler.js",
     "verify:desktop": "node tools/test-desktop-host.js",
     "verify:live": "node tools/test-live-desktop.js",
+    "verify:particles": "node tools/test-particles.js",
     "verify:fs-watch": "node tools/test-fullscreen-watch.js",
     "verify:fullscreen-pause": "python tools/run-electron.py tools/verify-fullscreen-pause.js",
     "verify:stage": "python tools/run-electron.py tools/verify-live-stage.js",

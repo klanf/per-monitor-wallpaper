@@ -1,0 +1,95 @@
+'use strict';
+
+/**
+ * 粒子层纯逻辑单测（不需要 Electron、不碰 canvas）：`npm run verify:particles`。
+ *
+ * 覆盖：种类/数量收紧、初始铺屏与确定性、推进积分与 DT_MAX 钳位、
+ * 出屏回收与左右绕回、摆动/自旋的推进量有界。
+ * 绘制（draw / createParticles）不在纯 Node 里测 —— 那一半归 verify:stage
+ * 与真机探针（capturePage 对「画没画出来」并不可信，最终以抓屏/肉眼为准）。
+ */
+
+const pt = require('../src/renderer/particles');
+
+let pass = 0;
+let fail = 0;
+function check(label, ok, detail = '') {
+  if (ok) { pass += 1; console.log(`  ✓ ${label}${detail ? '   ' + detail : ''}`); }
+  else { fail += 1; console.log(`  ✗ ${label}${detail ? '   ' + detail : ''}`); }
+}
+
+/** mulberry32 固定种子随机：同种子同序列，spawn/step 的断言才可复现 */
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+console.log('粒子层纯逻辑单测\n');
+
+// ---- §1 收紧：配置是用户能直接手改的地方，脏值一律回落 ----
+console.log('§1 种类/数量收紧');
+check('clampCount 无参 → 默认 256', pt.clampCount() === 256, String(pt.clampCount()));
+check("clampCount('abc') 非数字 → 默认 256", pt.clampCount('abc') === 256);
+check('clampCount(99999) → 上限 1000', pt.clampCount(99999) === 1000);
+check('clampCount(-5) → 下限 0', pt.clampCount(-5) === 0);
+check('clampCount(300.6) → 四舍五入 301', pt.clampCount(300.6) === 301);
+check("clampCount('300') 字符串数字也认", pt.clampCount('300') === 300);
+check("clampType('rain') 原样保留", pt.clampType('rain') === 'rain');
+check("clampType('sakura') 原样保留", pt.clampType('sakura') === 'sakura');
+check("clampType('snow') 白名单外 → 关闭", pt.clampType('snow') === '');
+check('clampType(undefined) → 关闭', pt.clampType(undefined) === '');
+check('种类白名单恰好是 rain/sakura', JSON.stringify(pt.PARTICLE_TYPES) === JSON.stringify(['rain', 'sakura']));
+
+// ---- §2 spawn：初始铺满全屏、字段在约定区间、同种子可复现 ----
+console.log('\n§2 初始铺屏（spawn）');
+const W = 1280, H = 800;
+const rains = pt.spawn('rain', 50, W, H, seeded(7));
+check('数量原样', rains.length === 50, String(rains.length));
+check('x 全落在 [0, W)', rains.every((p) => p.x >= 0 && p.x < W));
+check('y 全落在 [0, H)（开启瞬间就是「正在下」）', rains.every((p) => p.y >= 0 && p.y < H));
+check('雨速在 900~1400 px/s', rains.every((p) => p.v >= 900 && p.v < 1400));
+check('风斜比在 8%~16%', rains.every((p) => p.vx / p.v >= 0.08 && p.vx / p.v < 0.16));
+check('同种子两次 spawn 逐字段相同',
+  JSON.stringify(pt.spawn('rain', 50, W, H, seeded(7))) === JSON.stringify(rains));
+const sakuras = pt.spawn('sakura', 30, W, H, seeded(11));
+check('花瓣尺寸在 2.6~6 px', sakuras.every((p) => p.size >= 2.6 && p.size < 6));
+check('花瓣颜色都是「r,g,b」形态', sakuras.every((p) => /^\d{3},\d{3},\d{3}$/.test(p.color)));
+
+// ---- §3 推进：匀速积分、DT_MAX 钳位、摆动/自旋有界 ----
+console.log('\n§3 推进与钳位（step）');
+const drop = [{ x: 100, y: 100, v: 1000, vx: 0, len: 10, alpha: 1 }];
+pt.step(drop, 'rain', 40, W, H, seeded(1));
+check('雨滴 40ms 走 40px（1000 px/s）', drop[0].y === 140, `y=${drop[0].y}`);
+pt.step(drop, 'rain', 10000, W, H, seeded(1));
+check('dt=10s 被钳到 50ms：只再走 50px', drop[0].y === 190, `y=${drop[0].y}`);
+const still = [{ x: 100, y: 100, v: 1000, vx: 0, len: 10, alpha: 1 }];
+pt.step(still, 'rain', -5, W, H, seeded(1));
+check('负 dt 不动（宁可停也不倒放）', still[0].y === 100);
+const petal = [{ x: 100, y: 100, v: 0, size: 4, sway: 100, freq: 1, phase: 0, rot: 0, rotV: 1, alpha: 1, color: '255,183,197' }];
+pt.step(petal, 'sakura', 50, W, H, seeded(1));
+check('摆动是速度项：|dx| ≤ sway·dt', Math.abs(petal[0].x - 100) <= 100 * 0.05 + 1e-9, `dx=${(petal[0].x - 100).toFixed(4)}`);
+check('自旋按 rotV·dt 精确推进', Math.abs(petal[0].rot - 0.05) < 1e-9, `rot=${petal[0].rot}`);
+
+// ---- §4 回收与绕回：出屏粒子回顶/从另一侧回来，数组长度不变 ----
+console.log('\n§4 出屏回收与左右绕回');
+const falling = [{ x: 640, y: 799, v: 1000, vx: 0, len: 10, alpha: 1 }];
+pt.step(falling, 'rain', 40, W, H, seeded(3));
+check('落出底边的雨滴回收到顶部（y<0）且 x 重新随机', falling[0].y < 0 && falling[0].x >= 0 && falling[0].x < W,
+  `y=${falling[0].y.toFixed(1)}`);
+const petalOut = [{ x: 640, y: 795, v: 1000, size: 4, sway: 0, freq: 1, phase: 0, rot: 0, rotV: 0, alpha: 1, color: '255,183,197' }];
+pt.step(petalOut, 'sakura', 40, W, H, seeded(3));
+check('飘出底边的花瓣同样回顶', petalOut[0].y < 0, `y=${petalOut[0].y.toFixed(1)}`);
+const sideOut = [{ x: W + 5, y: 100, v: 1000, vx: 100, len: 10, alpha: 1 }];
+pt.step(sideOut, 'rain', 40, W, H, seeded(1));
+check('从右缘出走的粒子从左缘绕回', sideOut[0].x === -4, `x=${sideOut[0].x}`);
+const lenBefore = falling.length;
+pt.step(falling, 'rain', 40, W, H, seeded(3));
+check('step 不增删粒子（长度恒定）', falling.length === lenBefore);
+
+console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
+process.exit(fail ? 1 : 0);

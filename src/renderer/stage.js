@@ -76,12 +76,15 @@ const cfg = {
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
+  particles: '',               // 粒子特效（profile.particles：''/rain/sakura）
+  particleCount: 256,          // 粒子数量（profile.particleCount；收紧 0~1000 在 particles.js）
 };
 
 const layers = {
   A: null, B: null,            // { root, canvas, ctx }，init 时填充
 };
 let todEl = null;              // 时段滤镜罩层（#tod，init 时填充）
+let particleFx = null;         // 粒子层句柄（particles.js，init 时绑定 #particles）
 let active = 'B';
 
 let animToken = 0;             // 过渡令牌：新过渡让进行中的旧过渡作废
@@ -450,6 +453,9 @@ function ensureRaf() {
       if (activeVideo && currentEntry && kindOf(currentEntry) === 'video') {
         drawSource(layers[active], activeVideo, activeVideo.videoWidth, activeVideo.videoHeight);
       }
+      // 粒子层与过渡/缓动共享同一个 fpsCap 闸门；stage:pause 停 rAF 即冻结，
+      // 恢复后的时间跳变由 particles.js 的 DT_MAX 钳位兜住
+      if (particleFx) particleFx.frame(now);
     }
     if (frozen) return;                    // 暂停：这一帧画完就停表
     if (anim || currentEntry) rafId = requestAnimationFrame(loop);
@@ -602,6 +608,11 @@ function applyChannelConfig() {
   if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
   // 时段滤镜（profile 不写 = 无）
   if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
+  // 粒子特效：种类白名单与数量收紧都在 particles.js 里做，这里透传。
+  // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
+  if (p.particles !== undefined) cfg.particles = String(p.particles || '');
+  if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
+  if (particleFx) particleFx.setConfig(cfg.particles, cfg.particleCount);
 }
 
 async function applyChannels(list) {
@@ -640,6 +651,7 @@ async function applyChannels(list) {
 function onResize() {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(async () => {
+    if (particleFx) particleFx.resize();   // 粒子画布跟屏幕走，与当前帧类型无关
     if (!currentEntry) return;
     // 视频：下一 rAF 自动按新画布尺寸重画；网页：iframe 100% 自适应 —— 都不用管
     if (kindOf(currentEntry) !== 'image') return;
@@ -667,6 +679,11 @@ async function init() {
   layers.A.ctx = layers.A.canvas.getContext('2d');
   layers.B.ctx = layers.B.canvas.getContext('2d');
   todEl = document.getElementById('tod');
+  // 粒子层（particles.js 先于本文件加载）。缺了不致命：粒子开关静默失效，其余照常
+  if (window.WPParticles && document.getElementById('particles')) {
+    particleFx = window.WPParticles.createParticles(document.getElementById('particles'));
+    particleFx.resize();
+  }
 
   window.addEventListener('resize', onResize);
   // 舞台盖在图标层之上必然吃掉鼠标（LAYERED 穿透会让 Chromium 白屏，见 desktopHost）。

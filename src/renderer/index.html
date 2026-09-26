@@ -398,7 +398,20 @@
             <option value="night">夜晚 · 深蓝压暗</option>
           </select>
         </div>
-        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。滤镜只作用于动态桌面画面，不写入系统壁纸。</div>
+        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span class="field-label" style="flex:0 0 auto">粒子特效</span>
+          <select class="select" id="cfg-particles" style="flex:1">
+            <option value="">关闭</option>
+            <option value="rain">雨落</option>
+            <option value="sakura">樱花落</option>
+          </select>
+        </div>
+        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span class="field-label" style="flex:0 0 auto">粒子数量</span>
+          <input type="range" id="cfg-particle-count" min="0" max="1000" step="4" style="flex:1">
+          <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
+        </div>
+        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。滤镜与粒子只作用于动态桌面画面，不写入系统壁纸；粒子跟随帧率上限与暂停体系（全屏/锁屏时一并冻结）。</div>
       </div>
 
       <!-- ---------------------------------------------------------- 后台驻留 -->

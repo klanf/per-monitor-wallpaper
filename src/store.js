@@ -252,6 +252,8 @@ const PROFILE_KEYS = [
   'videoPlayFull',             // 视频播完再切下一张（不写 = 默认关，按 interval 定时切）
   'breath',                    // 呼吸缩放特效（不写 = 默认关；与 Ken Burns 叠加）
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
+  'particles',                 // 舞台粒子特效：rain/sakura（不写 = 关；白名单收紧在渲染端 particles.js）
+  'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */

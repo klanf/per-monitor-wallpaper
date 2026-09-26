@@ -2063,6 +2063,11 @@ function applyConfigToUI() {
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
   $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
+  // 粒子数量滑条：上限/默认与 particles.js 的 COUNT_MAX / COUNT_DEFAULT 保持一致
+  $('cfg-particles').value = typeof c.particles === 'string' ? c.particles : '';
+  const pc = Math.round(Number(c.particleCount));
+  $('cfg-particle-count').value = String(Number.isFinite(pc) ? Math.min(Math.max(pc, 0), 1000) : 256);
+  $('cfg-particle-count-out').textContent = `${$('cfg-particle-count').value} 粒`;
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2272,6 +2277,22 @@ function bindSettings() {
     const v = e.target.value;
     await save({ timeOfDay: v });
     toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
+  });
+
+  $('cfg-particles').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    await save({ particles: v });
+    toast(v ? '粒子特效已开启（叠加在动态桌面画面上）' : '粒子特效已关闭');
+  });
+
+  $('cfg-particle-count').addEventListener('input', (e) => {
+    $('cfg-particle-count-out').textContent = `${e.target.value} 粒`;
+  });
+  $('cfg-particle-count').addEventListener('change', async (e) => {
+    const n = Math.min(Math.max(Math.round(Number(e.target.value) || 0), 0), 1000);
+    e.target.value = String(n);
+    $('cfg-particle-count-out').textContent = `${n} 粒`;
+    await save({ particleCount: n });
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {
