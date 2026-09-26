@@ -2418,6 +2418,33 @@ applyPauseState，「有没有人调它」没有测试，这就是漏网原因�
   病在没启动」的证据链。
 - 观感终验：重启后最大化程序，该屏 ≤2 秒静止、还原 ≤1 秒恢复；另一块屏不受影响。
 
+## 第五十轮：暂停体系的第二个断点——rec.displayId 从未写入
+
+### 现象：修了 #29（接线）之后，最大化后胶片条仍然前跳
+
+用户重启新版后复现。probe-fs-watch 证明判定链路完全正常（最大化 → 覆盖 100% →
+2 秒内判定、只暂停那块屏），但暂停日志里出现反常一行：
+`暂停：display=[3166080857] … 受影响频道=[无]` —— 被全屏的显示器上**没有任何
+一块舞台认为自己在那**。
+
+### 根因：createStage 从未把 rec.displayId 写进舞台记录
+
+stageBounds() 算出了正确的 displayId（stage:bind 载荷用的局部变量 sb，所以
+初始暂停态恰好是对的），但 rec 上这个字段**从项目第一个字节起就不存在**。于是：
+
+- `applyPauseState` 给每块舞台发 `stage:pause` 时，
+  `pauseDisplays.has(rec.displayId)` = has(undefined) = **恒 false** ——
+  全屏时舞台收到的永远是 `paused:false`，Ken Burns 在全屏程序背后照常动画；
+- 48 轮的调度器停表查 `isChannelFrozen` → 同样恒 false → 切图照常、胶片条照常跳。
+
+### 修复与验证
+
+- `liveStage.createStage` 补一行 `rec.displayId = sb.displayId`；
+- `[tick-bus] tick` 日志补时间戳（排查 SAC2766 频道在复现窗口推进 107 次、
+  节奏远快于 30s 间隔的次生疑点，下次复现有时间轴可对）；
+- 纯 Node 全绿：162 / 42 / 35 / 28 + wiring 39。
+- 观感终验：重启后最大化 → 该屏 ≤2s 静止、另一屏不受影响、还原 ≤1s 恢复。
+
 ## 第四十六轮：README 补全动态桌面与粒子特效，推远端，出包
 
 ### 现象：文档停在第二十五轮的时代，代码要见人了
