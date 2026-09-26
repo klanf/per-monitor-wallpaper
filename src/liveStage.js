@@ -134,6 +134,17 @@ function isPausedForDisplay(displayId) {
   return pauseDisplays.has(displayId);
 }
 
+/**
+ * 该频道的舞台是否处于暂停（全屏 / 锁屏 / 电池 / 挂机）——调度器据此「停表不走针」
+ * （48 轮）：渲染层停 rAF 之后，这里把调度推进也停掉，取消全屏后 1 秒内恢复。
+ * 没有舞台的频道（统一频道 / 已降级）不冻结 —— 系统壁纸照常轮播兜底。
+ */
+function isChannelFrozen(channelId) {
+  if (pauseAway) return true;
+  const rec = stages.get(channelId);
+  return Boolean(rec && pauseDisplays.has(rec.displayId));
+}
+
 /* ---------------------------------------------------------------- 广播 */
 
 function broadcast(type, payload) {
@@ -449,6 +460,7 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
+  isChannelFrozen,
   showDesktopContextMenu,
   cancelDesktopMenu,
 };

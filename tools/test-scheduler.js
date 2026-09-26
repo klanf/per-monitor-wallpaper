@@ -1199,6 +1199,60 @@ async function main() {
       `写入数 → ${writes.length}`);
   }
 
+  /* ================= 30. 冻结停表：全屏/锁屏/电池时连调度都停（48 轮） ================= */
+  console.log('\n===== 30. 冻结频道停表 =====');
+  {
+    const dirFrozen = path.join(tmpDir, 'dirFrozen');
+    fs.mkdirSync(dirFrozen);
+    for (const n of ['f-1.bmp', 'f-2.bmp']) fs.copyFileSync(RED, path.join(dirFrozen, n));
+    const albumF = { id: 'alb_frozen30', name: '冻结', folders: [{ path: dirFrozen, enabled: true }] };
+    store.set({
+      albums: [...store.get().albums, albumF],
+      liveWallpaper: false,
+      perMonitor: true,
+      monitors: {
+        'MON-A': { albumId: albumF.id, interval: 1 },
+        'MON-B': { albumId: albumB.id, interval: 1 },
+      },
+    });
+
+    const frozenWrites = [];
+    let frozen = true;
+    const sFrozen = new MonitorScheduler({
+      store,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: FAKE_MONITORS }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async (imagePath, cacheDir, options) => {
+        frozenWrites.push({ img: path.basename(imagePath), monitorId: options.monitorId });
+        return { ok: true, method: 'test' };
+      },
+      onEvent: () => {},
+      isFrozen: (id) => (id === 'MON-A' ? frozen : false),   // 只有 MON-A 被冻结
+    });
+    await sFrozen.rebuild('test-frozen');
+    sFrozen.setPlaying('MON-A', true);
+    sFrozen.setPlaying('MON-B', true);
+    const writesA = () => frozenWrites.filter((w) => w.monitorId === 'MON-A').length;
+    const idxA = sFrozen.channels.get('MON-A').index;
+    const idxB = sFrozen.channels.get('MON-B').index;
+
+    await new Promise((r) => setTimeout(r, 1600));   // 冻结中：1s 间隔到点也不推进
+    check('冻结中的频道不推进、不写壁纸',
+      sFrozen.channels.get('MON-A').index === idxA && writesA() === 0,
+      `index ${idxA} → ${sFrozen.channels.get('MON-A').index}，MON-A 写入 ${writesA()}`);
+    check('冻结只影响自己：未冻结的 MON-B 照常推进',
+      sFrozen.channels.get('MON-B').index !== idxB,
+      `index ${idxB} → ${sFrozen.channels.get('MON-B').index}`);
+
+    frozen = false;                                  // 解冻：最多 1 秒后恢复切换
+    await new Promise((r) => setTimeout(r, 1600));
+    check('解冻后恢复推进（≤1s 兜底重试生效）',
+      sFrozen.channels.get('MON-A').index !== idxA,
+      `index ${idxA} → ${sFrozen.channels.get('MON-A').index}`);
+    sFrozen.stop();
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);

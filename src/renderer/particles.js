@@ -113,6 +113,30 @@
       ctx.lineTo(p.x - k * p.len, p.y - p.len);
       ctx.stroke();
     },
+    /* 批量版（48 轮）：alpha 归并成 3 档、同档合并成一条 path ——
+       300 粒从 300 次 stroke 降到 3 次，观感差 <0.05 不可辨 */
+    drawAll(ctx, parts) {
+      const lo0 = 0.20;                             // 与 make 的 alpha 区间保持一致
+      const stepA = 0.28 / 3;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 1.1;
+      ctx.strokeStyle = '#cfe4ff';
+      for (let b = 0; b < 3; b += 1) {
+        const lo = lo0 + stepA * b;
+        const hi = lo0 + stepA * (b + 1);
+        ctx.globalAlpha = lo + stepA / 2;
+        ctx.beginPath();
+        let any = false;
+        for (const p of parts) {
+          if (p.alpha < lo || (b < 2 && p.alpha >= hi)) continue;
+          const k = p.vx / p.v;
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - k * p.len, p.y - p.len);
+          any = true;
+        }
+        if (any) ctx.stroke();
+      }
+    },
   };
 
   /* 樱花：慢落花瓣 + 横向摆动（速度项不是位移项：暂停恢复不跳）+ 自旋，三档固定粉。
@@ -185,6 +209,26 @@
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, TAU);
       ctx.fill();
+    },
+    /* 批量版（48 轮）：同 rain，alpha 三档合并成一条 path 一次 fill */
+    drawAll(ctx, parts) {
+      ctx.fillStyle = '#ffffff';
+      const lo0 = 0.45;                             // 与 make 的 alpha 区间保持一致
+      const stepA = 0.5 / 3;
+      for (let b = 0; b < 3; b += 1) {
+        const lo = lo0 + stepA * b;
+        const hi = lo0 + stepA * (b + 1);
+        ctx.globalAlpha = lo + stepA / 2;
+        ctx.beginPath();
+        let any = false;
+        for (const p of parts) {
+          if (p.alpha < lo || (b < 2 && p.alpha >= hi)) continue;
+          ctx.moveTo(p.x + p.size, p.y);
+          ctx.arc(p.x, p.y, p.size, 0, TAU);
+          any = true;
+        }
+        if (any) ctx.fill();
+      }
     },
   };
 
@@ -685,6 +729,22 @@
       }
       TYPES.rain.draw(ctx, p);
     },
+    /* 批量版（48 轮）：雨丝走 rain 的 alpha 分桶，水冠同时存在的就几朵、逐个画 */
+    drawAll(ctx, parts, W, H) {
+      const drops = [];
+      const crowns = [];
+      for (const p of parts) (p.kind === 'splash' ? crowns : drops).push(p);
+      TYPES.rain.drawAll(ctx, drops);
+      ctx.strokeStyle = '#cfe4ff';
+      ctx.lineWidth = 1;
+      for (const p of crowns) {
+        const k = Math.min(1, p.t / p.dur);
+        ctx.globalAlpha = (1 - k) * 0.7;
+        ctx.beginPath();
+        ctx.arc(p.sx, H - 1, 2 + k * 7, Math.PI, TAU);
+        ctx.stroke();
+      }
+    },
   };
 
   /* 雨滴挂屏：挂在「玻璃」上的水珠 —— 停一会儿、缓缓下滑一小段、再挂一会儿。
@@ -785,7 +845,11 @@
     ctx.clearRect(0, 0, W, H);
     if (!def) return;
     if (def.begin) def.begin(ctx);
-    for (const p of parts) def.draw(ctx, p, W, H);
+    if (def.drawAll) {
+      def.drawAll(ctx, parts, W, H);            // 批量：同款粒子合并 path（48 轮）
+    } else {
+      for (const p of parts) def.draw(ctx, p, W, H);
+    }
     if (def.end) def.end(ctx);
     ctx.globalAlpha = 1;
   }
@@ -801,7 +865,9 @@
     const st = { type: '', count: 0, parts: [], W: 1, H: 1, dpr: 1, last: -1 };
 
     function resize() {
-      const dpr = window.devicePixelRatio || 1;
+      // 粒子是氛围元素不读文字：DPR 封顶 1（48 轮性能轮）——填充率按 dpr² 降，
+      // 150%/4K 屏上省一半以上；观感只是边缘更柔。图层画布仍走满 DPR（壁纸要清晰）。
+      const dpr = Math.min(window.devicePixelRatio || 1, 1);
       const pw = Math.max(1, Math.round(window.innerWidth * dpr));
       const ph = Math.max(1, Math.round(window.innerHeight * dpr));
       if (canvas.width !== pw || canvas.height !== ph) {
@@ -849,7 +915,7 @@
       draw(ctx, st.parts, st.type, st.W, st.H);
     }
 
-    return { setConfig, resize, frame };
+    return { setConfig, resize, frame, isActive: () => Boolean(st.type) };
   }
 
   return {

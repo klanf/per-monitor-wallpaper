@@ -19,7 +19,7 @@
  *   tray.js           托盘图标 + 开机自启
  */
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, globalShortcut, powerMonitor } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -1145,9 +1145,14 @@ function startFullscreenWatch() {
   fullscreenWatch.start({
     getFlags: () => {
       const ls = (store && store.get().liveStage) || {};
+      let battery = false;
+      try { battery = powerMonitor.isOnBatteryPower(); } catch { /* 早期取不到就当市电 */ }
       return {
         pauseOnFullscreen: ls.pauseOnFullscreen !== false,
         pauseOnAway: ls.pauseOnLock !== false,
+        battery,
+        // pauseOnBattery 此前配置里有键但从未接线（48 轮修）：平板/笔记本用电池时全停
+        pauseOnBattery: ls.pauseOnBattery === true,
       };
     },
     onTick: ({ pausedIds, away, reasons }) => {
@@ -1750,6 +1755,10 @@ if (!gotLock) {
       playback,
       // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
       isLiveDegraded: () => liveStage.isDegraded(),
+      // 舞台被冻结（全屏/锁屏/电池/挂机）的频道「停表不走针」（48 轮）
+      isFrozen: (id) => liveStage.isChannelFrozen(id),
+      // 扫描缓存落盘：大图库冷启动先用上次的清单立即出画面，后台再校准（48 轮）
+      scanCacheFile: path.join(app.getPath('userData'), 'scan-cache.json'),
       enumerate: () => {
         const info = listMonitors();
         return { ok: info.ok, error: info.error, monitors: info.monitors };
@@ -1807,6 +1816,10 @@ if (!gotLock) {
       liveStage.start();
       liveStage.syncTo(scheduler.list());
     }
+
+    // 启动加速（48 轮）：舞台已经用「上次的清单」出画面了，后台再真扫一遍校准，
+    // 清单有变化（新增/删除）时补一次 rebuild —— 不 await，校验慢不拖慢出画面
+    scheduler.drainRefreshQueue().catch((err) => console.warn('[scheduler] 启动校准失败:', err.message));
 
     /*
      * 桌面右键菜单点下去时 App 可能没在跑（比如开机后还没启动过）。

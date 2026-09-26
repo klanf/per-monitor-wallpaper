@@ -96,7 +96,8 @@ class MonitorScheduler {
    *        失效时降频写自动放开（degraded-fallback），显示职责交回系统壁纸。
    *        不传按「从未失效」处理 —— 单测里也能注入来验证这条兜底。
    */
-  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, isLiveDegraded }) {
+  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, isLiveDegraded,
+    isFrozen, scanCacheFile }) {
     this.store = store;
     this.cacheDir = cacheDir;
     this.enumerate = enumerate;
@@ -106,6 +107,21 @@ class MonitorScheduler {
       || ((imagePath, cacheDir, options) => win32.setWallpaper(imagePath, cacheDir, options));
     this.playback = playback || null;
     this.isLiveDegraded = isLiveDegraded || (() => false);
+    /**
+     * 舞台冻结查询（48 轮）：全屏 / 锁屏 / 电池 / 挂机暂停的频道「停表不走针」——
+     * 渲染层停 rAF 之后，这里连调度推进和写入尝试都省掉。由 main 注入
+     * （liveStage.isChannelFrozen），单测不传 = 永不冻结。
+     */
+    this.isFrozen = isFrozen || null;
+
+    /**
+     * 扫描缓存落盘（48 轮）：大图库冷启动要扫完才出画面。启动先把上次的
+     * 清单喂进 scanCache 立即建台，后台 drainRefreshQueue() 再真扫校准。
+     */
+    this.scanCacheFile = scanCacheFile || null;
+    this._bootCache = scanCacheFile ? this._loadScanCache(scanCacheFile) : new Map();
+    this._refreshQueue = new Map();
+    this._persistTimer = null;
 
     this.channels = new Map();
     /** 目录扫描结果缓存：多个频道指向同一目录时不重复扫盘 */
@@ -438,6 +454,25 @@ class MonitorScheduler {
     const cached = this.scanCache.get(key);
     if (cached) return cached;
 
+    // 启动加速（48 轮）：上一轮进程留下的清单先顶上，让频道立即建台出画面；
+    // 真扫排进后台队列（drainRefreshQueue），清单有变化时再补一次 rebuild。
+    // 陈旧清单的代价由既有兜底消化：死图触地即摘（§24）、坏图跳过（§25）。
+    const stale = this._bootCache.get(key);
+    if (stale) {
+      this._bootCache.delete(key);
+      this.scanCache.set(key, stale);
+      this._refreshQueue.set(key, { key, folder, recursive });
+      return stale;
+    }
+
+    const fresh = await this._scanReal(folder, recursive);
+    this._queuePersist();
+    return fresh;
+  }
+
+  /** 真扫：绕过内存缓存与启动缓存，扫描完成后把清单排队落盘 */
+  async _scanReal(folder, recursive) {
+    const key = `${folder}::${recursive ? 1 : 0}`;
     const started = Date.now();
     const { files, truncated } = await scanFolder(folder, { recursive });
     const result = {
@@ -448,7 +483,78 @@ class MonitorScheduler {
       recursive,
     };
     this.scanCache.set(key, result);
+    this._queuePersist();
     return result;
+  }
+
+  /* ---- 扫描缓存落盘（48 轮）---- */
+
+  _queuePersist() {
+    if (!this.scanCacheFile) return;
+    if (this._persistTimer) return;
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      this._persistScanCache();
+    }, 3000);
+    if (typeof this._persistTimer.unref === 'function') this._persistTimer.unref();
+  }
+
+  _persistScanCache() {
+    if (!this.scanCacheFile) return;
+    try {
+      const entries = {};
+      for (const [key, result] of this.scanCache) {
+        if (!result || !Array.isArray(result.files)) continue;
+        if (result.files.length > 100000) continue;       // 离谱大的不落盘
+        entries[key] = { files: result.files.map((f) => ({ path: f.path, name: f.name, ext: f.ext })) };
+      }
+      const tmp = `${this.scanCacheFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, savedAt: Date.now(), entries }), 'utf8');
+      fs.renameSync(tmp, this.scanCacheFile);
+    } catch (err) {
+      console.warn('[scheduler] 扫描缓存落盘失败:', err.message);   // 落盘失败不影响扫描
+    }
+  }
+
+  _loadScanCache(file) {
+    const out = new Map();
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!raw || raw.version !== 1) return out;
+      for (const [key, entry] of Object.entries(raw.entries || {})) {
+        if (!entry || !Array.isArray(entry.files) || !entry.files.length) continue;
+        if (entry.files.length > 100000) continue;
+        const files = entry.files
+          .filter((f) => f && typeof f.path === 'string')
+          .map((f) => ({ path: f.path, name: f.name, ext: f.ext, url: pathToFileURL(f.path).href }));
+        if (!files.length) continue;
+        out.set(key, { files, truncated: false, elapsedMs: 0, folder: key, recursive: /::1$/.test(key) });
+      }
+    } catch { /* 没有缓存 / 损坏：就当首次启动 */ }
+    return out;
+  }
+
+  /**
+   * 启动后台校验（48 轮）：把「用了上次清单」的目录逐个真扫一遍，
+   * 有变化的更新缓存并触发一次 rebuild（索引按路径对齐，播放进度不跳）。
+   * main 在启动建台之后调用，不 await —— 校验慢不拖慢出画面。
+   */
+  async drainRefreshQueue() {
+    if (!this._refreshQueue.size) return false;
+    const jobs = [...this._refreshQueue.values()];
+    this._refreshQueue.clear();
+    let changed = false;
+    for (const job of jobs) {
+      try {
+        const old = this.scanCache.get(job.key);
+        const fresh = await this._scanReal(job.folder, job.recursive);
+        if (!old || JSON.stringify(old.files) !== JSON.stringify(fresh.files)) changed = true;
+      } catch (err) {
+        console.warn('[scheduler] 启动校验扫描失败:', err.message);
+      }
+    }
+    if (changed) await this.rebuild('startup-rescan');
+    return changed;
   }
 
   /**
@@ -662,10 +768,21 @@ class MonitorScheduler {
       return;
     }
     const ms = Math.max(1, ch.profile.interval) * 1000;
-    ch.timer = setTimeout(() => {
-      ch.timer = null;
-      this._advance(ch, 1, 'timer');
-    }, ms);
+    ch.timer = setTimeout(() => this._timerFire(ch), ms);
+  }
+
+  /**
+   * 定时器到点（48 轮拆出来）：舞台被冻结（全屏 / 锁屏 / 电池 / 挂机）时整条频道
+   * 「停表不走针」——渲染层早已停 rAF，这里连调度推进和写入尝试都省掉；
+   * 1 秒后再看一眼，取消全屏后最多 1 秒恢复切换。用户手动翻页不受影响。
+   */
+  _timerFire(ch) {
+    ch.timer = null;
+    if (this.isFrozen && this.isFrozen(ch.id)) {
+      ch.timer = setTimeout(() => this._timerFire(ch), 1000);
+      return;
+    }
+    this._advance(ch, 1, 'timer');
   }
 
   async _advance(ch, dir, reason) {

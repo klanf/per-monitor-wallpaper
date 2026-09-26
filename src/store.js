@@ -120,30 +120,6 @@ const DEFAULTS = {
   },
 
 
-  /**
-   * 动态桌面总开关：把渲染窗口挂到桌面图标**下面**实时渲染（Wallpaper Engine 那种活桌面）。
-   *
-   * 挂法是 SetParent 到持有 SHELLDLL_DefView 的窗口（本机是 Progman），再插到图标层之后
-   * —— 不用网上那套「找 WorkerW」，那套在本机必然误选（见 desktopHost.js 头注释）。
-   *
-   * 开启后系统壁纸**降频写**：只在锚点时机（启动/重建、停止前）写一次，判定见 liveDesktop.js。
-   * 实测每写一次系统壁纸，Explorer 会重建 WorkerW 把我们的窗口盖住约 1 秒（任务书 §2.14），
-   * 照原来「每换图都写」的节奏，桌面会每 30 秒闪一下。
-   */
-  liveWallpaper: false,
-
-  /**
-   * 动态桌面的性能策略（拍板：省电优先 + 暂停必须**按屏独立**）。
-   *
-   * fpsCap 只约束渲染层自己 tick 驱动的动画 —— 纯 CSS 动画跑在合成器里，
-   * rAF 节流对它无效（任务书 §2.8），所以过渡/缓动一律由渲染层出帧。
-   */
-  liveStage: {
-    fpsCap: 30,              // 帧率上限（5~240）
-    pauseOnFullscreen: true, // 某块屏被全屏应用占满时只暂停那块屏，其它屏照常
-    pauseOnBattery: true,    // 电池供电时暂停
-    pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
-  },
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
   fit: 'cover',            // cover | contain
 
@@ -450,6 +426,13 @@ function resolveProfile(config, monitorId) {
   const base = {};
   for (const key of PROFILE_KEYS) base[key] = config[key];
 
+  // fpsCap 的用户入口是嵌套的 liveStage.fpsCap —— 顶层从不存在这个键，
+  // 不接上的话 profile.fpsCap 恒为 undefined，舞台永远跑默认 60，
+  // 用户设置的 30 形同虚设（48 轮实锤）。每屏显式覆盖仍会在此之后覆盖它。
+  if (isPlainObject(config.liveStage) && Number.isFinite(config.liveStage.fpsCap)) {
+    base.fpsCap = config.liveStage.fpsCap;
+  }
+
   // 只读派生的 folder：绑定的是单目录相簿时回填目录路径。
   // 目的不是回退数据模型，而是让 tools/status.js 显示和旧验证脚本的断言继续可用；
   // 多目录相簿没有单一「目录」可言，留空。
@@ -516,28 +499,6 @@ function clampAutoScanMinutes(value) {
 function clampSettingsTab(value) {
   return SETTINGS_TABS.includes(value) ? value : DEFAULTS.settingsTab;
 }
-/**
- * 动态桌面的帧率上限：下限 5（再低就不像动画了），上限 240 纯防手滑（配置能手改）。
- * 只约束渲染层自己 tick 驱动的动画 —— CSS 动画在合成器里，rAF 节流无效。
- */
-function clampLiveFps(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return DEFAULTS.liveStage.fpsCap;
-  return Math.min(Math.max(Math.round(n), 5), 240);
-}
-
-/** 动态桌面子配置收紧：字段补默认、布尔归位；整体不是对象时整块回默认。 */
-function clampLiveStage(value) {
-  const src = isPlainObject(value) ? value : {};
-  const d = DEFAULTS.liveStage;
-  return {
-    fpsCap: clampLiveFps(src.fpsCap),
-    pauseOnFullscreen: 'pauseOnFullscreen' in src ? toBool(src.pauseOnFullscreen) : d.pauseOnFullscreen,
-    pauseOnBattery: 'pauseOnBattery' in src ? toBool(src.pauseOnBattery) : d.pauseOnBattery,
-    pauseOnLock: 'pauseOnLock' in src ? toBool(src.pauseOnLock) : d.pauseOnLock,
-  };
-}
-
 
 /**
  * 动态桌面帧率上限。
@@ -683,7 +644,6 @@ module.exports = {
   resolveProfile,
   writeProfile,
   clampInterval,
-  clampLiveStage,
   clampLiveStage,
   newAlbumId,
   normalizeAlbums,

@@ -83,15 +83,19 @@ function coversWork(rect, work) {
  * @param {boolean} input.away      QUNS_NOT_PRESENT（锁屏 / 屏保 / 息屏）
  * @param {boolean} [input.pauseOnFullscreen=true]
  * @param {boolean} [input.pauseOnAway=true]
+ * @param {boolean} [input.battery=false]      正在用电池供电（48 轮：平板场景）
+ * @param {boolean} [input.pauseOnBattery=false] 用电池时全部暂停
  * @returns {{ paused: Set<string>, reasons: Object<string,string> }}
- *   reasons: id -> 'away' | 'fullscreen'
+ *   reasons: id -> 'away' | 'battery' | 'fullscreen'
  */
 function evaluatePause(input) {
   const monitors = (input && input.monitors) || [];
   const windows = (input && input.windows) || [];
   const away = Boolean(input && input.away);
+  const battery = Boolean(input && input.battery);
   const pauseOnFullscreen = !(input && input.pauseOnFullscreen === false);
   const pauseOnAway = !(input && input.pauseOnAway === false);
+  const pauseOnBattery = Boolean(input && input.pauseOnBattery);
 
   const eligible = windows.filter(eligibleWindow);
   const paused = new Set();
@@ -101,6 +105,8 @@ function evaluatePause(input) {
     let why = null;
     if (away && pauseOnAway) {
       why = 'away';
+    } else if (battery && pauseOnBattery) {
+      why = 'battery';                            // 电池优先于全屏判定：平板省电压倒一切
     } else if (pauseOnFullscreen && eligible.some((w) => coversWork(w.rect, m.work))) {
       why = 'fullscreen';
     }
@@ -272,8 +278,10 @@ function tickNow(flags) {
     monitors: workAreas(),
     windows: s.windows,
     away: s.away,
+    battery: f.battery === true,
     pauseOnFullscreen: f.pauseOnFullscreen !== false,
     pauseOnAway: f.pauseOnAway !== false,
+    pauseOnBattery: f.pauseOnBattery === true,
   });
   const key = `${s.away ? 'A' : '-'}|[${[...paused].sort((x, y) => x - y).join(',')}]`;
   const changed = last === null || key !== last.key;

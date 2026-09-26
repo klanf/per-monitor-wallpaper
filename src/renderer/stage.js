@@ -226,6 +226,15 @@ function canvasSize(canvas) {
   return { w, h };
 }
 
+/** 把画布缩到 1×1 释放整屏后台缓冲（48 轮）：只对「即将闲置」的图层用，
+ *  下次绘制时 canvasSize 会按屏幕重新分配 */
+function shrinkCanvas(canvas) {
+  if (canvas.width > 1) {
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+}
+
 function coverRect(W, H, bw, bh, scale = 1) {
   const r = Math.max(W / bw, H / bh) * scale;
   const w = bw * r, h = bh * r;
@@ -418,7 +427,7 @@ function animTick(now) {
       { x: lerp(0, v.toT.x, e), y: lerp(0, v.toT.y, e), s: lerp(1, v.toT.s, e) },
       lerp(1, v.toO, e), v.u);
   }
-  if (p >= 1) {
+    if (p >= 1) {
     // 两层都钉死在原位：后层透明避免残留位移；前层必须钉回 scale=1 ——
     // zoom 变体的 toT.s=0.985（终态略小一圈），不钉回去的话四边会永久留缝，
     // 露出底下的旧图层（2026-09-25 真机抓屏实测：左右下各 11px 缝，内容缩 1.5%）。
@@ -427,6 +436,7 @@ function animTick(now) {
     clearFx(incoming.root);
     setLayer(outgoing.root, REST, 0, 'px');
     setLayer(incoming.root, REST, 1, 'px');
+    shrinkCanvas(outgoing.canvas);   // 48 轮：后台层退出合成，整屏显存下次过渡再分配
     anim = null;
   }
 }
@@ -448,7 +458,12 @@ function ensureRaf() {
       if (particleFx) particleFx.frame(now);
     }
     if (frozen) return;                    // 暂停：这一帧画完就停表
-    if (anim || currentEntry) rafId = requestAnimationFrame(loop);
+    // 48 轮：静态画面不再空转 —— 只有「真的有东西在动」才续帧：过渡中 / 视频壁纸 /
+    // Ken Burns / 呼吸 / 粒子层。纯静态图 + 全特效关闭时循环死掉（渲染心跳归零），
+    // 下一次 tick / showFrame / applyChannelConfig / 暂停恢复都会 ensureRaf 唤醒。
+    if (anim || activeVideo || cfg.kenBurns || cfg.breath || (particleFx && particleFx.isActive())) {
+      rafId = requestAnimationFrame(loop);
+    }
   };
   rafId = requestAnimationFrame(loop);
 }
@@ -545,6 +560,7 @@ async function showFrame(entry, dir, animate) {
     clearFx(outgoing.root);
     setLayer(incoming.root, REST, 1, 'px');
     setLayer(outgoing.root, REST, 0, 'px');
+    shrinkCanvas(outgoing.canvas);   // 48 轮：后台层释放显存（同上）
     active = incomingKey;
     ensureRaf();
     return;
@@ -612,6 +628,8 @@ function applyChannelConfig() {
   if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
   rollParticles();
   if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
+  // 特效从关到开会把「静态停表」的循环唤醒（48 轮配套；已在跑/冻结时 ensureRaf 自己会挡）
+  ensureRaf();
 }
 
 /** random：每次换图从全部种类里抽一种。非 random 的值原样生效（含 '' = 关） */

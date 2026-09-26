@@ -2324,6 +2324,70 @@ profile 载荷两路都带 particles。而用户配置里一块屏覆盖了 `par
   159 / 42 / 35 / 28 全绿。
 - 观感与单屏行为未实测：等用户上机验收（尤其幻影屏过滤是否命中他那台机器）。
 
+## 第四十八轮：性能优化周（平板供电场景驱动）
+
+### 现象：性能三连问
+
+用户把壁纸跑在华为 MateBook E 2022（平板，供电吃紧）上，要求「能做的都做」，
+外加一条：全屏暂停时把「切图」也停掉。
+
+### A. fpsCap 断线（bug 级，实锤）
+
+`liveStage.fpsCap` 从未生效：profile 的 fpsCap 取的是**顶层** config.fpsCap ——
+这个键根本不存在（真值住在嵌套的 liveStage 里），stage 拿到 undefined 永远跑默认 60。
+用户的 30 形同虚设，舞台渲染量整整翻倍。修复：resolveProfile 里 fpsCap 回落
+liveStage.fpsCap（每屏显式覆盖仍优先）。顺手清掉 store.js 的历史重复定义：
+liveWallpaper/liveStage 双份 DEFAULTS、clampLiveFps/clampLiveStage 双份函数、
+module.exports 重复导出 —— 全是「后定义生效」的暗坑。
+
+### B. 静态画面停表
+
+rAF 循环条件 `anim || currentEntry` 恒真（currentEntry 首帧后永远非空），
+纯静态壁纸也在以刷新率空跑心跳。改为「有东西在动才续帧」：过渡中 / 视频壁纸 /
+Ken Burns / 呼吸 / 粒子层任一开启；否则循环死掉，tick / showFrame /
+applyChannelConfig / 暂停恢复都会 ensureRaf 唤醒。静态图 + 无特效 = 渲染心跳归零。
+
+### C. 粒子画布 DPR 封顶 1
+
+粒子不读文字，不需要 retina 精度。DPR 封顶 1 后填充率按 dpr² 下降
+（150% 屏 −56%，2K 屏 −75%），观感只是边缘更柔。图层画布保持满 DPR。
+
+### D. 雨/雪/水花批量绘制
+
+alpha 归并 3 档、同档合并成一条 path：300 粒从 300 次 stroke/fill 降到 3 次。
+fireflies/embers（逐粒闪烁）、樱花/落叶（逐粒旋转）保持逐粒绘制。
+
+### E. 后台图层释放
+
+过渡结束把被替换层的整屏 canvas 缩到 1×1（下次过渡由 canvasSize 重新分配），
+每屏常驻省一块全屏物理像素缓冲（竖屏 4K ≈ 16MB）。
+
+### F. 扫描缓存落盘 + 启动后台校准
+
+大图库冷启动要扫完才出画面。每轮真扫后把清单原子落盘到 userData/scan-cache.json
+（>10 万条的目录跳过）；下次启动先把上次的清单喂进 scanCache 立即建台出画面，
+再由 drainRefreshQueue() 后台逐目录真扫校准，有变化（新增/删除）补一次 rebuild ——
+索引按路径对齐，播放进度不跳；死图/坏图由 §24/§25 的既有兜底消化。
+
+### G. 深度暂停：全屏/锁屏/电池时「停表不走针」
+
+此前 stage:pause 只停渲染（rAF 取消），调度器照样走针、照样尝试写入。
+48 轮：liveStage 新增 isChannelFrozen(channelId)，main 注入调度器；定时器到点
+发现频道被冻结 → 不推进、不写入，1 秒后再看一眼，取消全屏后 ≤1s 恢复。
+手动翻页不受影响。冻结只影响自己那块屏（与按屏暂停的既有哲学一致）。
+**pauseOnBattery 顺带接线** —— 配置里这个键此前从未被读取：用电池时全停
+（MateBook E 的核心诉求）。evaluatePause 纯函数加 battery 规则，默认关闭，
+既有单测不受影响。
+
+### 验证
+
+- 纯 Node 全绿：test-scheduler 159 → **162**（新增 §30 冻结停表：冻结不推进不写入 /
+  只影响自己 / 解冻 ≤1s 恢复）、live 42、particles 35、resume 28、wiring **38**。
+- 真机探针：14 种特效逐种取证全绿（批量绘制后 rain=11512 等，阈值全过）、
+  启动首帧探针 first-frame-ok（停表与后台层释放不影响首帧）。
+- 量化收益待用户上机实测：任务管理器 GPU 占用（fpsCap 30 × 静态停表）与
+  平板电池续航。
+
 ## 第四十六轮：README 补全动态桌面与粒子特效，推远端，出包
 
 ### 现象：文档停在第二十五轮的时代，代码要见人了
