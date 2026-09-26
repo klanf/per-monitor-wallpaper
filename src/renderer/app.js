@@ -1344,8 +1344,23 @@ function albumOptions(selectedId, withBlank = true) {
   return opts.join('');
 }
 
+/**
+ * 每屏卡片的粒子下拉。三态语义：
+ *   '' = 跟随全局（不写覆盖，落盘发 null 删除）；'off' = 显式关闭（覆盖写 ''）；
+ *   其余 = 这块屏固定用该种类（random = 每次换图随机抽）。
+ */
+function particleOptions(value) {
+  const opts = [
+    ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
+    ['random', '随机（每次换图抽一种）'],
+  ];
+  return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
+}
+
 function cardHtml(ch) {
   const p = ch.profile;
+  // 「跟随全局」要显示的是有没有**原始覆盖**，resolveProfile 合并后的值区分不出来 —— 直接读 monitors
+  const ov = (state.config && state.config.monitors && state.config.monitors[ch.id]) || {};
   const previewing = ch.id === state.previewId;
   const classes = ['monitor-card'];
   if (previewing) classes.push('previewing');
@@ -1432,6 +1447,16 @@ function cardHtml(ch) {
       <div class="mc-block">
         <label class="field-label">填充方式</label>
         <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示']])}</div>
+      </div>
+      <div class="mc-block">
+        <label class="field-label">粒子特效</label>
+        <div class="field-row">
+          <select class="select sm" data-field="particles" title="这块屏的粒子特效；跟随全局 = 用「系统」页里的全局设置">${particleOptions(ov.particles)}</select>
+          <input type="number" class="select sm" data-field="particleCount" min="0" max="1000" step="4"
+            placeholder="数量跟随全局" title="这块屏的粒子数量；留空 = 跟随全局（0~1000）"
+            value="${ov.particleCount !== undefined ? ov.particleCount : ''}" style="width:118px;flex:0 0 auto">
+        </div>
+        <div class="field-hint">随机 = 每次换图在雨落 / 樱花落之间抽一种；仅动态桌面开启时可见。</div>
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
     </div>
@@ -2540,9 +2565,21 @@ function bindSettings() {
           : '已清空这块屏的相簿（不再轮播图片）');
       } else if (field === 'animation') {
         await pushProfile(id, { animation: e.target.value });
+      } else if (field === 'particles') {
+        // '' = 跟随全局（null 删除覆盖回落顶层）；'off' = 显式关闭（覆盖写 ''）
+        const v = e.target.value;
+        const result = await pushProfile(id, { particles: v === '' ? null : (v === 'off' ? '' : v) });
+        // 卡片的「跟随全局」态读的是 monitors 原始覆盖，用返回的最新 config 重画
+        if (result && result.config) { state.config = result.config; renderCards(); }
       }
     }
     else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
+    else if (e.target.type === 'number') {
+      // 数值类覆盖（粒子数量）：留空 = 跟随全局（null 删除覆盖回落顶层）
+      const raw = String(e.target.value).trim();
+      const result = await pushProfile(id, { [field]: raw === '' ? null : Math.min(1000, Math.max(0, Math.round(Number(raw) || 0))) });
+      if (result && result.config) { state.config = result.config; renderCards(); }
+    }
     else if (e.target.type === 'checkbox') await pushProfile(id, { [field]: e.target.checked });
   });
 

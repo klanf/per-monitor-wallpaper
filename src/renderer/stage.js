@@ -76,8 +76,9 @@ const cfg = {
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
-  particles: '',               // 粒子特效（profile.particles：''/rain/sakura）
+  particles: '',               // 粒子特效（profile.particles：''/rain/sakura/random）
   particleCount: 256,          // 粒子数量（profile.particleCount；收紧 0~1000 在 particles.js）
+  particlesActive: '',         // 实际生效种类：particles='random' 时每次换图重抽（rollParticles）
 };
 
 const layers = {
@@ -606,7 +607,15 @@ function applyChannelConfig() {
   // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
   if (p.particles !== undefined) cfg.particles = String(p.particles || '');
   if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
-  if (particleFx) particleFx.setConfig(cfg.particles, cfg.particleCount);
+  rollParticles();
+  if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
+}
+
+/** random：每次换图重抽一种（rain/sakura）。非 random 的值原样生效（含 '' = 关） */
+function rollParticles() {
+  cfg.particlesActive = cfg.particles === 'random'
+    ? (Math.random() < 0.5 ? 'rain' : 'sakura')
+    : cfg.particles;
 }
 
 async function applyChannels(list) {
@@ -724,6 +733,10 @@ async function init() {
     if (!payload || payload.id !== myChannel) return;   // 每块 stage 只听自己频道
     if (frozen) return;   // 暂停：留在当前帧，新图等恢复后下一拍再上
     if (payload.entry) {
+      if (cfg.particles === 'random') {   // 随机粒子：每次换图重抽一种（手动翻页也走 tick）
+        rollParticles();
+        if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
+      }
       showFrame(payload.entry, payload.dir, true);
     } else {
       currentEntry = null;   // 频道空了（相簿被清空）→ 黑屏

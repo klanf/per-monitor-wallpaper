@@ -2080,6 +2080,42 @@ wpimg 流压住 3 秒（模拟慢盘 / 半同步文件），在「首帧上屏�
   test-particles **28** / verify-resume **28**。
 - 桌面观感：重启实例后首帧应立即可见，不再等 interval。
 
+## 第四十轮：粒子特效按屏配置 + 「随机」种类
+
+### 现象：特效想一块屏一个样，换图想换花样
+
+用户拍板两件事：① 粒子特效以**显示器为单位**配置（一块屏下雨、另一块飘樱花）；
+② 新增「随机」种类——**每次壁纸切换时在雨落 / 樱花落之间随机抽一种**。
+
+### 设计决定
+
+- **沿用既有覆盖模型，不发明新通道**：`particles` / `particleCount` 本来就在
+  PROFILE_KEYS 里（随 channels 载荷广播到每块舞台），这一轮只是把 UI 接上——
+  每屏卡片加控件，顶部「系统」页的全局设置保留为默认值。三态语义：
+  「跟随全局」= 不写覆盖（落盘发 `null`，writeProfile 删除该键回落顶层）；
+  「关闭」= 显式写 `''`；其余 = 这块屏固定用该种类。
+- **卡片读「跟随全局」态必须读 monitors 原始覆盖**，resolveProfile 合并后的值
+  区分不出「没设过」和「设成和全局一样」——cardHtml 直接读
+  `state.config.monitors[ch.id]`；存完用 set-profile 返回的最新 config 重画
+  （该接口本来就带 `config: store.get()`，不用再发一次 config:get）。
+- **random 在舞台侧解析，不进 particles.js**：`cfg.particles` 存配置值，
+  `cfg.particlesActive` 存实际生效种类；每次 channel:tick（手动翻页也走 tick）
+  重抽一次并同步给粒子层，particles.js 的白名单继续只认 rain/sakura。
+
+### 改动
+
+- `stage.js`：新增 `rollParticles()` + `cfg.particlesActive`；applyChannelConfig
+  解析后生效，onTick 在 random 时每次换图重抽。
+- `app.js`：每屏卡片「更多」区加「粒子特效」块（种类下拉 + 数量输入，留空 =
+  跟随全局）；change 委托新增 particles / number 两类分支（null 语义见上）。
+- `index.html`：全局「粒子特效」下拉加「随机（每次换图抽一种）」选项。
+
+### 验证
+
+- 纯 Node 全绿：159 / 42 / 37 / 28（particles）/ 28（resume）；app.js / stage.js
+  语法检查通过；字段块总数保持 22（卡片控件不是 field block）。
+- 桌面观感未实测：等用户重启验收（一块屏下雨另一块飘樱花、random 换图换特效）。
+
 ## 尚未迁移的功能
 
 - 文件监控（原版有 `file_check_timer` 自动感知文件被删）——
