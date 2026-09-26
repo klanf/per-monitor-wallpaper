@@ -41,6 +41,22 @@ const REST = { x: 0, y: 0, s: 1, o: 1 };   // 层的静止状态
  */
 const KEN = { period: 45_000, amplitude: 0.045 };
 
+/**
+ * 呼吸缩放（profile.breath）：比 Ken Burns 快一档的匀称呼吸（6s 一吸一呼，±2%）。
+ * 与 Ken Burns 叠加时是两个振荡相乘，视觉上「大潮」里带「小潮」。
+ * ⚠️ 同样必须连续：用 cos 从 0 相位起步（scale 从 1 平滑出发），永不重置相位。
+ */
+const BREATH = { period: 6_000, amplitude: 0.02 };
+
+/** 时段滤镜：色温罩在 #tod（CSS 渐变 + mix-blend-mode），去饱和/压暗写在 .layer 的 filter */
+const TOD_FILTERS = {
+  morning:  'brightness(1.04) saturate(1.05)',
+  noon:     'brightness(1.06) contrast(1.02)',
+  overcast: 'saturate(0.6) brightness(0.93) contrast(0.97)',
+  dusk:     'brightness(0.96) saturate(1.12)',
+  night:    'brightness(0.72) saturate(0.82)',
+};
+
 /** resize 后重绘的防抖 */
 const RESIZE_DEBOUNCE = 200;
 
@@ -58,11 +74,14 @@ const cfg = {
   fpsCap: 60,         // 30 在 60Hz 屏上过渡明显掉帧；60 = 跟满垂直同步
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
+  breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
+  timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
 };
 
 const layers = {
   A: null, B: null,            // { root, canvas, ctx }，init 时填充
 };
+let todEl = null;              // 时段滤镜罩层（#tod，init 时填充）
 let active = 'B';
 
 let animToken = 0;             // 过渡令牌：新过渡让进行中的旧过渡作废
@@ -355,8 +374,8 @@ function gate(now) {
 
 function kenTick(now) {
   const layer = layers[active];
-  if (!cfg.kenBurns) {
-    // 关掉时把画布钉回原位（只写一次，别每帧都碰样式）
+  if (!cfg.kenBurns && !cfg.breath) {
+    // 两个缩放特效都关时把画布钉回原位（只写一次，别每帧都碰样式）
     if (!ken._cleared) {
       layer.canvas.style.transform = 'none';
       ken._cleared = true;
@@ -365,11 +384,30 @@ function kenTick(now) {
   }
   ken._cleared = false;
   if (!currentEntry) return;
-  const t = ((now - ken.start) % (KEN.period * 2)) / KEN.period;
-  const k = t <= 1 ? t : 2 - t;                       // 0→1→0 往返，无跳变
-  const e = easeCubicBezier(k);
-  const s = 1 + KEN.amplitude * e;                    // ≥1，永不露边
+  let s = 1;
+  if (cfg.kenBurns) {
+    const t = ((now - ken.start) % (KEN.period * 2)) / KEN.period;
+    const k = t <= 1 ? t : 2 - t;                       // 0→1→0 往返，无跳变
+    const e = easeCubicBezier(k);
+    s += KEN.amplitude * e;                             // ≥1，永不露边
+  }
+  if (cfg.breath) {
+    // cos 从 0 相位起步：scale 从 1 平滑出发，不重置相位（重置=瞬跳，KEN 的教训）
+    const ph = (now % BREATH.period) / BREATH.period;   // 0..1
+    s += BREATH.amplitude * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
+  }
   layer.canvas.style.transform = `scale(${s.toFixed(5)})`;
+}
+
+/** 应用时段滤镜：#tod 罩色温 + .layer 根上写 filter（去饱和/压暗） */
+function applyTod(mode) {
+  const m = TOD_FILTERS[mode] ? mode : '';
+  cfg.timeOfDay = m;
+  for (const key of ['A', 'B']) {
+    const layer = layers[key];
+    if (layer && layer.root) layer.root.style.filter = m ? TOD_FILTERS[m] : '';
+  }
+  if (todEl) todEl.className = m ? `tod-on tod-${m}` : '';
 }
 
 function animTick(now) {
@@ -560,6 +598,10 @@ function applyChannelConfig() {
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
+  // 呼吸缩放（profile 不写 = 默认关）
+  if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
+  // 时段滤镜（profile 不写 = 无）
+  if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
 }
 
 async function applyChannels(list) {
@@ -624,6 +666,7 @@ async function init() {
   };
   layers.A.ctx = layers.A.canvas.getContext('2d');
   layers.B.ctx = layers.B.canvas.getContext('2d');
+  todEl = document.getElementById('tod');
 
   window.addEventListener('resize', onResize);
   // 舞台盖在图标层之上必然吃掉鼠标（LAYERED 穿透会让 Chromium 白屏，见 desktopHost）。

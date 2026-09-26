@@ -2103,6 +2103,10 @@ function applyConfigToUI() {
   $('cfg-apply-on-start').checked = c.applyOnStart !== false;
   $('cfg-resume-last').checked = c.resumeLast !== false;
 
+  // ---- 动态桌面 ----
+  $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
+  $('cfg-video-play-full').checked = c.videoPlayFull === true;
+
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
   $('cfg-close-to-tray').checked = c.closeToTray !== false;
@@ -2285,6 +2289,17 @@ function bindSettings() {
   $('cfg-resume-last').addEventListener('change', async (e) => {
     await save({ resumeLast: e.target.checked });
     toast(e.target.checked ? '下次启动会从上次那张继续播' : '下次启动会从第一张开始');
+  });
+
+  // ---- 动态桌面 ----
+  $('cfg-live-wallpaper').addEventListener('change', async (e) => {
+    await save({ liveWallpaper: e.target.checked });
+    toast(e.target.checked ? '动态桌面已开启：桌面壁纸随切换实时更新' : '动态桌面已关闭：桌面回到普通静态壁纸');
+  });
+
+  $('cfg-video-play-full').addEventListener('change', async (e) => {
+    await save({ videoPlayFull: e.target.checked });
+    toast(e.target.checked ? '视频将播放完整再切下一张' : '视频恢复按间隔时间切换');
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {

@@ -54,7 +54,7 @@ const orphanFields = [...block.matchAll(/^ {2}<div class="field[ "]/gm)];
 check('没有字段块漏在分类页外面', orphanFields.length === 0, `漏了 ${orphanFields.length} 个`);
 
 const fieldCount = (block.match(/^ {6}<div class="field[ "]/gm) || []).length;
-check('21 个字段块都归进了某一页', fieldCount === 21, String(fieldCount));
+check('22 个字段块都归进了某一页', fieldCount === 22, String(fieldCount));
 
 // 每个页至少有一个字段块
 const perPane = {};

@@ -29,3 +29,48 @@ html, body {
   will-change: transform;     /* Ken Burns 作用在内层，与外层过渡互不干扰 */
   backface-visibility: hidden;
 }
+
+/* ---------------------------------------------------------------- 时段滤镜 */
+
+/* 盖在图层之上的调色层：渐变 + mix-blend-mode 出色温，去饱和/压暗由 stage.js
+   写在 .layer 根上的 filter 完成（canvas 的 transform 归 Ken Burns，互不冲突）。
+   静态样式，不进 rAF —— 开销只有一层合成的钱。 */
+#tod {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: none;              /* JS 按配置切 display，无滤镜时零合成开销 */
+  will-change: opacity;
+}
+
+#tod.tod-on { display: block; }
+
+/* 早晨：暖金斜阳，整体略提亮 */
+#tod.tod-morning {
+  background: linear-gradient(200deg, rgba(255,196,120,.38) 0%, rgba(255,226,168,.14) 55%, rgba(255,244,220,.05) 100%);
+  mix-blend-mode: soft-light;
+}
+
+/* 中午：顶光，白且通透，几乎只提亮 */
+#tod.tod-noon {
+  background: radial-gradient(130% 95% at 50% 12%, rgba(255,255,246,.34) 0%, rgba(255,255,246,.06) 68%, rgba(255,255,246,0) 100%);
+  mix-blend-mode: soft-light;
+}
+
+/* 阴天：灰蓝低饱和（去饱和主体在 .layer 的 filter 里），罩一层灰 */
+#tod.tod-overcast {
+  background: linear-gradient(180deg, rgba(150,160,175,.30) 0%, rgba(128,138,152,.36) 100%);
+  mix-blend-mode: soft-light;
+}
+
+/* 黄昏：橙→品红→紫的落日渐变，overlay 拉对比 */
+#tod.tod-dusk {
+  background: linear-gradient(195deg, rgba(255,128,58,.36) 0%, rgba(226,84,96,.26) 48%, rgba(88,40,118,.32) 100%);
+  mix-blend-mode: overlay;
+}
+
+/* 夜晚：深蓝压暗（multiply 出夜色），微微偏冷 */
+#tod.tod-night {
+  background: linear-gradient(180deg, rgba(10,18,52,.62) 0%, rgba(20,30,76,.50) 100%);
+  mix-blend-mode: multiply;
+}
