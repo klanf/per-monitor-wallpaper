@@ -209,6 +209,20 @@ function main() {
       && stagePlan.isStagePaused({}, paused, false) === false);
   }
 
+  { // ── canShowStage：首帧亮窗决策（53 轮防启动黑屏）──
+    const rec = { hiddenForPause: false, displayId: 1 };
+    const away = false;
+    const paused = new Set();          // 空集合 = 无自动暂停
+    check('canShowStage：正常态 → 可亮', stagePlan.canShowStage(rec, paused, away) === true);
+    check('canShowStage：自动暂停 → 不可亮', stagePlan.canShowStage(rec, new Set([1]), away) === false);
+    check('canShowStage：away（锁屏/挂机）→ 不可亮', stagePlan.canShowStage(rec, paused, true) === false);
+    check('canShowStage：hiddenForPause（已藏）→ 不可亮',
+      stagePlan.canShowStage({ hiddenForPause: true, displayId: 1 }, paused, away) === false);
+    check('canShowStage：统一频道（displayIds 任一覆盖屏暂停）→ 不可亮',
+      stagePlan.canShowStage({ hiddenForPause: false, displayIds: [1, 2] }, new Set([2]), away) === false);
+    check('canShowStage：空记录 → 防御性不可亮', stagePlan.canShowStage(null, paused, away) === false);
+  }
+
   // -------------------------------------------------------------------------
   console.log('\n§10 统一频道展开（53 轮：span 跨屏一幅 / per-display 每屏同一幅）');
   // -------------------------------------------------------------------------

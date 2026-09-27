@@ -109,4 +109,15 @@ function expandUnifiedChannel(ch, displays, split) {
   }));
 }
 
-module.exports = { virtualBounds, isStagePaused, expandUnifiedChannel };
+/**
+ * 首帧/兜底显示决策（53 轮防启动黑屏）：舞台窗口当前是否允许亮出来。
+ * 窗口在挂载后先保持隐藏，等渲染端首帧画上屏（stage:first-frame）再由本函数
+ * 判定能不能 show —— 暂停被藏的（hiddenForPause）和处于自动暂停的都不亮，
+ * 免得「先 show 后画」把纯黑底色露给桌面。
+ */
+function canShowStage(stage, pausedIds, away) {
+  if (!stage || stage.hiddenForPause) return false;
+  return !isStagePaused(stage, pausedIds, away);
+}
+
+module.exports = { virtualBounds, isStagePaused, canShowStage, expandUnifiedChannel };

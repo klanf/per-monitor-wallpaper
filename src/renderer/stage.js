@@ -553,6 +553,12 @@ async function showFrame(entry, dir, animate) {
     drawSource(incoming, src, sw, sh);                 // 先画上首帧，之后 rAF 接管
   }
 
+  // 53 轮防启动黑屏：首帧真正画上屏才通知主进程亮窗口（挂载后窗口一直藏着）
+  if (!showFrame._ffSent) {
+    showFrame._ffSent = true;
+    try { window.wp.stageFirstFrame(); } catch (_) { /* 通知失败走 3s 兜底 */ }
+  }
+
   const duration = animate ? Math.max(0, cfg.duration || 0) : 0;
   if (duration === 0) {
     anim = null;   // 快照式上屏作废进行中的过渡：两层刚被钉回原位，旧过渡的收尾帧不能再写它们

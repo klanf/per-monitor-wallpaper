@@ -73,6 +73,8 @@ contextBridge.exposeInMainWorld('wp', {
   stageUrl,
   /** 舞台报告「当前视频播完了 / 加载失败了」（videoPlayFull 时调度器靠这个推进） */
   stageVideoEnded: (channelId) => ipcRenderer.invoke('stage:video-ended', channelId),
+  /** 首帧画上屏了（53 轮防启动黑屏）：主进程收到后才把舞台窗口 show 出来 */
+  stageFirstFrame: () => ipcRenderer.send('stage:first-frame'),
   thumbStats: () => ipcRenderer.invoke('thumbs:stats'),
   thumbPrune: () => ipcRenderer.invoke('thumbs:prune'),
   thumbClear: () => ipcRenderer.invoke('thumbs:clear'),

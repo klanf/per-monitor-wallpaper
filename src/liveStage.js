@@ -160,6 +160,44 @@ function setPauseHide(value) {
   pauseHide = value !== false;
 }
 
+/**
+ * 首帧等待（53 轮防启动黑屏）：挂载/重载后窗口保持隐藏，等渲染端把第一帧真正
+ * 画上屏（stage:first-frame）再亮 —— 「先 show 后画」会把纯黑底色露给桌面。
+ * 3s 超时兜底：坏图/极端情况下不至于让桌面一直空着（调度器推进迟早带来新帧）。
+ */
+function waitForFirstFrame(rec, label) {
+  rec.awaitingFirstFrame = true;
+  if (rec.firstFrameTimer) clearTimeout(rec.firstFrameTimer);
+  rec.firstFrameTimer = setTimeout(() => {
+    if (!rec.awaitingFirstFrame) return;
+    rec.awaitingFirstFrame = false;
+    rec.firstFrameTimer = null;
+    console.warn(`[live-stage] ${label} 首帧超时（3s），兜底显示`);
+    if (stagePlan.canShowStage(rec, pauseDisplays, pauseAway)) {
+      try { rec.win.showInactive(); } catch { /* 正在销毁 */ }
+    } else {
+      rec.hiddenForPause = true;       // 暂停中被兜底：保持隐藏，恢复时 applyPauseState 亮
+    }
+  }, 3000);
+}
+
+/** 渲染端首帧画上屏（stage:first-frame）→ 判定无暂停后亮出窗口 */
+function onFirstFrame(sender) {
+  for (const rec of stages.values()) {
+    if (rec.win && !rec.win.isDestroyed() && rec.win.webContents === sender) {
+      if (!rec.awaitingFirstFrame) return;
+      if (rec.firstFrameTimer) { clearTimeout(rec.firstFrameTimer); rec.firstFrameTimer = null; }
+      rec.awaitingFirstFrame = false;
+      if (stagePlan.canShowStage(rec, pauseDisplays, pauseAway)) {
+        try { rec.win.showInactive(); } catch { /* 正在销毁 */ }
+      } else {
+        rec.hiddenForPause = true;     // 自动暂停中：保持隐藏，恢复时亮
+      }
+      return;
+    }
+  }
+}
+
 /** 统一模式动态桌面形态：'span' 跨屏拼一幅（默认）| 'per-display' 每屏同一幅（53 轮） */
 let unifiedSplit = 'span';
 
@@ -204,8 +242,10 @@ function refreshPauseMessages(reasons) {
           rec.win.hide();               // 不销毁：恢复时 showInactive 原帧续播
           rec.hiddenForPause = true;
         } else if (!autoPaused && rec.hiddenForPause) {
-          rec.win.showInactive();       // 不抢焦点（与挂载/重挂同款纪律）
           rec.hiddenForPause = false;
+          if (!rec.awaitingFirstFrame) {
+            rec.win.showInactive();     // 不抢焦点（与挂载/重挂同款纪律）
+          }                             // 首帧未到 → 等 onFirstFrame/兜底再亮
         }
       }
     } catch { /* 窗口正在销毁 */ }
@@ -305,7 +345,11 @@ async function createStage(ch) {
     });
     // 渲染进程崩了（GPU 驱动复位之类）→ 重载页面；窗口与挂载都还在
     win.webContents.on('render-process-gone', () => {
-      if (running && rec.win && !rec.win.isDestroyed()) rec.win.webContents.reload();
+      if (running && rec.win && !rec.win.isDestroyed()) {
+        rec.win.hide();                  // 重载后内容清空（纯黑底）：藏住等新首帧
+        waitForFirstFrame(rec, ch.id);
+        rec.win.webContents.reload();
+      }
     });
 
     await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
@@ -321,7 +365,10 @@ async function createStage(ch) {
     const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys);
     if (!m.ok) throw new Error(`挂载失败 @${m.step}: ${m.error}`);
 
-    win.showInactive();                // 不抢焦点
+    // 53 轮防启动黑屏：backgroundColor 是纯黑，show 之后到渲染端首帧 showFrame
+    // 之间桌面会闪一块黑（冷启动几百 ms~2s）。先保持隐藏，等 stage:first-frame
+    // 再亮（3s 超时兜底），空窗期桌面显示的是系统壁纸。
+    waitForFirstFrame(rec, ch.id);
     rec.fails = 0;
     rec.degraded = false;
     recreateFails.delete(ch.id);       // 挂载成功 → 重建失败计数清零
@@ -348,6 +395,7 @@ function destroyStage(id) {
   const rec = stages.get(id);
   if (!rec) return;
   stages.delete(id);
+  if (rec.firstFrameTimer) { clearTimeout(rec.firstFrameTimer); rec.firstFrameTimer = null; }
   try {
     if (rec.hwnd) desktopHost.unmount(rec.hwnd);   // 先脱离桌面树，窗口销毁时不留残影
   } catch { /* koffi 不可用时窗口销毁同样会移除窗口本身 */ }
@@ -396,7 +444,7 @@ function watchOnce() {
             if (m.ok) {
               // 暂停期间被我们主动藏掉的窗口：重挂完别急着 show，
               // 保持隐藏态等恢复（否则锁屏/全屏暂停中重挂会突然亮出来）
-              if (!rec.hiddenForPause) rec.win.showInactive();
+              if (!rec.hiddenForPause && !rec.awaitingFirstFrame) rec.win.showInactive();
               rec.fails = 0;
               console.log(`[live-stage] ${id} 重挂成功（Explorer 重启后）${rec.hiddenForPause ? '，保持暂停隐藏态' : ''}`);
             }
@@ -587,7 +635,7 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
-  isChannelFrozen, setPauseHide, applyManualPause, setUnifiedSplit,
+  isChannelFrozen, setPauseHide, applyManualPause, setUnifiedSplit, onFirstFrame,
   showDesktopContextMenu,
   cancelDesktopMenu,
 };

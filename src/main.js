@@ -1245,6 +1245,8 @@ function registerIpc() {
   ipcMain.handle('config:set', (_e, patch) => applyConfigChange(patch || {}));
   // videoPlayFull（视频播完再切）：舞台渲染端视频 ended / 加载失败时推进频道。
   // advanced=false（暂停中 / 当前已不是视频）时渲染端原地重播，视频不会停在最后一帧。
+  // 53 轮防启动黑屏：渲染端首帧画上屏 → 亮出对应舞台窗口（挂载后一直藏着）
+  ipcMain.on('stage:first-frame', (e) => liveStage.onFirstFrame(e.sender));
   ipcMain.handle('stage:video-ended', async (_e, channelId) => {
     if (!scheduler || typeof channelId !== 'string') return { advanced: false };
     const next = await scheduler.videoEnded(channelId);
