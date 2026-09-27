@@ -178,6 +178,7 @@
           <option value="split">上下合拢</option>
           <option value="random">随机轮换</option>
         </select>
+        <div class="field-hint">作用于主窗口预览和动态桌面画面。系统壁纸是静态写入、没有动画 —— 关掉动态桌面后这里改了不会有桌面观感变化。</div>
       </div>
 
       <div class="field unified-only">
@@ -215,7 +216,7 @@
           <input type="range" id="cfg-particle-count" min="0" max="1000" step="4" style="flex:1">
           <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
         </div>
-        <div class="field-hint">全局默认，显示器卡片里可按屏覆盖（「跟随全局」的屏吃这里）；烟花数量内置（最多同时 5 发）。</div>
+        <div class="field-hint">全局默认，显示器卡片里可按屏覆盖（「跟随全局」的屏吃这里）；烟花数量内置（最多同时 5 发）。只作用于动态桌面画面，不写入系统壁纸。</div>
       </div>
 
       <!-- 53 轮：每屏模式下粒子在卡片里设，这里只留指路牌 -->
@@ -274,7 +275,7 @@
           <button data-value="span" class="seg-item">跨屏拼一幅</button>
           <button data-value="per-display" class="seg-item">每屏同一幅</button>
         </div>
-        <div class="field-hint" style="margin-top:4px">「跨屏拼一幅」= 一块画面横跨所有显示器（一张大图铺满整个桌面）；「每屏同一幅」= 每块显示器各自显示当前这张（各自裁切铺满）。改完即时生效。</div>
+        <div class="field-hint" style="margin-top:4px">「跨屏拼一幅」= 一块画面横跨所有显示器（一张大图铺满整个桌面）；「每屏同一幅」= 每块显示器各自显示当前这张（各自裁切铺满）。改完即时生效。需先在「系统」页开启动态桌面。</div>
       </div>
     </div>
 
@@ -285,6 +286,7 @@
           <button data-value="cover" class="seg-item">铺满裁切</button>
           <button data-value="contain" class="seg-item">完整显示</button>
         </div>
+        <div class="field-hint">作用于主窗口预览和动态桌面画面的裁切方式。系统壁纸按原图文件写入，填充由 Windows 自己的壁纸填充设置决定，不受这里影响。</div>
       </div>
 
       <!-- ------------------------------------------------ 工具栏自动隐藏 -->
@@ -439,7 +441,7 @@
           <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 auto">±2%</span>
         </div>
         <label class="check"><input type="checkbox" id="cfg-live-hide-paused"><span>全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏游戏黑屏，推荐开）</span></label>
-        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。画面形态（跨屏拼一幅/每屏同一幅）在「轮播」页设置；特效只作用于动态桌面画面，不写入系统壁纸。</div>
+        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频只在动态桌面里播放（系统壁纸吃不下视频）——动态桌面关闭时视频条目不显示，壁纸保持上一张图片。视频播完再切只影响视频条目，图片仍按间隔切换。画面形态（跨屏拼一幅/每屏同一幅）在「轮播」页设置；特效只作用于动态桌面画面，不写入系统壁纸。</div>
       </div>
 
       <!-- ---------------------------------------------------------- 后台驻留 -->
