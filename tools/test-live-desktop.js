@@ -209,6 +209,48 @@ function main() {
       && stagePlan.isStagePaused({}, paused, false) === false);
   }
 
+  // -------------------------------------------------------------------------
+  console.log('\n§10 统一频道展开（53 轮：span 跨屏一幅 / per-display 每屏同一幅）');
+  // -------------------------------------------------------------------------
+  {
+    const ch = { id: 'uni', kind: 'unified', monitor: null, count: 9, current: 'x.png' };
+    const displays = [
+      { id: 1, x: 0, y: 0, width: 2560, height: 1440, scaleFactor: 1 },
+      { id: 2, x: -1067, y: 0, width: 1067, height: 1707, scaleFactor: 1.5 },
+    ];
+    const span = stagePlan.expandUnifiedChannel(ch, displays, 'span');
+    check('span：原样返回 1 个频道（不展开）',
+      span.length === 1 && span[0] === ch);
+
+    const per = stagePlan.expandUnifiedChannel(ch, displays, 'per-display');
+    check('per-display：每块屏一个伪频道',
+      Array.isArray(per) && per.length === 2
+      && per[0].id === 'uni::d1' && per[1].id === 'uni::d2');
+    check('伪频道保留原 channelId（stage:bind / tick 过滤仍按原频道）',
+      per.every((p) => p.channelId === 'uni'));
+    check('伪频道带 _displayId（stageBounds 直达 Display，防同尺寸屏撞车）',
+      per[0]._displayId === 1 && per[1]._displayId === 2);
+    check('伪频道保留 count / current（syncTo 的空相簿过滤照常工作）',
+      per.every((p) => p.count === 9 && p.current === 'x.png'));
+    check('伪频道 monitor 形状 = 物理像素（DIP×scaleFactor 取整）',
+      per[0].monitor.width === 2560 && per[1].monitor.width === Math.round(1067 * 1.5)
+      && per[1].monitor.height === Math.round(1707 * 1.5));
+
+    check('非统一频道：任何模式都原样透传',
+      (() => {
+        const reg = { id: 'm1', monitor: { width: 2560, height: 1440 } };
+        return stagePlan.expandUnifiedChannel(reg, displays, 'per-display').length === 1
+          && stagePlan.expandUnifiedChannel(reg, displays, 'per-display')[0] === reg;
+      })());
+    check('统一频道但枚举不到显示器 → 原样返回（走旧路径报错，不静默吞）',
+      stagePlan.expandUnifiedChannel(ch, [], 'per-display').length === 1);
+    check('脏输入：null 频道 → 空数组',
+      JSON.stringify(stagePlan.expandUnifiedChannel(null, displays, 'span')) === '[]');
+    check('split 脏值 → 按 span 处理（防御性默认）',
+      stagePlan.expandUnifiedChannel(ch, displays, 'bogus').length === 1
+      && stagePlan.expandUnifiedChannel(ch, displays, undefined)[0] === ch);
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
 }

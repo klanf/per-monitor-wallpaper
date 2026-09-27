@@ -179,6 +179,11 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('stage:pause', (_event, payload) => cb(payload));
   },
 
+  /** 动态桌面自动暂停态变化（53 轮）：主窗口工具栏图标跟手 */
+  onLivePaused: (cb) => {
+    ipcRenderer.on('live:paused', (_event, payload) => cb(payload));
+  },
+
   /** 主进程主动弹提示（右键菜单操作、托盘操作的结果） */
   onNotice: (cb) => {
     ipcRenderer.on('notice', (_event, payload) => cb(payload));

@@ -11,7 +11,8 @@
  * ---------------------------------------------------------------------------
  *   频道（perMonitor 模式下每台显示器一路） → 一块 stage 窗口 → 挂到
  *   持有 SHELLDLL_DefView 的窗口（本机 = Progman，见 desktopHost.js 头注释）。
- *   unified 频道（monitorId=null，要盖整个虚拟桌面）阶段 2 再接，这里跳过。
+ *   unified 频道（monitorId=null）：span 形态一块跨屏窗口盖并集，或展开成
+ *   每屏一块窗口（unifiedSplit='per-display'，53 轮），见 stagePlan.expandUnifiedChannel。
  *
  * ---------------------------------------------------------------------------
  * 三条实测结论铸成的规矩（任务书 §2.13~§2.16）
@@ -85,6 +86,8 @@ function stageBounds(ch) {
    * 动态桌面从未生效 —— 用户实报「切统一配置舞台就没了」）。
    */
   if (ch && ch.kind === 'unified' && !ch.monitor) {
+    // 53 轮：per-display 形态已在上游展开成带 _displayId 的伪频道，走不到这里；
+    // span 形态照旧盖虚拟桌面并集。
     // ⚠️ Electron 的 Display 没有顶层 width/height（只有 bounds.width），直接传
     // 全被 virtualBounds 的脏值过滤砍光 →「枚举不到任何显示器」（探针实锤，
     // 单测喂扁平假数据掩盖了这个形状差）。这里显式拍平。
@@ -102,7 +105,11 @@ function stageBounds(ch) {
       displayIds: v.displayIds,
     };
   }
-  const disp = displayForMonitor(ch.monitor || ch);
+  // 展开后的 per-display 伪频道：直接按 displayId 取 Display（按尺寸匹配会让
+  // 两块同尺寸屏全部落在主屏上互相 z-fight）
+  const disp = ch && ch._displayId !== undefined
+    ? (screen.getAllDisplays().find((d) => d.id === ch._displayId) || displayForMonitor(ch.monitor || ch))
+    : displayForMonitor(ch.monitor || ch);
   const dip = {
     x: disp.bounds.x,
     y: disp.bounds.y,
@@ -136,6 +143,12 @@ function stageBounds(ch) {
 const pauseDisplays = new Set();
 let pauseAway = false;
 /**
+ * 手动暂停（工具栏 ‖ / 托盘 / 热键，53 轮）：频道 playing=false 时舞台冻结
+ * （粒子也停 —— 用户实报「点了暂停粒子还在飘」）。与自动暂停的区别：
+ * **不藏窗口** —— 用户只是想画面停下来，不是要把桌面让给系统壁纸。
+ */
+const manualPaused = new Set();
+/**
  * 暂停时把舞台窗口整个藏起来（52 轮新增，默认开）：
  * 深暂停只停 rAF，窗口还攥着 4K flip 交换链 —— 艾尔登法环独占全屏做模式切换时
  * 撞上它会驱动挂死（主屏失信号、副屏冻结、游戏有声）。藏掉 = 交换链离开显示路径。
@@ -147,22 +160,50 @@ function setPauseHide(value) {
   pauseHide = value !== false;
 }
 
+/** 统一模式动态桌面形态：'span' 跨屏拼一幅（默认）| 'per-display' 每屏同一幅（53 轮） */
+let unifiedSplit = 'span';
+
+function setUnifiedSplit(value) {
+  unifiedSplit = value === 'per-display' ? 'per-display' : 'span';
+}
+
+/** 手动暂停集更新（main 在 scheduler channels 事件里喂），重算每块舞台的冻结态 */
+function applyManualPause(pausedIds) {
+  manualPaused.clear();
+  for (const id of Array.isArray(pausedIds) ? pausedIds : []) {
+    if (id) manualPaused.add(id);
+  }
+  refreshPauseMessages();
+}
+
+/** 舞台当前是否冻结（自动暂停 ∪ 手动暂停）。hide 只认自动暂停（手动暂停不藏窗口）。 */
+function isStageFrozen(rec) {
+  return stagePlan.isStagePaused(rec, pauseDisplays, pauseAway)
+    || manualPaused.has(rec.channelId);
+}
+
 function applyPauseState({ pausedIds, away, reasons } = {}) {
   pauseDisplays.clear();
   for (const id of Array.isArray(pausedIds) ? pausedIds : []) pauseDisplays.add(id);
   pauseAway = Boolean(away);
+  refreshPauseMessages(reasons);
+}
+
+/** 按当前（自动 ∪ 手动）暂停态刷新每块舞台：发 stage:pause，自动暂停的藏窗 */
+function refreshPauseMessages(reasons) {
   const affected = [];
-  for (const [id, rec] of stages) {
+  for (const [, rec] of stages) {
     if (!rec.win || rec.win.isDestroyed()) continue;
-    const paused = stagePlan.isStagePaused(rec, pauseDisplays, pauseAway);
-    if (paused) affected.push(id);
+    const paused = isStageFrozen(rec);
+    const autoPaused = stagePlan.isStagePaused(rec, pauseDisplays, pauseAway);
+    if (paused) affected.push(rec.channelId);
     try {
       rec.win.webContents.send('stage:pause', { paused });
       if (pauseHide) {
-        if (paused && rec.win.isVisible()) {
+        if (autoPaused && rec.win.isVisible()) {
           rec.win.hide();               // 不销毁：恢复时 showInactive 原帧续播
           rec.hiddenForPause = true;
-        } else if (!paused && rec.hiddenForPause) {
+        } else if (!autoPaused && rec.hiddenForPause) {
           rec.win.showInactive();       // 不抢焦点（与挂载/重挂同款纪律）
           rec.hiddenForPause = false;
         }
@@ -171,7 +212,7 @@ function applyPauseState({ pausedIds, away, reasons } = {}) {
   }
   if (affected.length || pauseAway) {
     // 诊断（49 轮排障）：点名哪些频道会被冻结，与调度器停表对账用
-    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway} 受影响频道=[${affected.join(',') || '无'}] hide=${pauseHide}`,
+    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway} manual=[${[...manualPaused]}] 受影响频道=[${affected.join(',') || '无'}] hide=${pauseHide}`,
       Object.keys(reasons || {}).length ? JSON.stringify(reasons) : '');
   } else {
     console.log('[live-stage] 暂停解除：全部舞台恢复');
@@ -190,9 +231,13 @@ function isPausedForDisplay(displayId) {
  */
 function isChannelFrozen(channelId) {
   if (pauseAway) return true;   // 锁屏 / 息屏：所有频道一律停表（原语义，保持）
-  const rec = stages.get(channelId);
-  if (!rec) return false;
-  return stagePlan.isStagePaused(rec, pauseDisplays, pauseAway);
+  let found = false;
+  for (const rec of stages.values()) {
+    if (rec.channelId !== channelId) continue;
+    found = true;
+    if (stagePlan.isStagePaused(rec, pauseDisplays, pauseAway)) return true;
+  }
+  return found && manualPaused.has(channelId);
 }
 
 /* ---------------------------------------------------------------- 广播 */
@@ -230,6 +275,7 @@ async function createStage(ch) {
     // 恒 false：全屏/锁屏/电池暂停在舞台层从未生效（stage:pause 永远下发 paused:false）
     rec.displayId = sb.displayId;
     rec.displayIds = sb.displayIds || null;   // 统一频道 = 跨屏舞台，按覆盖屏集合判暂停
+    rec.channelId = ch.channelId || ch.id;    // per-display 伪频道的 key 带后缀，tick/bind 仍用原频道 id
     const win = new BrowserWindow({
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
@@ -282,9 +328,9 @@ async function createStage(ch) {
     // bind 带上初始暂停态：轮询事件只在「变化」时发，晚创建的窗口若只等
     // 事件会错过当前状态（zm 的 get_wallpaper_media 补拉同款问题）
     win.webContents.send('stage:bind', {
-      channelId: ch.id,
+      channelId: rec.channelId,
       monitorId: ch.monitorId,
-      paused: isPausedForDisplay(sb.displayId),
+      paused: isPausedForDisplay(sb.displayId) || manualPaused.has(rec.channelId),
     });
     console.log(`[live-stage] 频道 ${ch.id} 的舞台已挂载（strategy=${choice.strategy}）`);
   } catch (err) {
@@ -405,7 +451,27 @@ function stop() {
 function syncTo(channels) {
   if (!running) return;
   const wanted = new Set();
-  for (const ch of Array.isArray(channels) ? channels : []) {
+  const list = Array.isArray(channels) ? channels : [];
+  // 统一频道按 unifiedSplit 展开：span = 原样一块跨屏窗口；per-display = 每屏一块
+  const expanded = [];
+  for (const ch of list) {
+    if (!ch) continue;
+    if (ch.kind === 'unified' && !ch.monitor) {
+      expanded.push(...stagePlan.expandUnifiedChannel(
+        ch,
+        screen.getAllDisplays().map((d) => ({
+          id: d.id,
+          x: d.bounds.x, y: d.bounds.y,
+          width: d.bounds.width, height: d.bounds.height,
+          scaleFactor: d.scaleFactor,
+        })),
+        unifiedSplit,
+      ));
+    } else {
+      expanded.push(ch);
+    }
+  }
+  for (const ch of expanded) {
     /*
      * 不看 ch.enabled —— resolveProfile 把 applyToSystem 折进了 enabled
      * （store.js：enabled = Boolean(config.applyToSystem)），于是
@@ -463,10 +529,11 @@ function stats() {
     away: pauseAway,
     stages: [...stages.entries()].map(([id, rec]) => ({
       id,
+      channelId: rec.channelId,
       mounted: Boolean(rec.hwnd && rec.anchor),
       degraded: rec.degraded,
       fails: rec.fails,
-      paused: stagePlan.isStagePaused(rec, pauseDisplays, pauseAway),
+      paused: isStageFrozen(rec),
       hiddenForPause: Boolean(rec.hiddenForPause),
       unified: Boolean(rec.displayIds && rec.displayIds.length),
       bounds: rec.bounds,
@@ -520,7 +587,7 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
-  isChannelFrozen, setPauseHide,
+  isChannelFrozen, setPauseHide, applyManualPause, setUnifiedSplit,
   showDesktopContextMenu,
   cancelDesktopMenu,
 };

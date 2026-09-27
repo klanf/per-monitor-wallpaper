@@ -1132,7 +1132,7 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
  * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
  */
-  const UI_ONLY_KEYS = ['settingsTab', 'expandedMonitors'];
+  const UI_ONLY_KEYS = ['settingsTab', 'expandedMonitors', 'hintParticlesPerMonitor'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */
@@ -1160,6 +1160,8 @@ function startFullscreenWatch() {
     },
     onTick: ({ pausedIds, away, reasons }) => {
       liveStage.applyPauseState({ pausedIds, away, reasons });
+      // 工具栏播放/暂停图标同步自动暂停态（53 轮：用户要求全屏/锁屏时按钮跟手）
+      send('live:paused', { any: (pausedIds && pausedIds.length > 0) || Boolean(away), pausedIds, away });
     },
   });
 }
@@ -1180,8 +1182,15 @@ async function applyConfigChange(patch) {
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
-  // hideOnPaused 改动实时生效（轮询还开着时也要立刻跟上新设置）
-  if (keys.includes('liveStage') && store.get().liveWallpaper) startFullscreenWatch();
+  // hideOnPaused / unifiedSplit 改动实时生效（轮询还开着时也要立刻跟上新设置）；
+  // unifiedSplit 换形态要立刻按新模式重铺舞台窗口
+  if (keys.includes('liveStage')) {
+    liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
+    if (store.get().liveWallpaper) {
+      startFullscreenWatch();
+      liveStage.syncTo(scheduler.list());
+    }
+  }
   // 从设置面板整体写配置时也要让热键生效（单独改热键走 hotkeys:set）
   if (hadHotkeys) applyHotkeys();
   announceAutoSetup(auto);
@@ -1190,6 +1199,7 @@ async function applyConfigChange(patch) {
   const liveAfter = Boolean(store.get().liveWallpaper);
   if (liveBefore !== liveAfter) {
     if (liveAfter) {
+      liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
       liveStage.start();
       liveStage.syncTo(scheduler.list());
       // 全屏/锁屏/电池/挂机暂停轮询必须跟着启停（49 轮修：此前从未启动，
@@ -1785,6 +1795,10 @@ if (!gotLock) {
           const broadcast = channelBroadcast(payload);
           send('channels:changed', broadcast);
           liveStage.broadcast('channels:changed', broadcast);
+          // 手动暂停 → 舞台冻结（粒子也停，53 轮）；恢复同理。
+          // playing=false 的集合每次全量重算，天然覆盖启动即暂停的情况
+          liveStage.applyManualPause((payload.channels || scheduler.list())
+            .filter((c) => c && c.playing === false).map((c) => c.id));
           liveStage.syncTo(payload.channels || scheduler.list());
           tray.refresh(payload.channels || scheduler.list());
         }
@@ -1822,6 +1836,7 @@ if (!gotLock) {
 
     // 动态桌面：配置开着就随应用启动（窗口在这里创建并挂到桌面图标下面）
     if (store.get().liveWallpaper) {
+      liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
       liveStage.start();
       liveStage.syncTo(scheduler.list());
       // 全屏 / 锁屏 / 电池 / 挂机暂停轮询（49 轮修：此前漏挂，所有 pauseOn* 都是死的）

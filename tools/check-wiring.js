@@ -54,7 +54,7 @@ const orphanFields = [...block.matchAll(/^ {2}<div class="field[ "]/gm)];
 check('没有字段块漏在分类页外面', orphanFields.length === 0, `漏了 ${orphanFields.length} 个`);
 
 const fieldCount = (block.match(/^ {6}<div class="field[ "]/gm) || []).length;
-check('23 个字段块都归进了某一页', fieldCount === 23, String(fieldCount));
+check('24 个字段块都归进了某一页', fieldCount === 24, String(fieldCount));
 
 // 每个页至少有一个字段块
 const perPane = {};
@@ -123,7 +123,7 @@ check('设置面板本身不再整块滚动', /\.settings \{[\s\S]*?overflow: hi
 
 // ---- 主进程：切页不该重建频道 ----
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'expandedMonitors'\]/.test(MAIN));
+check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'expandedMonitors', 'hintParticlesPerMonitor'\]/.test(MAIN));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
 // 全屏/锁屏/电池暂停轮询必须真的被启动（49 轮修：定义了却漏挂调用，所有 pauseOn* 形同虚设）
 check('全屏暂停轮询已接线（启动 + 开关切换两处调用）',

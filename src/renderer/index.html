@@ -159,8 +159,8 @@
       </div>
 
       <!-- 特效与动画（47 轮从「外观/系统」集中到轮播，与显示器卡片控件一一对应）：
-           过渡动画/时长是全局默认，每屏模式下由卡片接管所以只在统一模式显示；
-           粒子始终显示 —— 卡片里选「跟随全局」的屏吃这里的设置 -->
+           过渡动画/时长/粒子都是全局默认，只在统一模式显示；
+           每屏独立模式下粒子在各显示器卡片里设置（53 轮互斥，下方卡片旁有指路提示） -->
       <div class="field unified-only">
         <label class="field-label">过渡动画</label>
         <select class="select" id="cfg-animation">
@@ -188,7 +188,8 @@
         </div>
       </div>
 
-      <div class="field">
+      <!-- 53 轮：粒子全局控件只在统一模式显示（与卡片设置互斥，避免「全局关了屏上还在动」的困惑） -->
+      <div class="field unified-only" id="particle-global-field">
         <label class="field-label">粒子特效</label>
         <div class="field-row">
           <span class="field-label" style="flex:0 0 auto">种类</span>
@@ -215,6 +216,12 @@
           <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
         </div>
         <div class="field-hint">全局默认，显示器卡片里可按屏覆盖（「跟随全局」的屏吃这里）；烟花数量内置（最多同时 5 发）。</div>
+      </div>
+
+      <!-- 53 轮：每屏模式下粒子在卡片里设，这里只留指路牌 -->
+      <div class="field per-monitor-only">
+        <label class="field-label">粒子特效</label>
+        <div class="field-hint">粒子特效按屏独立：在下方各显示器卡片里单独设置种类、数量或关闭（想用全局统一特效，切回「统一配置」）。</div>
       </div>
 
       <!-- 每屏模式：每台显示器一张卡片 -->
@@ -265,7 +272,7 @@
           <option value="window">程序窗口所在的显示器</option>
           <option value="primary">主显示器</option>
         </select>
-        <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。</div>
+        <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。注意：只作用于系统壁纸层；动态桌面开着时画面由桌面窗口绘制（想换每屏画面形态，去「系统」页 → 动态桌面 → 「跨屏拼一幅 / 每屏同一幅」）。</div>
       </div>
     </div>
 
@@ -430,6 +437,14 @@
           <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 auto">±2%</span>
         </div>
         <label class="check"><input type="checkbox" id="cfg-live-hide-paused"><span>全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏游戏黑屏，推荐开）</span></label>
+        <!-- 53 轮：统一配置模式下动态桌面的画面形态（每屏独立模式本来就有每屏一块窗口） -->
+        <div class="unified-only" style="margin-top:6px">
+          <div class="seg" id="cfg-live-split">
+            <button data-value="span" class="seg-item">跨屏拼一幅</button>
+            <button data-value="per-display" class="seg-item">每屏同一幅</button>
+          </div>
+          <div class="field-hint" style="margin-top:4px">「跨屏拼一幅」= 一块画面横跨所有显示器（一张大图铺满整个桌面）；「每屏同一幅」= 每块显示器各自显示当前这张（各自裁切铺满）。</div>
+        </div>
         <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。粒子特效在「轮播」页配置；特效只作用于动态桌面画面，不写入系统壁纸。</div>
       </div>
 
@@ -495,6 +510,22 @@
 </aside>
 
 <div id="toast" class="toast"></div>
+
+<!-- 53 轮：切到「每屏独立」时的一次性指路弹窗（勾选后不再弹出） -->
+<div class="modal-overlay" id="pm-hint-overlay" hidden>
+  <div class="modal-card">
+    <div class="modal-title">每屏独立模式已开启</div>
+    <div class="modal-body">
+      <p>轮播的<b>目录、节奏</b>在每台显示器的卡片里设置；</p>
+      <p><b>粒子特效</b>也在卡片里（每屏独立时上方不再显示全局特效开关，两种设置互斥）。</p>
+      <p class="muted">「跟随全局」的屏会用统一配置里保存的特效默认值（切回统一配置可改）。</p>
+      <label class="check"><input type="checkbox" id="pm-hint-dont-show"><span>下次不再提示</span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary sm" id="pm-hint-ok">知道了</button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

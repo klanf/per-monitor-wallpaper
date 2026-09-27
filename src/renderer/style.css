@@ -1068,3 +1068,31 @@ body.filmstrip-off .filmstrip { display: none; }
 .page .album-dirs { padding: 6px 14px 14px; }
 .page .album-dir { padding: 6px 9px; font-size: 12px; }
 .page .album-empty { font-size: 12px; }
+
+/* ==========================================================================
+   一次性指路弹窗（53 轮）：切「每屏独立」时提示粒子/目录去哪设置
+   ========================================================================== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.modal-overlay[hidden] { display: none; }
+.modal-card {
+  width: min(420px, calc(100vw - 48px));
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.modal-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.modal-body { font-size: 12.5px; line-height: 1.7; color: var(--text-dim); }
+.modal-body p { margin: 0 0 6px; }
+.modal-body .muted { color: var(--text-faint); font-size: 12px; }
+.modal-body .check { margin-top: 8px; }
+.modal-actions { display: flex; justify-content: flex-end; margin-top: 12px; }

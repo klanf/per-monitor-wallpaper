@@ -76,4 +76,37 @@ function isStagePaused(stage, pausedIds, away) {
   return set.has(stage.displayId);
 }
 
-module.exports = { virtualBounds, isStagePaused };
+/**
+ * 统一频道的舞台展开（53 轮）：
+ *   - 'span'（默认）：一块跨屏窗口盖虚拟桌面并集（52 轮行为，原样返回）；
+ *   - 'per-display'：每块显示器一个舞台窗口，各自渲染同一频道当前帧
+ *     （= 用户最初预期的「两块屏显示同一壁纸（分开显示）」）。
+ * 展开产物是伪频道：id 加后缀避免 stages Map 撞 key，_displayId 供
+ * stageBounds 直达对应 Display（displayForMonitor 按尺寸匹配，两块同尺寸屏
+ * 会撞车）；channelId 保持原值，stage 渲染端按它过滤 tick —— 同一频道的
+ * 每块舞台都吃同一拍。
+ *
+ * @param {object} ch 调度器频道（kind='unified' / monitor=null 判定为统一频道）
+ * @param {Array<{id,x,y,width,height,scaleFactor}>} displays Electron Display 拍平版
+ * @param {'span'|'per-display'} split
+ * @returns {Array<object>} 0/1/N 个频道
+ */
+function expandUnifiedChannel(ch, displays, split) {
+  if (!ch || ch.kind !== 'unified' || ch.monitor) return ch ? [ch] : [];
+  const list = (Array.isArray(displays) ? displays : [])
+    .filter((d) => d && d.id !== undefined && Number(d.width) > 0 && Number(d.height) > 0);
+  if (!list.length) return [ch];          // 枚举不到显示器：交回原频道走旧路径报错
+  if (split !== 'per-display') return [ch];
+  return list.map((d) => ({
+    ...ch,
+    id: `${ch.id}::d${d.id}`,
+    channelId: ch.id,                     // stage:bind 仍绑原频道，tick 过滤用它
+    _displayId: d.id,
+    monitor: {                            // 兼容旧结构（displayForMonitor / 频道名展示）
+      width: Math.round(Number(d.width) * (Number(d.scaleFactor) || 1)),
+      height: Math.round(Number(d.height) * (Number(d.scaleFactor) || 1)),
+    },
+  }));
+}
+
+module.exports = { virtualBounds, isStagePaused, expandUnifiedChannel };

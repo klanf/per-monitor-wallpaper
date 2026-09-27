@@ -80,6 +80,7 @@ const state = {
   index: 0,
   active: 'B',                // 当前可见图层
   playing: false,
+  autoPaused: false,          // 动态桌面自动暂停中（全屏/锁屏/电池/挂机，53 轮）
   cleanupTimer: null,
   animToken: 0,
   firstPaintDone: false,
@@ -251,11 +252,18 @@ function restartProgress() {
   fill.style.animationPlayState = state.playing ? 'running' : 'paused';
 }
 
-/** 播放 / 暂停按钮的图标与 body 标记 */
+/** 播放 / 暂停按钮的图标与 body 标记。
+ *  自动暂停（全屏/锁屏/电池/挂机，主进程 live:paused 推送）时图标也切到暂停态
+ *  ——用户点 ⏸ 停下的和系统自动停下的都是「当前没在播」，按钮要如实反映。 */
 function updatePlayIcon() {
-  document.body.classList.toggle('playing', Boolean(state.playing));
-  if (els.iconPause) els.iconPause.style.display = state.playing ? '' : 'none';
-  if (els.iconPlay) els.iconPlay.style.display = state.playing ? 'none' : '';
+  const active = Boolean(state.playing) && !state.autoPaused;
+  document.body.classList.toggle('playing', active);
+  document.body.classList.toggle('auto-paused', Boolean(state.autoPaused));
+  if (els.iconPause) els.iconPause.style.display = active ? '' : 'none';
+  if (els.iconPlay) els.iconPlay.style.display = active ? 'none' : '';
+  const btn = $('btn-play');
+  if (btn) btn.title = state.autoPaused ? '已自动暂停（全屏 / 锁屏），切回去自动恢复（空格）'
+    : state.playing ? '暂停 / 继续（空格）' : '继续播放（空格）';
 }
 
 /* ------------------------------------------------------------ 解码预热 */
@@ -2115,6 +2123,8 @@ function applyConfigToUI() {
   $('cfg-breath').checked = c.breath === true;
   // 暂停时隐藏舞台窗口（52 轮，防独占全屏冲突）：嵌套键 liveStage.hideOnPaused
   $('cfg-live-hide-paused').checked = !((c.liveStage || {}).hideOnPaused === false);
+  // 统一模式动态桌面形态（53 轮）：跨屏拼一幅 / 每屏同一幅
+  setSegment('cfg-live-split', ((c.liveStage || {}).unifiedSplit === 'per-display') ? 'per-display' : 'span');
   // 呼吸节奏滑条：默认与 stage.js 的 cfg 默认保持一致（6000ms / ±2%）
   const bp = Math.round(Number(c.breathPeriod));
   $('cfg-breath-period').value = String(Number.isFinite(bp) ? Math.min(Math.max(bp, 2000), 15000) / 1000 : 6);
@@ -2254,7 +2264,24 @@ function bindSettings() {
     toast(perMonitor
       ? '已切换到每屏独立模式：可以给每台显示器单独设置目录和节奏'
       : '已切换到统一配置模式：所有显示器共用一套设置');
+    // 53 轮：首次切到每屏独立，指路粒子/目录设置入口（勾选「不再提示」后消失）
+    if (perMonitor && state.config && state.config.hintParticlesPerMonitor !== true) {
+      showPerMonitorHintOnce();
+    }
   });
+
+  // ---- 一次性指路弹窗（53 轮）----
+  function showPerMonitorHintOnce() {
+    const overlay = $('pm-hint-overlay');
+    if (!overlay) return;
+    overlay.hidden = false;
+    const close = async (remember) => {
+      overlay.hidden = true;
+      if (remember) await save({ hintParticlesPerMonitor: true });
+    };
+    $('pm-hint-ok').onclick = () => close($('pm-hint-dont-show').checked);
+    overlay.onclick = (e) => { if (e.target === overlay) close($('pm-hint-dont-show').checked); };
+  }
 
   // ---- 统一模式的字段 ----
   $('cfg-interval').addEventListener('input', (e) => {
@@ -2348,6 +2375,20 @@ function bindSettings() {
     toast(e.target.checked
       ? '已开启：全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏黑屏）'
       : '已关闭：暂停时保留画面（若独占全屏游戏黑屏请重新开启）');
+  });
+
+  // 统一模式动态桌面形态（53 轮）：span=跨屏拼一幅 / per-display=每屏同一幅
+  $('cfg-live-split').addEventListener('click', async (event) => {
+    const item = event.target.closest('.seg-item');
+    if (!item) return;
+    const split = item.dataset.value === 'per-display' ? 'per-display' : 'span';
+    if (((state.config && state.config.liveStage) || {}).unifiedSplit === split) return;
+    setSegment('cfg-live-split', item.dataset.value);
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, unifiedSplit: split } });
+    toast(split === 'per-display'
+      ? '每屏同一幅：每块显示器一个画面窗口，各自显示当前这张'
+      : '跨屏拼一幅：一块画面窗口横跨所有显示器（换屏/改分辨率后自动重铺）');
   });
 
   // 呼吸节奏（47 轮）：周期/幅度滑条，落 profile 键，每屏卡片也能单独覆盖
@@ -3088,6 +3129,15 @@ function bindEvents() {
 
   window.wp.onNotice((payload) => {
     if (payload && payload.text) toast(payload.text, Boolean(payload.error));
+  });
+
+  // 动态桌面自动暂停态 → 工具栏图标跟手（53 轮）
+  window.wp.onLivePaused((payload) => {
+    const any = Boolean(payload && payload.any);
+    if (state.autoPaused !== any) {
+      state.autoPaused = any;
+      updatePlayIcon();
+    }
   });
 
   window.wp.onFilesChanged((payload) => {

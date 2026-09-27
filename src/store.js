@@ -120,7 +120,14 @@ const DEFAULTS = {
     // 暂停时把舞台窗口整个藏起来（52 轮）：独占全屏游戏做模式切换时，
     // 桌面下挂着的 4K 交换链窗口会触发驱动挂死（艾尔登法环实锤），藏掉最稳
     hideOnPaused: true,
+    // 统一配置模式下动态桌面的画面形态（53 轮）：
+    //   'span'        跨屏拼一幅（一块窗口盖虚拟桌面并集）
+    //   'per-display' 每屏同一幅（每块屏一个窗口，各自渲染同一张）
+    unifiedSplit: 'span',
   },
+
+  // 「切到每屏独立时提示粒子去哪设置」弹窗已看过（53 轮，true = 不再弹）
+  hintParticlesPerMonitor: false,
 
 
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
@@ -531,6 +538,7 @@ function clampLiveStage(value) {
     pauseOnBattery: bool('pauseOnBattery'),
     pauseOnLock: bool('pauseOnLock'),
     hideOnPaused: bool('hideOnPaused'),
+    unifiedSplit: src.unifiedSplit === 'per-display' ? 'per-display' : 'span',
   };
 }
 

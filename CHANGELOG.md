@@ -2279,6 +2279,45 @@ profile 载荷两路都带 particles。而用户配置里一块屏覆盖了 `par
   raindrops=32242**（非透明像素）；关闭态清屏、脏值回落、stage 接线不变。
 - 观感未实测：等用户重启验收。
 
+## 第五十三轮：统一模式画面形态（跨屏拼一幅/每屏同一幅）+ 粒子 UI 互斥 + 暂停联动粒子与按钮
+
+### 现象：用户三连反馈
+
+1. 「统一配置」我本来想要的是**每块屏各自显示同一张壁纸**，不是拼成一幅——
+   不过拼幅效果意外的棒，也想留着。「写入目标显示器」选了没反应。
+2. 粒子特效全局关了屏上还在动（其实是每屏覆盖 random 在起作用）——对新手不友好，
+   全局和按屏两套入口要有**互斥**；切每屏模式时希望有个指路提示。
+3. 点了暂停粒子还在飘（想要也停）；全屏自动暂停时工具栏按钮图标没跟着变。
+
+### 定性与决定
+
+- 「写入目标显示器」（config `monitor`）只作用于**系统壁纸层**（写入哪几块屏的
+  静态壁纸），动态桌面开着时画面全由舞台窗口绘制，切它当然无感 —— 提示文案写明。
+- 画面形态做成双选项 `liveStage.unifiedSplit`：`span` 跨屏拼一幅（默认，保留）/
+  `per-display` 每屏同一幅（新增）。展开逻辑进纯函数 `stagePlan.expandUnifiedChannel`：
+  伪频道 id 带 `::d<displayId>` 后缀防 stages Map 撞 key、`_displayId` 让 stageBounds
+  直达 Display（displayForMonitor 按尺寸匹配，同尺寸双屏会全部落主屏 z-fight）、
+  保留原 channelId —— stage 渲染端按 channelId 过滤 tick，同一频道的每块舞台
+  吃同一拍，调度器零改动。
+- 粒子 UI 互斥：全局控件加 `unified-only`（每屏模式下收起），每屏模式给指路
+  字段；首次切每屏弹指路弹窗（含「下次不再提示」，存 `hintParticlesPerMonitor`，
+  进 UI_ONLY_KEYS 不惊动调度器）。数据模型不动：卡片「跟随全局」的屏仍吃全局值。
+- 暂停联动：手动暂停（频道 playing=false）→ `liveStage.applyManualPause` 下发
+  `stage:pause` 冻结舞台（**粒子也停**），但**不藏窗口**——用户只是要画面停，
+  不是要让出桌面；自动暂停照旧按 hideOnPaused 藏。全屏/锁屏自动暂停态经
+  `live:paused` 推给主窗口，工具栏图标同步显示暂停态（tooltip 说明自动暂停中）。
+
+### 验证
+
+- test-live-desktop 56 → **66**（§10 统一频道展开 10 项：span 透传/per-display
+  展开/channelId 保留/_displayId/物理 monitor 形状/非统一频道透传/空显示器/
+  脏输入/split 脏值默认）。
+- scheduler 162 / particles 45 / resume 28 / wiring 39 全绿（wiring 字段块
+  23→24、UI_ONLY_KEYS 期望同步更新）。
+- 真机探针双形态：probe-unified-split.js per-display **VERDICT OK**（两块屏各挂
+  一块舞台，bounds 精确盖各自屏幕，channelId 保留）；probe-unified-stage.js span
+  复测 OK（3627×1707 并集）无回归。
+
 ## 第五十二轮：暂停时隐藏舞台窗口（防独占全屏黑屏）+ 统一配置的动态桌面补齐
 
 ### 现象：艾尔登法环 6 连黑屏，用户对照实验定性
