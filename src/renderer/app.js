@@ -647,6 +647,10 @@ function makeFilmItem(index) {
   img.decoding = 'async';
   img.draggable = false;
   img.alt = '';
+  // 54 轮：加载完成前 img 透明（CSS），格子显示微光占位 —— 启动那几秒不再是一排
+  // 纯黑块。load/error 都可能早于监听（内存缓存），先查 complete 兜一手。
+  img.addEventListener('load', () => { img.classList.add('ready'); el.classList.add('has-img'); });
+  if (img.complete && img.naturalWidth > 0) { img.classList.add('ready'); el.classList.add('has-img'); }
   img.src = window.wp.thumbUrl(entry.path);
   // 极端格式（avif / 部分 tiff）缩略图生成失败时会 404，别留一个破图占位
   img.addEventListener('error', () => { img.classList.add('broken'); el.classList.add('broken'); });

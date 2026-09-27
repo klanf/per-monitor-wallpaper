@@ -163,22 +163,22 @@ function setPauseHide(value) {
 /**
  * 首帧等待（53 轮防启动黑屏）：挂载/重载后窗口保持隐藏，等渲染端把第一帧真正
  * 画上屏（stage:first-frame）再亮 —— 「先 show 后画」会把纯黑底色露给桌面。
- * 3s 超时兜底：坏图/极端情况下不至于让桌面一直空着（调度器推进迟早带来新帧）。
+ *
+ * 54 轮修正：53 轮的 3s 超时兜底会**亮出纯黑窗口**（backgroundColor #000000），
+ * 冷启动大图解码超过 3s 时黑闪照旧（探针实测打出「首帧超时(3s)兜底显示」）。
+ * 改为超时**只告警、保持隐藏** —— 空窗期桌面显示的是系统壁纸（和黑窗相比
+ * 永远是更好的兜底），首帧无论多晚到达都由 onFirstFrame 正常亮窗。
  */
+const FIRST_FRAME_WARN_MS = 30000;
+
 function waitForFirstFrame(rec, label) {
   rec.awaitingFirstFrame = true;
   if (rec.firstFrameTimer) clearTimeout(rec.firstFrameTimer);
   rec.firstFrameTimer = setTimeout(() => {
     if (!rec.awaitingFirstFrame) return;
-    rec.awaitingFirstFrame = false;
     rec.firstFrameTimer = null;
-    console.warn(`[live-stage] ${label} 首帧超时（3s），兜底显示`);
-    if (stagePlan.canShowStage(rec, pauseDisplays, pauseAway)) {
-      try { rec.win.showInactive(); } catch { /* 正在销毁 */ }
-    } else {
-      rec.hiddenForPause = true;       // 暂停中被兜底：保持隐藏，恢复时 applyPauseState 亮
-    }
-  }, 3000);
+    console.warn(`[live-stage] ${label} 首帧 ${Math.round(FIRST_FRAME_WARN_MS / 1000)}s 未到，保持隐藏（桌面=系统壁纸）；渲染端出帧后 onFirstFrame 自动亮窗`);
+  }, FIRST_FRAME_WARN_MS);
 }
 
 /** 渲染端首帧画上屏（stage:first-frame）→ 判定无暂停后亮出窗口 */
@@ -367,7 +367,7 @@ async function createStage(ch) {
 
     // 53 轮防启动黑屏：backgroundColor 是纯黑，show 之后到渲染端首帧 showFrame
     // 之间桌面会闪一块黑（冷启动几百 ms~2s）。先保持隐藏，等 stage:first-frame
-    // 再亮（3s 超时兜底），空窗期桌面显示的是系统壁纸。
+    // 再亮（超时只告警不亮黑窗，54 轮），空窗期桌面显示的是系统壁纸。
     waitForFirstFrame(rec, ch.id);
     rec.fails = 0;
     rec.degraded = false;

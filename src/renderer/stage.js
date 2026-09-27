@@ -502,7 +502,22 @@ async function showFrame(entry, dir, animate) {
   let src = null, sw = 0, sh = 0;
 
   if (kind === 'html') {
-    iframeOf(incoming, window.wp.stageUrl(entry.path));
+    const f = iframeOf(incoming, window.wp.stageUrl(entry.path));
+    // 54 轮：网页壁纸的首帧要等 iframe 真正 load 出来 —— 提前亮窗露的是空白
+    // iframe（黑/白一块）。10s 兜底：一直 load 不出来的坏页面也照常亮窗
+    // （亮出网页自己的样子，好过桌面一直没动静）。
+    if (!showFrame._ffSent) {
+      let ffDone = false;
+      const sendFF = () => {
+        if (ffDone || showFrame._ffSent) return;
+        if (token !== animToken) return;   // 这帧已被切走：留给真正上屏的帧去通知
+        ffDone = true;
+        showFrame._ffSent = true;
+        try { window.wp.stageFirstFrame(); } catch (_) { /* 主进程只告警不亮黑窗 */ }
+      };
+      f.addEventListener('load', sendFF, { once: true });
+      setTimeout(sendFF, 10000);
+    }
   } else {
     hideIframe(incoming);
   }
@@ -553,10 +568,12 @@ async function showFrame(entry, dir, animate) {
     drawSource(incoming, src, sw, sh);                 // 先画上首帧，之后 rAF 接管
   }
 
-  // 53 轮防启动黑屏：首帧真正画上屏才通知主进程亮窗口（挂载后窗口一直藏着）
-  if (!showFrame._ffSent) {
+  // 53 轮防启动黑屏：首帧真正画上屏才通知主进程亮窗口（挂载后窗口一直藏着）。
+  // 54 轮：html 壁纸的 first-frame 由上面 iframe 的 load 回调负责，这里不抢；
+  // 主进程超时也只告警、不亮黑窗。
+  if (!showFrame._ffSent && kind !== 'html') {
     showFrame._ffSent = true;
-    try { window.wp.stageFirstFrame(); } catch (_) { /* 通知失败走 3s 兜底 */ }
+    try { window.wp.stageFirstFrame(); } catch (_) { /* 通知失败：主进程 30s 告警兜底 */ }
   }
 
   const duration = animate ? Math.max(0, cfg.duration || 0) : 0;
