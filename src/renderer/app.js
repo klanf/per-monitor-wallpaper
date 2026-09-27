@@ -2169,9 +2169,8 @@ function applyConfigToUI() {
   setSegment('cfg-shuffle', c.shuffle ? 'random' : 'order');
   setSegment('cfg-mode', c.perMonitor ? 'per-monitor' : 'unified');
 
-  const select = $('cfg-monitor');
-  select.value = c.monitor || 'all';
-  if (!select.value) { select.value = 'all'; c.monitor = 'all'; }
+  // 53 轮追记：「写入目标显示器」UI 已撤（舞台为主）；config.monitor 键保留，
+  // 老配置里存过 primary/window/指定屏 的仍由后端 resolveUnifiedTarget 尊重。
 
   // 统一模式的相簿下拉（选项列表来自 state.albums，见 albumOptions）
   syncAlbumSelect();
@@ -2187,34 +2186,6 @@ function applyConfigToUI() {
   const displayCount = (state.backendInfo && state.backendInfo.monitors && state.backendInfo.monitors.length)
     || state.channels.length || 1;
   document.body.classList.toggle('single-monitor', displayCount <= 1);
-}
-
-/** 统一模式的目标下拉框：动态追加具体显示器 */
-function refreshMonitorTargets() {
-  const select = $('cfg-monitor');
-  for (const group of select.querySelectorAll('optgroup')) group.remove();
-
-  const monitors = (state.backendInfo && state.backendInfo.monitors) || [];
-  if (monitors.length > 1) {
-    const group = document.createElement('optgroup');
-    group.label = '指定某一台';
-    for (const monitor of monitors) {
-      const option = document.createElement('option');
-      option.value = monitor.id;
-      option.textContent = monitor.label;
-      group.appendChild(option);
-    }
-    select.appendChild(group);
-  }
-
-  select.value = state.config.monitor || 'all';
-  if (!select.value) select.value = 'all';
-
-  const hint = $('monitor-target-hint');
-  const err = (state.backendInfo && state.backendInfo.monitorsError) || null;
-  if (err) hint.textContent = `每屏壁纸接口不可用：${err}`;
-  else if (monitors.length <= 1) hint.textContent = '当前只检测到 1 台显示器；接入第二台后这里会自动出现独立选项。';
-  else hint.textContent = `已检测到 ${monitors.length} 台显示器。仅修改所选屏幕，其他屏幕保持原样。`;
 }
 
 /** 全局粒子设置保存时的提醒：有每屏覆盖的屏不跟随全局（用户真实踩过：全局设了樱花，
@@ -2421,12 +2392,6 @@ function bindSettings() {
     $('cfg-particle-count-out').textContent = `${n} 粒`;
     await save({ particleCount: n });
     toast(`粒子数量已设为 ${n} 粒${particleOverrideNote()}`);
-  });
-
-  $('cfg-monitor').addEventListener('change', async (e) => {
-    await save({ monitor: e.target.value });
-    const label = e.target.selectedOptions[0] ? e.target.selectedOptions[0].textContent : e.target.value;
-    toast(e.target.value !== 'all' ? `只写入「${label}」` : '所有显示器都会跟着切换');
   });
 
   // ---- 后台驻留 ----
@@ -2851,7 +2816,6 @@ async function refreshChannelInfo() {
     state.config = await window.wp.setConfig({ perMonitor: true });
     applyConfigToUI();
   }
-  refreshMonitorTargets();
   applyChannelInfo(info);
 }
 

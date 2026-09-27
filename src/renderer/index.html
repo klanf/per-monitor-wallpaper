@@ -265,14 +265,16 @@
         <label class="check"><input type="checkbox" id="cfg-recursive"><span>包含子文件夹</span></label>
       </div>
 
+      <!-- 53 轮追记：从「系统」页挪进来 —— 画面形态是统一配置自己的事；
+           「写入目标显示器」（config monitor，只管系统壁纸层）按用户拍板撤掉，
+           配置键保留兼容（老配置的值仍生效），以舞台为主。 -->
       <div class="field unified-only">
-        <label class="field-label">写入目标显示器</label>
-        <select class="select" id="cfg-monitor">
-          <option value="all">全部显示器</option>
-          <option value="window">程序窗口所在的显示器</option>
-          <option value="primary">主显示器</option>
-        </select>
-        <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。注意：只作用于系统壁纸层；动态桌面开着时画面由桌面窗口绘制（想换每屏画面形态，去「系统」页 → 动态桌面 → 「跨屏拼一幅 / 每屏同一幅」）。</div>
+        <label class="field-label">动态桌面画面</label>
+        <div class="seg" id="cfg-live-split">
+          <button data-value="span" class="seg-item">跨屏拼一幅</button>
+          <button data-value="per-display" class="seg-item">每屏同一幅</button>
+        </div>
+        <div class="field-hint" style="margin-top:4px">「跨屏拼一幅」= 一块画面横跨所有显示器（一张大图铺满整个桌面）；「每屏同一幅」= 每块显示器各自显示当前这张（各自裁切铺满）。改完即时生效。</div>
       </div>
     </div>
 
@@ -437,15 +439,7 @@
           <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 auto">±2%</span>
         </div>
         <label class="check"><input type="checkbox" id="cfg-live-hide-paused"><span>全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏游戏黑屏，推荐开）</span></label>
-        <!-- 53 轮：统一配置模式下动态桌面的画面形态（每屏独立模式本来就有每屏一块窗口） -->
-        <div class="unified-only" style="margin-top:6px">
-          <div class="seg" id="cfg-live-split">
-            <button data-value="span" class="seg-item">跨屏拼一幅</button>
-            <button data-value="per-display" class="seg-item">每屏同一幅</button>
-          </div>
-          <div class="field-hint" style="margin-top:4px">「跨屏拼一幅」= 一块画面横跨所有显示器（一张大图铺满整个桌面）；「每屏同一幅」= 每块显示器各自显示当前这张（各自裁切铺满）。</div>
-        </div>
-        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。粒子特效在「轮播」页配置；特效只作用于动态桌面画面，不写入系统壁纸。</div>
+        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。画面形态（跨屏拼一幅/每屏同一幅）在「轮播」页设置；特效只作用于动态桌面画面，不写入系统壁纸。</div>
       </div>
 
       <!-- ---------------------------------------------------------- 后台驻留 -->
