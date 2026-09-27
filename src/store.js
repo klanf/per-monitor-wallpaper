@@ -117,6 +117,9 @@ const DEFAULTS = {
     pauseOnFullscreen: true, // 某块屏被全屏应用占满时，只暂停那一块
     pauseOnBattery: true,    // 电池供电时暂停
     pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
+    // 暂停时把舞台窗口整个藏起来（52 轮）：独占全屏游戏做模式切换时，
+    // 桌面下挂着的 4K 交换链窗口会触发驱动挂死（艾尔登法环实锤），藏掉最稳
+    hideOnPaused: true,
   },
 
 
@@ -391,7 +394,6 @@ function normalizeConfig(obj) {
   if ('autoScanMinutes' in out) out.autoScanMinutes = clampAutoScanMinutes(out.autoScanMinutes);
   if ('settingsTab' in out) out.settingsTab = clampSettingsTab(out.settingsTab);
   if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
-  if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
   return out;
 }
 
@@ -528,6 +530,7 @@ function clampLiveStage(value) {
     pauseOnFullscreen: bool('pauseOnFullscreen'),
     pauseOnBattery: bool('pauseOnBattery'),
     pauseOnLock: bool('pauseOnLock'),
+    hideOnPaused: bool('hideOnPaused'),
   };
 }
 

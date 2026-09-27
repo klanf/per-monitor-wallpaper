@@ -10,6 +10,7 @@
  */
 
 const liveDesktop = require('../src/liveDesktop');
+const stagePlan = require('../src/stagePlan');
 
 let pass = 0;
 let fail = 0;
@@ -156,6 +157,56 @@ function main() {
       if (r.write !== want) wrong.push(`${reason} → ${r.write}`);
     }
     check('动态正常态：写与不写恰好等于锚点集合', wrong.length === 0, wrong.join('; ') || '吻合');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n§8 统一频道几何（52 轮：虚拟桌面并集）');
+  // -------------------------------------------------------------------------
+  {
+    // 本机实况：主 3840×2160@150%（DIP 2560×1440）+ 左竖屏 1600×2560@100%（DIP 1600×2560 @x=-1600）
+    const displays = [
+      { id: 1, x: 0, y: 0, width: 2560, height: 1440, scaleFactor: 1.5 },
+      { id: 2, x: -1600, y: 0, width: 1600, height: 2560, scaleFactor: 1.0 },
+    ];
+    const v = stagePlan.virtualBounds(displays);
+    check('DIP 并集：x 取最小（负坐标竖屏）', v.dip.x === -1600 && v.dip.y === 0, JSON.stringify(v.dip));
+    check('DIP 并集：宽 = 右边缘 − 左边缘', v.dip.width === 2560 - (-1600) && v.dip.height === 2560);
+    check('物理并集：150% 屏按 3840 实宽算', v.phys.x === -1600 && v.phys.w === 3840 + 1600 && v.phys.h === 2560,
+      JSON.stringify(v.phys));
+    check('displayIds 保序全收', JSON.stringify(v.displayIds) === '[1,2]');
+
+    const single = stagePlan.virtualBounds([{ id: 9, x: 100, y: 50, width: 800, height: 600, scaleFactor: 2 }]);
+    check('单屏退化：并集 = 自身', single.dip.x === 100 && single.dip.width === 800 && single.phys.w === 1600);
+
+    check('空 / 脏输入返回 null（不抛）',
+      stagePlan.virtualBounds([]) === null && stagePlan.virtualBounds(null) === null
+      && stagePlan.virtualBounds([{ width: 0, height: 0 }]) === null);
+
+    check('负半像素缩放不越界（x*sf 向外取整）',
+      stagePlan.virtualBounds([{ id: 3, x: -1, y: -1, width: 10, height: 10, scaleFactor: 1.25 }]).phys.x === Math.round(-1 * 1.25));
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n§9 舞台 ↔ 暂停映射（52 轮：含统一跨屏舞台）');
+  // -------------------------------------------------------------------------
+  {
+    const paused = new Set(['disp-1']);
+    check('每屏舞台：displayId 命中 → 暂停',
+      stagePlan.isStagePaused({ displayId: 'disp-1', displayIds: null }, paused, false) === true);
+    check('每屏舞台：displayId 未命中 → 不暂停',
+      stagePlan.isStagePaused({ displayId: 'disp-2', displayIds: null }, paused, false) === false);
+    check('统一舞台：任一覆盖屏命中即暂停',
+      stagePlan.isStagePaused({ displayIds: ['disp-2', 'disp-1'] }, paused, false) === true);
+    check('统一舞台：覆盖屏全没命中 → 不暂停',
+      stagePlan.isStagePaused({ displayIds: ['disp-3', 'disp-4'] }, paused, false) === false);
+    check('away 优先：任何舞台都暂停',
+      stagePlan.isStagePaused({ displayId: 'disp-9' }, new Set(), true) === true
+      && stagePlan.isStagePaused({ displayIds: ['disp-3'] }, new Set(), true) === true);
+    check('数组入参兼容（不要求 Set）',
+      stagePlan.isStagePaused({ displayId: 'disp-1' }, ['disp-1'], false) === true);
+    check('空记录 / 无归属 → 不暂停（防御）',
+      stagePlan.isStagePaused(null, paused, false) === false
+      && stagePlan.isStagePaused({}, paused, false) === false);
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

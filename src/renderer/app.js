@@ -2113,6 +2113,8 @@ function applyConfigToUI() {
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
+  // 暂停时隐藏舞台窗口（52 轮，防独占全屏冲突）：嵌套键 liveStage.hideOnPaused
+  $('cfg-live-hide-paused').checked = !((c.liveStage || {}).hideOnPaused === false);
   // 呼吸节奏滑条：默认与 stage.js 的 cfg 默认保持一致（6000ms / ±2%）
   const bp = Math.round(Number(c.breathPeriod));
   $('cfg-breath-period').value = String(Number.isFinite(bp) ? Math.min(Math.max(bp, 2000), 15000) / 1000 : 6);
@@ -2337,6 +2339,15 @@ function bindSettings() {
   $('cfg-breath').addEventListener('change', async (e) => {
     await save({ breath: e.target.checked });
     toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
+  });
+
+  // 暂停时隐藏舞台窗口（52 轮）：嵌套合并写 liveStage.hideOnPaused，即时生效
+  $('cfg-live-hide-paused').addEventListener('change', async (e) => {
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, hideOnPaused: e.target.checked } });
+    toast(e.target.checked
+      ? '已开启：全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏黑屏）'
+      : '已关闭：暂停时保留画面（若独占全屏游戏黑屏请重新开启）');
   });
 
   // 呼吸节奏（47 轮）：周期/幅度滑条，落 profile 键，每屏卡片也能单独覆盖

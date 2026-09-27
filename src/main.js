@@ -1142,6 +1142,9 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
  */
 function startFullscreenWatch() {
+  // 暂停时隐藏舞台窗口（52 轮）：liveStage 无 store 依赖，配置在这里翻译进去；
+  // 改设置实时生效（applyConfigChange 每次都过这里）
+  liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused !== false);
   fullscreenWatch.start({
     getFlags: () => {
       const ls = (store && store.get().liveStage) || {};
@@ -1177,6 +1180,8 @@ async function applyConfigChange(patch) {
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
+  // hideOnPaused 改动实时生效（轮询还开着时也要立刻跟上新设置）
+  if (keys.includes('liveStage') && store.get().liveWallpaper) startFullscreenWatch();
   // 从设置面板整体写配置时也要让热键生效（单独改热键走 hotkeys:set）
   if (hadHotkeys) applyHotkeys();
   announceAutoSetup(auto);
