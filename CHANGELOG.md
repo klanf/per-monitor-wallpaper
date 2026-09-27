@@ -2320,6 +2320,19 @@ profile 载荷两路都带 particles。而用户配置里一块屏覆盖了 `par
 - 真机验收未做（用户正在游戏，探针会动真实桌面）：重启实例后需验收
   ① 统一配置下动态桌面出现 ② 全屏游戏时桌面画面消失、退出恢复。
 
+### 追记（真机探针抓漏，用户实报「重启了还是没舞台」）
+
+- 新增 `tools/tmp/probe-unified-stage.js`：隔离 profile 走真实 createStage +
+  真实 mount 建统一跨屏窗口取证。首轮即抓到真凶——
+  **`创建失败: 统一频道：枚举不到任何显示器`**：`stagePlan.virtualBounds`
+  期望 `{width,height}` 扁平字段，而 Electron `Display` 只有 `bounds.width`
+  （顶层 `width` 不存在），真实对象全被脏值过滤砍光返回 null。
+  单测喂的是扁平假数据，恰好掩盖了这个形状差——纯函数单测绿 ≠ 真机能跑。
+- 修复：stageBounds 统一分支把 `getAllDisplays()` 显式拍平成扁平方块再传入。
+- 复测：探针 VERDICT OK——统一舞台挂载成功（strategy=progman），
+  bounds `(-1067, 0, 3627×1707)` 精确覆盖双屏 DIP 并集，边框补偿 L10/R10/B10、
+  裁剪区域 ok；回归 56 / 162 / 39 全绿。
+
 ## 第五十一轮：泡泡七彩膜 + 灰烬每粒一色 + 精简重复特效（14 → 12 种）
 
 ### 现象：用户两点反馈

@@ -85,7 +85,15 @@ function stageBounds(ch) {
    * 动态桌面从未生效 —— 用户实报「切统一配置舞台就没了」）。
    */
   if (ch && ch.kind === 'unified' && !ch.monitor) {
-    const v = stagePlan.virtualBounds(screen.getAllDisplays());
+    // ⚠️ Electron 的 Display 没有顶层 width/height（只有 bounds.width），直接传
+    // 全被 virtualBounds 的脏值过滤砍光 →「枚举不到任何显示器」（探针实锤，
+    // 单测喂扁平假数据掩盖了这个形状差）。这里显式拍平。
+    const v = stagePlan.virtualBounds(screen.getAllDisplays().map((d) => ({
+      id: d.id,
+      x: d.bounds.x, y: d.bounds.y,
+      width: d.bounds.width, height: d.bounds.height,
+      scaleFactor: d.scaleFactor,
+    })));
     if (!v) throw new Error('统一频道：枚举不到任何显示器');
     return {
       dip: { x: v.dip.x, y: v.dip.y, width: v.dip.width, height: v.dip.height },
