@@ -10,8 +10,11 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  /* 用不透明的黑，不用 rgba：这块窗口就是桌面本身，透出什么都是错 */
-  background: #000;
+  /* 54 轮：透明底。窗口本体也是 transparent —— 「还没画上内容」的空窗期
+     直接透出底下的系统壁纸/图标，物理上不可能再露黑。
+     （旧注释「这块窗口就是桌面本身，透出什么都是错」作废：首帧门控 +
+     缩略图快亮之后，透出的只可能是系统壁纸，正是想要的兜底。） */
+  background: transparent;
 }
 
 .layer {

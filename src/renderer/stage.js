@@ -523,6 +523,37 @@ async function showFrame(entry, dir, animate) {
   }
 
   if (kind === 'image') {
+    // 54 轮「缩略图快亮」：启动等首帧的黑屏时间大头是**原图取回+解码**（8K 秒级），
+    // 不是频道清单（有启动缓存，毫秒级）。首帧（门未开）先用磁盘缩略图
+    // （wpthumb:// 缓存命中 ~6ms）垫一帧、点亮窗口，原图解码完下面照常重绘——
+    // 用户看到的是「壁纸先略糊一瞬、马上变清晰」，而不是「先黑一下」。
+    // 只在首帧做：正常运行中的过渡有旧图垫底，垫模糊帧反而穿帮。
+    if (!showFrame._ffSent) {
+      const ffT0 = performance.now();
+      try {
+        const tRes = await fetch(window.wp.thumbUrl(entry.path));
+        console.log(`[stage] 缩略图垫帧 fetch ok=${tRes.ok} status=${tRes.status} @${(performance.now() - ffT0).toFixed(0)}ms`);
+        if (tRes.ok && token === animToken) {
+          const tBmp = await createImageBitmap(await tRes.blob());
+          if (token !== animToken) { tBmp.close(); }   // 等待期间被切走：释放垫帧位图
+          else {
+            drawSource(incoming, tBmp, tBmp.width, tBmp.height);
+            tBmp.close();
+            // 快照式钉住：垫帧一亮窗就必须可见（等原图重绘的空窗不能露底）
+            clearFx(incoming.root);
+            clearFx(outgoing.root);
+            setLayer(incoming.root, REST, 1, 'px');
+            setLayer(outgoing.root, REST, 0, 'px');
+            shrinkCanvas(outgoing.canvas);
+            active = incomingKey;
+            showFrame._ffSent = true;
+            try { window.wp.stageFirstFrame(); } catch (_) { /* 主进程只告警 */ }
+          }
+        }
+      } catch (err) {
+        console.warn('[stage] 缩略图垫帧失败，等原图:', (err && err.message) || err);
+      }
+    }
     let bmp;
     try {
       bmp = await fetchBitmap(entry);

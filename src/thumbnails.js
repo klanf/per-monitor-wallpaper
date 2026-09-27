@@ -257,12 +257,23 @@ async function stats() {
 
 /* ---------------------------------------------------------------- 协议 */
 
-/** 必须在 app ready 之前调用 */
-function registerScheme() {
-  protocol.registerSchemesAsPrivileged([{
+/**
+ * scheme 特权描述（54 轮）：不再各自调用 registerSchemesAsPrivileged ——
+ * 它**多次调用会互相覆盖**（实测后一次把前一次整个清掉），两个自定义协议
+ * 必须在 main.js 合成一个数组、只调一次。此前 wpthumb 的注册被 wpimg 在
+ * main.js:40 覆盖，fetch 支持从未生效过（胶片条只用 <img> 所以一直没暴露）。
+ */
+function schemePrivileges() {
+  return {
     scheme: SCHEME,
-    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
-  }]);
+    privileges: {
+      standard: true, secure: true, supportFetchAPI: true, stream: true,
+      // 舞台页首帧垫图要用 fetch 取缩略图 —— 舞台源是 file://，跨源请求
+      // 没这一项 Chromium 直接拒（Failed to fetch，ACAO 响应头都轮不到看，
+      // stageProtocol.js 同款坑同款注释）
+      corsEnabled: true,
+    },
+  };
 }
 
 /**
@@ -299,6 +310,14 @@ function handleProtocol() {
           'content-type': result.type,
           'cache-control': 'public, max-age=600',
           'x-thumb-source': result.source,
+          // 舞台页（file:// origin）的首帧垫图要用 fetch 取缩略图 —— 跨域，
+          // 没这行会 Failed to fetch（wpimg:// 同款处理，stageProtocol.js:184）
+          'access-control-allow-origin': '*',
+          // 关键：胶片条 <img>（非 CORS 请求）和舞台 fetch（CORS 请求）共用
+          // 同一个 URL、同一份 Chromium HTTP 缓存 —— 不加 Vary 的话，fetch 会
+          // 命中 img 存的「未过 CORS 审查」缓存条目被直接拒（实测 Failed to
+          // fetch；wpimg 用 no-store 绕开了这个坑）。Vary 让两种请求各存各的。
+          'vary': 'Origin',
         },
       });
     } catch (err) {
@@ -310,7 +329,7 @@ function handleProtocol() {
 
 module.exports = {
   SCHEME,
-  registerScheme,
+  schemePrivileges,
   handleProtocol,
   configure,
   thumbUrl,

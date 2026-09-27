@@ -35,9 +35,15 @@ const videoOptimize = require('./videoOptimize');
 const liveStage = require('./liveStage');
 const fullscreenWatch = require('./fullscreenWatch');
 
-// 自定义协议必须在 app ready 之前注册，所以放在模块顶层
-thumbnails.registerScheme();
-stageProtocol.registerScheme();
+// 自定义协议必须在 app ready 之前注册，所以放在模块顶层。
+// ⚠️ registerSchemesAsPrivileged **多次调用会互相覆盖**（54 轮实锤：原先两个
+// 协议各调一次，wpthumb 被 wpimg 的注册整个清掉，fetch 支持从未生效——胶片条
+// 只用 <img> 不走 fetch，所以一直没暴露）。必须合成一个数组、只调一次。
+const { protocol } = require('electron');
+protocol.registerSchemesAsPrivileged([
+  thumbnails.schemePrivileges(),
+  stageProtocol.schemePrivileges(),
+]);
 
 const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');

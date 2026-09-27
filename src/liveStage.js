@@ -320,7 +320,10 @@ async function createStage(ch) {
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
       frame: false,
-      backgroundColor: '#000000',
+      // 54 轮：窗口透明化 —— 底色不再参与显示。就算哪条路径漏亮了没内容的
+      // 空窗，透出的也是底下的系统壁纸而不是纯黑（stage.css body 同步透明）。
+      transparent: true,
+      backgroundColor: '#00000000',
       skipTaskbar: true,
       resizable: false,
       minimizable: false,
@@ -365,9 +368,10 @@ async function createStage(ch) {
     const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys);
     if (!m.ok) throw new Error(`挂载失败 @${m.step}: ${m.error}`);
 
-    // 53 轮防启动黑屏：backgroundColor 是纯黑，show 之后到渲染端首帧 showFrame
-    // 之间桌面会闪一块黑（冷启动几百 ms~2s）。先保持隐藏，等 stage:first-frame
-    // 再亮（超时只告警不亮黑窗，54 轮），空窗期桌面显示的是系统壁纸。
+    // 53 轮防启动黑屏：先保持隐藏，等渲染端把首帧画上屏（stage:first-frame）
+    // 再亮 —— 54 轮起窗口本体透明（backgroundColor #00000000），就算空窗被
+    // 意外亮出，透出的也是系统壁纸；渲染端另有缩略图快亮（stage.js），
+    // 让「等首帧」的时间本身压到毫秒级。
     waitForFirstFrame(rec, ch.id);
     rec.fails = 0;
     rec.degraded = false;
