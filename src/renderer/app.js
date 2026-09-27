@@ -1359,7 +1359,7 @@ function particleOptions(value) {
   const opts = [
     ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
     ['snow', '雪'], ['fireflies', '萤火虫'], ['stars', '星空流星'], ['bubbles', '泡泡'],
-    ['leaves', '落叶'], ['fluff', '柳絮'], ['dust', '光粒漂浮'], ['confetti', '彩带纸屑'],
+    ['leaves', '落叶'], ['confetti', '彩带纸屑'],
     ['fireworks', '烟花'], ['embers', '火焰灰烬'], ['splash', '雨落水花'], ['raindrops', '雨滴挂屏'],
     ['random', '随机（每次换图抽一种）'],
   ];

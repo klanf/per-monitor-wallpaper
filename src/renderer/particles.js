@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * 舞台粒子图层 —— 雨 / 樱花 / 雪 / 萤火虫 / 星空流星 / 泡泡 / 落叶 / 柳絮 /
- * 光粒 / 彩带 / 烟花 / 火焰灰烬 / 雨落水花 / 雨滴挂屏
+ * 舞台粒子图层 —— 雨 / 樱花 / 雪 / 萤火虫 / 星空流星 / 泡泡 / 落叶 /
+ * 彩带 / 烟花 / 火焰灰烬 / 雨落水花 / 雨滴挂屏（12 种，51 轮起）
  * （profile.particles / profile.particleCount）。
  *
  * 定位（交接文档 11.7 #9 的拍板 + 第 41/42 轮扩容）：
@@ -33,12 +33,17 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
 
   /** 种类白名单：配置里的脏值一律回落 ''（关闭），与 ANIMATIONS 同一条防线思路。
-   *  「random」不在这里 —— 那是 stage.js 的抽取逻辑（每次换图重抽一种实际种类）。 */
+   *  「random」不在这里 —— 那是 stage.js 的抽取逻辑（每次换图重抽一种实际种类）。
+   *  51 轮精简：柳絮/光粒下线（与雪/萤火虫高度重复），老配置经 TYPE_ALIASES
+   *  自动迁到最近似的现存种类，不会静默变「关闭」。 */
   const PARTICLE_TYPES = [
     'rain', 'sakura', 'snow', 'fireflies', 'stars',
-    'bubbles', 'leaves', 'fluff', 'dust', 'confetti',
+    'bubbles', 'leaves', 'confetti',
     'fireworks', 'embers', 'splash', 'raindrops',
   ];
+
+  /** 已下线种类的别名迁移：老配置里的值落到最近似的现存种类 */
+  const TYPE_ALIASES = { fluff: 'snow', dust: 'fireflies' };
 
   const COUNT_MIN = 0;
   const COUNT_MAX = 1000;
@@ -57,7 +62,11 @@
   }
 
   function clampType(value) {
-    return PARTICLE_TYPES.includes(value) ? value : '';
+    if (PARTICLE_TYPES.includes(value)) return value;
+    if (TYPE_ALIASES[value] && PARTICLE_TYPES.includes(TYPE_ALIASES[value])) {
+      return TYPE_ALIASES[value];                 // 老配置迁移：fluff→snow / dust→fireflies
+    }
+    return '';
   }
 
   /* ------------------------------------------------------------ 工具 */
@@ -343,14 +352,23 @@
     },
   };
 
-  /* 泡泡：自下而上的半透明圆环 + 左上高光点（42 轮放大：3~11） */
+  /* 泡泡：自下而上的肥皂泡（51 轮重做）——
+     · 七彩膜：圆环拆成 3 段弧，各占一个色相（相隔 120°），色相随时间缓慢流转，
+       起始角跟着摆动相位转 → 膜面上彩虹光在流动；加极淡白色填充当泡体 + 白色高光点；
+     · 上升途中缓缓变大：grow px/s 持续长到 maxSize 封顶，飘出顶边回收时重置回小泡，
+       「长大 → 重来」天然循环。 */
   TYPES.bubbles = {
     make(W, H, r, anywhere) {
+      const size = 3 + r() * 8;                     // 3~11 px 初生半径
       return {
         x: r() * W,
         y: anywhere ? r() * H : H + 12 + r() * H * 0.1,
         v: 20 + r() * 45,
-        size: 3 + r() * 8,                          // 3~11 px
+        size,
+        maxSize: Math.min(26, size * (2.0 + r() * 0.6)),  // 长大封顶（26px 硬顶）
+        grow: 0.15 + r() * 0.25,                    // 0.15~0.4 px/s：一趟升程肉眼可见地鼓大
+        hue: r() * 360,                             // 膜面主色相
+        hueV: 8 + r() * 20,                         // 色相流转速度 deg/s
         sway: 6 + r() * 16,
         freq: 0.5 + r() * 1.2,
         phase: r() * TAU,
@@ -359,23 +377,30 @@
     },
     step(p, dt, W, H, r) {
       p.phase += p.freq * dt;
+      p.hue = (p.hue + p.hueV * dt) % 360;
+      if (p.size < p.maxSize) p.size = Math.min(p.maxSize, p.size + p.grow * dt);
       p.y -= p.v * dt;
       p.x += Math.sin(p.phase) * p.sway * dt;
-      if (p.y + p.size < 0) {                       // 飘出顶边 → 从底边再来
-        p.x = r() * W;
-        p.y = H + 12 + r() * H * 0.1;
+      if (p.y + p.size < 0) {                       // 飘出顶边 → 从底边来一个新小泡
+        Object.assign(p, TYPES.bubbles.make(W, H, r, false));
       }
       wrapX(p, W, 10);
     },
-    begin(ctx) {
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1;
-    },
     draw(ctx, p) {
-      ctx.globalAlpha = p.alpha;
+      ctx.globalAlpha = p.alpha * 0.35;             // 泡体：极淡的白色填充
+      ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, TAU);
-      ctx.stroke();
+      ctx.fill();
+      ctx.lineWidth = 1;                            // 七彩膜：3 段弧各一个色相，随相位流转
+      for (let k = 0; k < 3; k += 1) {
+        const a0 = p.phase * 0.6 + (k * TAU) / 3;
+        ctx.globalAlpha = p.alpha;
+        ctx.strokeStyle = `hsl(${(p.hue + k * 120) % 360}, 85%, 72%)`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, a0, a0 + (TAU / 3) * 0.82);   // 留 18% 缺口才像膜不是环
+        ctx.stroke();
+      }
       ctx.globalAlpha = p.alpha * 0.9;              // 高光
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
@@ -428,75 +453,8 @@
     },
   };
 
-  /* 柳絮：白色小绒点，极慢 + 大摆幅，光晕比本体大（42 轮放大：2~4） */
-  TYPES.fluff = {
-    make(W, H, r, anywhere) {
-      return {
-        x: r() * W,
-        y: anywhere ? r() * H : -10 - r() * H * 0.15,
-        v: 15 + r() * 30,
-        size: 2 + r() * 2,                          // 2~4 px
-        sway: 25 + r() * 45,
-        freq: 0.3 + r() * 0.7,
-        phase: r() * TAU,
-        alpha: 0.3 + r() * 0.4,
-      };
-    },
-    step(p, dt, W, H, r) {
-      p.phase += p.freq * dt;
-      p.y += p.v * dt;
-      p.x += Math.sin(p.phase) * p.sway * dt;
-      if (p.y - p.size * 2 > H) {
-        p.x = r() * W;
-        p.y = -p.size * 2 - r() * H * 0.15;
-      }
-      wrapX(p, W, 6);
-    },
-    draw(ctx, p) {
-      ctx.fillStyle = '#ffffff';
-      ctx.globalAlpha = p.alpha * 0.35;             // 绒毛光晕
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size * 1.8, 0, TAU);
-      ctx.fill();
-      ctx.globalAlpha = p.alpha;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, TAU);
-      ctx.fill();
-    },
-  };
-
-  /* 光粒：极慢的暖色小颗粒，漂浮质感（43 轮按反馈提亮放大：隐约 → 可见） */
-  TYPES.dust = {
-    make(W, H, r, anywhere) {
-      return {
-        x: r() * W,
-        y: anywhere ? r() * H : -4 - r() * H * 0.15,
-        v: 4 + r() * 12,
-        size: 1 + r() * 1.6,                        // 1~2.6 px
-        drift: (r() - 0.5) * 6,
-        freq: 0.2 + r() * 0.5,
-        phase: r() * TAU,
-        alpha: 0.16 + r() * 0.24,                   // 0.16~0.40（原 0.08~0.26）
-      };
-    },
-    step(p, dt, W, H, r) {
-      p.phase += p.freq * dt;
-      p.y += p.v * dt;
-      p.x += (Math.sin(p.phase) * 3 + p.drift) * dt;
-      if (p.y - p.size > H) {
-        p.x = r() * W;
-        p.y = -p.size * 2 - r() * H * 0.15;
-      }
-      wrapX(p, W, 3);
-    },
-    draw(ctx, p) {
-      ctx.globalAlpha = p.alpha;
-      ctx.fillStyle = '#ffe9c4';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, TAU);
-      ctx.fill();
-    },
-  };
+  /* 柳絮/光粒下线（51 轮，用户拍板）：与雪/萤火虫高度重复，
+     老配置值经 TYPE_ALIASES 迁到 snow/fireflies */
 
   /* 彩带纸屑：彩色小矩形，翻转下落 + 呼吸式落速，节日向（42 轮放大） */
   const CONFETTI_COLORS = ['#ff5a5a', '#ffd23f', '#4ecdc4', '#6a89cc', '#f78fb3', '#a3cb38'];
@@ -643,9 +601,9 @@
     },
   };
 
-  /* 火焰灰烬：从底部升起的橙红火屑，摇曳上飘、闪烁、越高越淡（火源在画面下方）。
-     lighter 混合让重叠的火屑发亮；44 轮新增 */
-  const EMBER_COLORS = ['#ffb14a', '#ff7a3c', '#ffd28a', '#ff5a2e'];
+  /* 火焰灰烬：从底部升起的多彩火屑，摇曳上飘、闪烁、越高越淡（火源在画面下方）。
+     lighter 混合让重叠的火屑发亮；51 轮改全彩：每粒一个独立随机色相
+     （饱和度/亮度各自微抖），一屏灰烬各走各色，重叠处混成流光。 */
   TYPES.embers = {
     make(W, H, r, anywhere) {
       return {
@@ -658,7 +616,9 @@
         size: 1 + r() * 2.2,
         flicker: 2 + r() * 5,                       // 闪烁频率
         fp: r() * TAU,
-        color: pick(r, EMBER_COLORS),
+        hue: r() * 360,                             // 每粒独立色相
+        sat: 75 + r() * 20,                         // 75~95%
+        lit: 55 + r() * 15,                         // 亮度 55~70%
         alpha: 0.5 + r() * 0.5,
       };
     },
@@ -678,7 +638,8 @@
     draw(ctx, p, W, H) {
       const flick = 0.55 + 0.45 * Math.sin(p.fp);
       const hFade = Math.max(0.15, Math.min(1, p.y / (H * 0.85)));   // 越高越淡
-      ctx.fillStyle = p.color;
+      const color = `hsl(${p.hue}, ${p.sat}%, ${p.lit}%)`;
+      ctx.fillStyle = color;
       ctx.globalAlpha = p.alpha * flick * hFade * 0.3;                   // 火光晕
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size * 2.6, 0, TAU);

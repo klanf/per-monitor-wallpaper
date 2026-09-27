@@ -43,10 +43,12 @@ check("clampType('rain') 原样保留", pt.clampType('rain') === 'rain');
 check("clampType('sakura') 原样保留", pt.clampType('sakura') === 'sakura');
 check("clampType('meteor_shower') 白名单外 → 关闭", pt.clampType('meteor_shower') === '');
 check('clampType(undefined) → 关闭', pt.clampType(undefined) === '');
-check('种类白名单 = 14 种注册特效',
+check("clampType('fluff') 老配置 → 迁到 snow", pt.clampType('fluff') === 'snow');
+check("clampType('dust') 老配置 → 迁到 fireflies", pt.clampType('dust') === 'fireflies');
+check('种类白名单 = 12 种注册特效（51 轮精简后）',
   JSON.stringify(pt.PARTICLE_TYPES) === JSON.stringify([
     'rain', 'sakura', 'snow', 'fireflies', 'stars',
-    'bubbles', 'leaves', 'fluff', 'dust', 'confetti',
+    'bubbles', 'leaves', 'confetti',
     'fireworks', 'embers', 'splash', 'raindrops',
   ]));
 
@@ -138,8 +140,40 @@ check('水花粒子会从雨丝变成水冠再变回雨丝',
     }
     return sawSplash && sawRespawn;
   })());
-check('fluff/stars/leaves 都有左右摆动（sway > 0）',
-  ['fluff', 'leaves'].every((t) => pt.spawn(t, 5, W, H, seeded(4)).every((p) => p.sway > 0)));
+check('fluff 老值 spawn 也安全（走别名落在 snow 的字段形态上）',
+  pt.spawn('fluff', 5, W, H, seeded(4)).every((p) => p.sway > 0 && p.size >= 2));
+check('leaves 有左右摆动（sway > 0）',
+  pt.spawn('leaves', 5, W, H, seeded(4)).every((p) => p.sway > 0));
+
+// ---- §6 51 轮：泡泡七彩膜 + 上升变大；灰烬每粒一色 ----
+console.log('\n§6 泡泡升级与灰烬全彩（51 轮）');
+const bubbles = pt.spawn('bubbles', 20, W, H, seeded(9));
+check('泡泡带 maxSize 且 ≥ 初值（留出长大空间）',
+  bubbles.every((p) => p.maxSize >= p.size && p.maxSize <= 26.0001));
+check('泡泡带 grow（0.15~0.4 px/s）与色相 hue（0~360）',
+  bubbles.every((p) => p.grow >= 0.15 && p.grow <= 0.4 && p.hue >= 0 && p.hue < 360));
+const one = [Object.assign({}, bubbles[0])];
+const s0 = one[0].size;
+const h0 = one[0].hue;
+pt.step(one, 'bubbles', 1000, W, H, seeded(1));    // 传 1 秒 → 被钳到 50ms
+const DTS = 0.05;                                  // DT_MAX 钳位后的实际步长（秒）
+check('泡泡推进后变大（size + grow·dt，dt 走 DT_MAX 钳位）',
+  Math.abs(one[0].size - (s0 + one[0].grow * DTS)) < 1e-9,
+  `size ${s0.toFixed(2)} → ${one[0].size.toFixed(2)}`);
+check('泡泡色相随时间流转（hue 前进 hueV·dt，360 取模）',
+  Math.abs(one[0].hue - ((h0 + one[0].hueV * DTS) % 360)) < 1e-6,
+  `hue ${h0.toFixed(1)} → ${one[0].hue.toFixed(1)}`);
+const capped = [{ x: 100, y: 100, v: 0, size: 26, maxSize: 26, grow: 0.4, hue: 0, hueV: 10, sway: 0, freq: 1, phase: 0, alpha: 0.3 }];
+pt.step(capped, 'bubbles', 1000, W, H, seeded(1));
+check('泡泡长到 maxSize 封顶不再变大', capped[0].size === 26, String(capped[0].size));
+const exited = [{ x: 100, y: 2, v: 1000, size: 20, maxSize: 26, grow: 0.2, hue: 0, hueV: 10, sway: 0, freq: 1, phase: 0, alpha: 0.3 }];
+pt.step(exited, 'bubbles', 40, W, H, seeded(5));
+check('飘出顶边的泡泡重置回初生小泡（3~11px）并从底边再来',
+  exited[0].size >= 3 && exited[0].size < 11 && exited[0].y > H, `size=${exited[0].size.toFixed(1)} y=${exited[0].y.toFixed(0)}`);
+const emberHues = pt.spawn('embers', 30, W, H, seeded(12)).map((p) => p.hue);
+check('灰烬每粒带独立色相（0~360）且 30 粒里 ≥24 个不同色',
+  emberHues.every((h) => h >= 0 && h < 360) && new Set(emberHues.map((h) => Math.round(h))).size >= 24,
+  `distinct=${new Set(emberHues.map((h) => Math.round(h))).size}/30`);
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
