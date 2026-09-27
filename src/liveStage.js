@@ -320,10 +320,13 @@ async function createStage(ch) {
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
       frame: false,
-      // 54 轮：窗口透明化 —— 底色不再参与显示。就算哪条路径漏亮了没内容的
-      // 空窗，透出的也是底下的系统壁纸而不是纯黑（stage.css body 同步透明）。
-      transparent: true,
-      backgroundColor: '#00000000',
+      // ⚠️ 54 轮追记三（真机实锤）：这里**绝不能开 transparent**。透明窗口走
+      // DirectComposition 合成路径，挂成 Progman 子窗口后合成面几何与 HWND
+      // 位置脱钩 → 舞台整体错位、盖不满显示器（用户验收 b3f421b 复报）；
+      // 沙箱里透明窗口创建即原生崩溃，连探针都测不了。防黑闪靠首帧门控 +
+      // 缩略图快亮（窗口有内容前不亮、第一帧垫壁纸缩略图），不靠透明。
+      transparent: false,
+      backgroundColor: '#000000',
       skipTaskbar: true,
       resizable: false,
       minimizable: false,
