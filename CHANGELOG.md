@@ -2506,6 +2506,55 @@ resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用�
 **验证**：wiring 42 / live 72 / scheduler 162 / particles 52 / resume 28 /
 fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁纸出现）。
 
+## 第五十五轮：portable 版两个断点 —— 托盘「重新启动」直接退出 + 开机自启失效
+
+### 现象：用户用 0.2.0 portable 包验收
+
+1. 托盘点「重新启动」没有反应，应用**直接关闭**、不再拉起；
+2. 勾了「开机自启」，重启电脑**不启动**。
+
+两个症状都只在 portable 形态出现（NSIS 安装版与开发模式无此问题）。
+
+### 根因：portable 是自解压形态，`process.execPath` 指向 %TEMP% 临时副本
+
+portable exe 启动时把自己解包到 `%LOCALAPPDATA%\Temp\<随机>.tmp\` 再运行里面的
+副本 —— `process.execPath` 拿到的是**临时副本的路径**，退出时启动器会把整个
+临时目录删掉。于是两处按 execPath 写的代码同时翻车：
+
+- **重新启动**：`restartApp()` 的 `app.relaunch({ args })` 不传 `path`，默认
+  relaunch `process.execPath` —— 等当前实例退出、启动器删完临时目录，重启目标
+  已经不存在了。用户看到的就是「点了没反应、直接退出」。
+- **开机自启**：`setLaunchItemSettings({ path: process.execPath })` 把**临时
+  路径**写进 Windows 启动项 —— 路径开机即失效（而且每次解包目录名都不同），
+  「勾了自启但开机不起」。
+
+### 改动
+
+- 新增 `src/portablePath.js`（纯函数，不碰 Electron，可 plain-node 单测）：
+  从 portable 启动器注入的环境变量解析**原始 exe** 的真实路径 —— 依次尝试
+  `PORTABLE_EXECUTABLE_FILE` / `PORTABLE_EXECUTABLE_FILENAME`（不同版本命名
+  不一），兜底 `PORTABLE_EXECUTABLE_DIR + PORTABLE_EXECUTABLE_APP_FILENAME`
+  拼路径；每个候选用 `existsSync` 验证，全都解析不出返回 null（宁可回落
+  execPath 也不瞎猜）。
+- `main.js` `restartApp()`：portable 下 `app.relaunch({ path: <原始 exe> })`
+  显式指向原始 exe；非 portable 行为不变（path 走默认）。
+- `tray.js`：新增 `launcherPath()`；`setLaunchAtLogin` / `getLaunchAtLogin`
+  的 `path` 用它回落 execPath —— portable 下写进启动项的是原始 exe，重启
+  匹配状态也不再拿临时路径对不上号。
+- `main.js` `tray:state` 的 `loginCommand` 展示同步改用 `launcherPath()`，
+  设置面板里看到的自启命令与实际写入的一致。
+
+### 验证
+
+- 新增 `tools/test-portable-path.js`（11/11）：非 portable 形态返回 null、
+  FILE/FILENAME 命中与优先级、路径不存在不采信、DIR 兜底拼接（带/不带
+  扩展名）、只有 DIR 不猜。
+- 纯 Node 基线全绿：wiring 42 / swipe 17 / particles 52 / fs 30 / scheduler
+  162 / live 72 / resume 28。
+- **待用户验收**：重新打包 portable 后实测 ① 托盘重启真的拉起新实例；
+  ② 重新勾一次「开机自启」（旧版本写入的启动项指向已失效的临时路径，
+  勾选操作会用新路径覆盖写一次）。
+
 ## 第五十三轮：统一模式画面形态（跨屏拼一幅/每屏同一幅）+ 粒子 UI 互斥 + 暂停联动粒子与按钮
 
 ### 现象：用户三连反馈

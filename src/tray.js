@@ -14,6 +14,7 @@
 
 const { app, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
+const { resolvePortableExecutablePath } = require('./portablePath');
 
 let tray = null;
 let actions = null;
@@ -48,6 +49,18 @@ function loginArgs() {
 }
 
 /**
+ * 应该写进启动项 / relaunch 的可执行文件路径。
+ *
+ * portable 坑：`process.execPath` 是解包到 %TEMP% 的临时 exe，退出即被删，
+ * 拿它写自启项 = 开机永远起不来。portable 启动器会把原始 exe 位置放进
+ * 环境变量（PORTABLE_EXECUTABLE_FILE 等），解析得到就用它。
+ * 非 portable（NSIS 安装版 / 开发模式）返回 null，调用方回落到 execPath。
+ */
+function launcherPath() {
+  return resolvePortableExecutablePath();
+}
+
+/**
  * 现在到底会不会开机自启？
  *
  * 坑：Windows 上 `getLoginItemSettings()` 返回的 `openAtLogin` **永远是 false**，
@@ -57,7 +70,7 @@ function loginArgs() {
  */
 function getLaunchAtLogin() {
   try {
-    const state = app.getLoginItemSettings({ path: process.execPath, args: loginArgs() });
+    const state = app.getLoginItemSettings({ path: launcherPath() || process.execPath, args: loginArgs() });
     return Boolean(state.executableWillLaunchAtLogin || state.openAtLogin);
   } catch {
     try {
@@ -71,7 +84,7 @@ function setLaunchAtLogin(enabled) {
   try {
     app.setLoginItemSettings({
       openAtLogin: Boolean(enabled),
-      path: process.execPath,
+      path: launcherPath() || process.execPath,
       args: loginArgs(),
       name: app.getName() || 'electron-wallpaper',
     });
@@ -313,6 +326,8 @@ module.exports = {
   getLaunchAtLogin,
   setLaunchAtLogin,
   loginArgs,
+  /** portable 原始 exe 路径（非 portable 返回 null）；设置面板展示自启命令也用它 */
+  launcherPath,
   /** 给验证脚本用：菜单模板的纯数据形式（不会弹菜单） */
   menuTemplate: () => menuToPlain(buildMenuTemplate()),
 };

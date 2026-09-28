@@ -35,6 +35,7 @@ const videoOptimize = require('./videoOptimize');
 const liveStage = require('./liveStage');
 const fullscreenWatch = require('./fullscreenWatch');
 const swipeWatch = require('./swipeWatch');
+const portablePath = require('./portablePath');
 
 // 自定义协议必须在 app ready 之前注册，所以放在模块顶层。
 // ⚠️ registerSchemesAsPrivileged **多次调用会互相覆盖**（54 轮实锤：原先两个
@@ -264,8 +265,16 @@ function toggleWindow() {
  */
 function restartApp() {
   quitting = true;
-  // 带上原来的启动参数（比如 --hidden），重启后行为和手动重开一致
-  app.relaunch({ args: process.argv.slice(1) });
+  // 带上原来的启动参数（比如 --hidden），重启后行为和手动重开一致。
+  // portable 坑：execPath 是解包到 %TEMP% 的临时 exe，app.quit() 后启动器会删掉
+  // 整个临时目录 —— 默认 relaunch 目标已消失，表现为「点重启 = 直接退出」。
+  // 所以 portable 下要显式 relaunch 原始 exe（PORTABLE_EXECUTABLE_FILE 等环境变量给出）。
+  const relaunchPath = portablePath.resolvePortableExecutablePath();
+  app.relaunch({
+    path: relaunchPath || undefined,
+    // portable 启动器会把命令行参数透传给内部应用，照原样带上（比如 --hidden）
+    args: process.argv.slice(1),
+  });
   app.quit();
 }
 
@@ -1631,7 +1640,7 @@ function registerIpc() {
   ipcMain.handle('tray:state', () => ({
     installed: tray.isInstalled(),
     launchAtLogin: tray.getLaunchAtLogin(),
-    loginCommand: `${process.execPath} ${tray.loginArgs().join(' ')}`,
+    loginCommand: `${tray.launcherPath()} ${tray.loginArgs().join(' ')}`,
   }));
   ipcMain.handle('tray:set-launch-at-login', (_e, enabled) => {
     const result = tray.setLaunchAtLogin(enabled);
