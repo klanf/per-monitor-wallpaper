@@ -2452,6 +2452,25 @@ live 72 / scheduler 162 / particles 45 / resume 28 不变。真机手势观感�
 回调 + null 语义 + 常量导出全过；基线 live 72 / scheduler 162 / fs 30 / swipe 17 /
 resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用户验收。
 
+### 追记七（用户实报「切图有时候出现很模糊的图」）
+
+**根因**：不是图坏了——是 **blur-dissolve（模糊溶解）过渡**。用户两条频道
+`animation: "random"` + `duration: 1500ms`，而 random 随机池含 blur-dissolve
+（11 选 1）：入场从 `blur(24px)` 渐清晰、旧图向 `blur(18px)` 消散，3512×2160
+的大图上 GPU 模糊又慢，1.5 秒过渡期内任意时刻看都是「整张糊掉的图」——
+「有时候」就是随机抽中它的那一次。
+
+**改动**：
+- `blur-dissolve` 移出 app.js 预览层与 stage.js 舞台端的 **random 随机池**
+  （想用它仍在动画下拉里显式选，效果不变）；
+- 顺带补 app.js 过渡收尾的小漏：清理定时器此前只重置**出场层**的
+  clip/filter，blur-dissolve 的终态 `blur(0px)` 会永久挂在**活跃层**上
+  （filter 非 none 会让巨图一直占一块合成层）——现在活跃层也清 filter/clip
+  （不动 opacity/transform/zIndex，那些是活跃层的正常状态）。
+
+**验证**：wiring 42 / live 72 / scheduler 162 / particles 52 全绿（改动不碰
+配置链路，无新断言）；行为变化 = random 抽签不再出现模糊过渡。
+
 ## 第五十三轮：统一模式画面形态（跨屏拼一幅/每屏同一幅）+ 粒子 UI 互斥 + 暂停联动粒子与按钮
 
 ### 现象：用户三连反馈

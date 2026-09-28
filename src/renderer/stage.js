@@ -195,9 +195,11 @@ function variantFor(animation, dir) {
   }
 }
 
-/** random：每轮换图随机挑一种（showFrame 时决定，同一次过渡内不变） */
+/** random：每轮换图随机挑一种（showFrame 时决定，同一次过渡内不变）。
+ * ⚠️ 不含 blur-dissolve：入场从 blur(24px) 渐清晰，4K 图上 GPU 模糊又慢，
+ * 随机抽中时整个过渡期桌面都是糊的（与 app.js 预览层同一决定）；显式选仍可用。 */
 const RANDOM_POOL = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
-  'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
+  'wipe', 'iris', 'clock', 'blinds', 'split'];
 
 /** 过渡结束/被打断后清掉所有自绘型残留（clip/mask/filter/z 序），回到干净静止态 */
 function clearFx(el) {

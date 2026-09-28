@@ -521,9 +521,12 @@ async function render(index, dir, animate) {
     outgoing.root.style.transition = 'none';
     applyVars(outgoing.root, { opacity: '0', clipPath: '', filter: '', zIndex: '' });
   } else {
-    // random：每次预览切换随机抽一种（与 stage.js 的 RANDOM_POOL 同一清单）
+    // random：每次预览切换随机抽一种（与 stage.js 的 RANDOM_POOL 同一清单）。
+    // ⚠️ 不含 blur-dissolve：入场从 blur(24px) 渐清晰，4K 图上 GPU 模糊又慢，
+    // 随机抽中时整个过渡期画面都是糊的（用户报「切图有时候很模糊」）。
+    // 它仍保留在动画下拉里，想要可以显式选。
     const pool = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
-      'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
+      'wipe', 'iris', 'clock', 'blinds', 'split'];
     const animName = profile.animation === 'random'
       ? pool[Math.floor(Math.random() * pool.length)]
       : profile.animation;
@@ -555,13 +558,19 @@ async function render(index, dir, animate) {
 
   state.active = incomingKey;
 
-  // 动画结束后把后层钉死在透明+原位，并清掉 clip/filter 残留，避免下次复用穿帮
+  // 动画结束后把后层钉死在透明+原位，并清掉 clip/filter 残留，避免下次复用穿帮；
+  // 活跃层也顺手清掉 clip/filter（blur-dissolve 的终态会把 blur(0px) 永久挂在
+  // 活跃层上 —— filter 非空会让巨图一直占一块合成层，白白吃显存）。
+  // 只清 filter/clip，不动 opacity/transform/zIndex —— 那些是活跃层的正常状态。
   clearTimeout(state.cleanupTimer);
   state.cleanupTimer = setTimeout(() => {
     if (token !== state.animToken) return;
     const stale = layers[state.active === 'A' ? 'B' : 'A'];
     stale.root.style.transition = 'none';
     applyVars(stale.root, { transform: 'translate3d(0,0,0)', opacity: '0', clipPath: '', filter: '', zIndex: '' });
+    const active = layers[state.active];
+    active.root.style.transition = 'none';
+    applyVars(active.root, { clipPath: '', filter: '' });
   }, duration + 60);
 }
 
