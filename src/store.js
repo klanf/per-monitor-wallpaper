@@ -222,6 +222,8 @@ const DEFAULTS = {
 
   // ---- 右键菜单 ----
   contextMenu: true,
+  // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫切上/下一张，不写 = 默认开
+  swipeSwitch: true,
   // 快捷移动/复制目标，[{ id, name, path }]
   quickFolders: [],
   /**

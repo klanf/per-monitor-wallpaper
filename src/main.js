@@ -34,6 +34,7 @@ const stageProtocol = require('./stageProtocol');
 const videoOptimize = require('./videoOptimize');
 const liveStage = require('./liveStage');
 const fullscreenWatch = require('./fullscreenWatch');
+const swipeWatch = require('./swipeWatch');
 
 // 自定义协议必须在 app ready 之前注册，所以放在模块顶层。
 // ⚠️ registerSchemesAsPrivileged **多次调用会互相覆盖**（54 轮实锤：原先两个
@@ -452,10 +453,8 @@ async function monitorIdForPointRetry(x, y) {
  * 切下一张和删除都要先过这一步，抽出来免得两边各写一份、各自漏掉回退分支。
  * 每条失败路径都要给说法 —— 桌面菜单点下去无声无息的话，用户只会以为功能坏了。
  */
-async function channelAtCursor() {
-  const pt = win32.cursorPoint();
-  if (!pt) return { ok: false, text: '读不到光标位置' };
-
+/** 「给一个屏幕上的点」→ 那块屏接管的轮播频道（桌面菜单与桌面手势共用，54 轮追记五） */
+async function channelAt(pt) {
   const monitorId = await monitorIdForPointRetry(pt.x, pt.y);
 
   let id = monitorId && scheduler.channels.has(monitorId) ? monitorId : null;
@@ -475,6 +474,12 @@ async function channelAtCursor() {
   return { ok: true, id, label: channelLabel(id), channel: scheduler.channels.get(id) };
 }
 
+async function channelAtCursor() {
+  const pt = win32.cursorPoint();
+  if (!pt) return { ok: false, text: '读不到光标位置' };
+  return channelAt(pt);
+}
+
 /**
  * 把「光标所在那块屏」的轮播往后拨一张 —— 桌面右键菜单「切换到下一张壁纸」。
  *
@@ -482,7 +487,20 @@ async function channelAtCursor() {
  * 所以点完菜单桌面上那块屏当场就换图。
  */
 async function stepWallpaperAtCursor() {
-  const at = await channelAtCursor();
+  const pt = win32.cursorPoint();
+  if (!pt) {
+    send('notice', { text: '读不到光标位置，切不了', error: true });
+    return { ok: false, error: '读不到光标位置' };
+  }
+  return stepWallpaperAt(pt, 1);
+}
+
+/**
+ * 「给一个屏幕上的点」切那块屏的壁纸，dir=+1 下一张 / -1 上一张。
+ * 桌面右键菜单（光标点）与桌面手势（起手点）共用，54 轮追记五抽出。
+ */
+async function stepWallpaperAt(pt, dir) {
+  const at = await channelAt(pt);
   if (!at.ok) {
     send('notice', { text: `${at.text}，切不了`, error: true });
     return { ok: false, error: at.text };
@@ -492,13 +510,13 @@ async function stepWallpaperAtCursor() {
     return { ok: false, error: '这一路只有一张图', channelId: at.id, label: at.label };
   }
 
-  console.log(`[desktop-menu] 切到下一张：${at.label}`);
+  console.log(`[wallpaper-step] ${dir > 0 ? '下一' : '上一'}张 @(${pt.x},${pt.y})：${at.label}`);
   // step 返回的是「换完之后正在放的那张」，不是被跳过的那张
-  const entry = await scheduler.step(at.id, 1);
+  const entry = await scheduler.step(at.id, dir);
   tray.refresh(scheduler.list());
 
-  // 窗口可见时界面自己会跟着刷，别重复打扰；藏进托盘才需要气泡
-  if (entry && !isWindowVisible() && store.get().tray !== false) {
+  // 窗口可见时界面自己会跟着刷，别重复打扰；藏进托盘才需要气泡（菜单路径）
+  if (entry && dir > 0 && !isWindowVisible() && store.get().tray !== false) {
     tray.notify('壁纸切换器', `已切到下一张：${entry.name}（${at.label}）`);
   }
   return {
@@ -1138,7 +1156,7 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
  * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
  */
-  const UI_ONLY_KEYS = ['settingsTab', 'expandedMonitors', 'hintParticlesPerMonitor'];
+  const UI_ONLY_KEYS = ['settingsTab', 'expandedMonitors', 'hintParticlesPerMonitor', 'swipeSwitch'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */
@@ -1852,6 +1870,17 @@ if (!gotLock) {
       startFullscreenWatch();
     }
 
+    // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫。不依赖动态桌面 ——
+    // 静态系统壁纸模式同样能切（scheduler.step 会写系统壁纸）。
+    swipeWatch.start({
+      getEnabled: () => store.get().swipeSwitch !== false,
+      onSwipe: (dir, pt) => {
+        stepWallpaperAt(pt, dir === 'next' ? 1 : -1).catch((err) => {
+          console.warn('[swipe] 切换失败:', err.message);
+        });
+      },
+    });
+
     // 启动加速（48 轮）：舞台已经用「上次的清单」出画面了，后台再真扫一遍校准，
     // 清单有变化（新增/删除）时补一次 rebuild —— 不 await，校验慢不拖慢出画面
     scheduler.drainRefreshQueue().catch((err) => console.warn('[scheduler] 启动校准失败:', err.message));
@@ -1921,6 +1950,7 @@ if (!gotLock) {
   // 释放 COM 接口 + CoUninitialize，避免留下悬挂的 out-of-proc 引用
   app.on('will-quit', () => {
     stopFullscreenWatch();   // 停轮询（stop 内部会把舞台全部解冻）
+    swipeWatch.stop();       // 停桌面手势轮询（54 轮追记五）
     liveStage.stop();   // 卸载舞台窗口（先脱离桌面树再销毁，不留残影）
     if (scheduler) scheduler.stop();
     tray.destroy();

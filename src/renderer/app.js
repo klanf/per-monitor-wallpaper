@@ -2144,6 +2144,8 @@ function applyConfigToUI() {
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
+  // 桌面手势切壁纸（54 轮追记五）：顶层键 swipeSwitch，默认开
+  $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
   $('cfg-close-to-tray').checked = c.closeToTray !== false;
   $('cfg-start-hidden').checked = c.startHidden === true;
 
@@ -2399,6 +2401,14 @@ function bindSettings() {
   });
 
   // ---- 后台驻留 ----
+  // 桌面手势切壁纸（54 轮追记五）：主进程每笔手势起手时现读配置，存盘即生效
+  $('cfg-swipe-switch').addEventListener('change', async (e) => {
+    await save({ swipeSwitch: e.target.checked });
+    toast(e.target.checked
+      ? '桌面手势已开：在桌面横向拖拽 / 横扫即可切壁纸'
+      : '桌面手势已关');
+  });
+
   $('cfg-tray').addEventListener('change', async (e) => {
     await save({ tray: e.target.checked });
     toast(e.target.checked ? '托盘图标会在下次启动时出现' : '托盘图标会在下次启动时移除（当前实例仍保留）');
