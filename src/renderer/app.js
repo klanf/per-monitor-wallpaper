@@ -2125,8 +2125,8 @@ function applyConfigToUI() {
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
-  // 暂停时隐藏舞台窗口（52 轮，防独占全屏冲突）：嵌套键 liveStage.hideOnPaused
-  $('cfg-live-hide-paused').checked = !((c.liveStage || {}).hideOnPaused === false);
+  // 暂停时隐藏舞台窗口（54 轮追记四默认关）：嵌套键 liveStage.hideOnPaused
+  $('cfg-live-hide-paused').checked = (c.liveStage || {}).hideOnPaused === true;
   // 统一模式动态桌面形态（53 轮）：跨屏拼一幅 / 每屏同一幅
   setSegment('cfg-live-split', ((c.liveStage || {}).unifiedSplit === 'per-display') ? 'per-display' : 'span');
   // 呼吸节奏滑条：默认与 stage.js 的 cfg 默认保持一致（6000ms / ±2%）

@@ -21,6 +21,9 @@
  *     是 true 但 DWM 根本不渲染）
  *   - Shell 系统层：Progman / WorkerW（桌面本身，天然铺满每一块屏）、
  *     任务栏、输入法与任务视图悬浮层（CoreWindow / XamlExplorerHost）
+ *   - 进程镜像名黑名单（54 轮追记四）：QQ.exe —— QQNT 截图/录屏遮罩是 Electron
+ *     窗口（Chrome_WidgetWin_1、无 TOOLWINDOW、不 cloak），会误判全屏。
+ *     按镜像路径最后一段排除，见 EXCLUDED_IMAGE_NAMES。
  *
  * 挂机判定：SHQueryUserNotificationState() == QUNS_NOT_PRESENT
  *   = 锁屏 / 屏保 / 显示器关闭。此时 EnumWindows 的结果不可信（锁屏层本身
@@ -56,6 +59,15 @@ const SHELL_CLASSES = new Set([
   'Windows.UI.Core.CoreWindow',
   'XamlExplorerHostIslandWindow',
 ]);
+
+/**
+ * 54 轮追记四：按**进程镜像文件名**排除（不是窗口类名——QQNT 是 Electron 套壳，
+ * 类名 Chrome_WidgetWin_1 与所有 Chromium 应用相同，按类名排除会误伤浏览器全屏）。
+ * QQ 截图/录屏的遮罩层是全屏不透明窗口，会误判成「全屏应用」把舞台暂停。
+ * 匹配的是 exeOf(pid) 的完整镜像路径的最后一段，小写比较；取不到路径（权限等）
+ * 一律**不排除**（宁可误暂停不可漏暂停）。
+ */
+const EXCLUDED_IMAGE_NAMES = new Set(['qq.exe']);
 
 /** 单个窗口是否参与「占满判定」 */
 function eligibleWindow(w) {
@@ -97,7 +109,8 @@ function evaluatePause(input) {
   const pauseOnAway = !(input && input.pauseOnAway === false);
   const pauseOnBattery = Boolean(input && input.pauseOnBattery);
 
-  const eligible = windows.filter(eligibleWindow);
+  const eligible = windows.filter(eligibleWindow)
+    .filter((w) => !(w.imageName && EXCLUDED_IMAGE_NAMES.has(String(w.imageName).toLowerCase())));
   const paused = new Set();
   const reasons = {};
   for (const m of monitors) {
@@ -213,8 +226,11 @@ function sample() {
   for (const hWnd of listTopWindows()) {
     const rect = {};
     if (!a.GetWindowRect(hWnd, rect)) continue;
+    const pidBuf = koffi.alloc('uint32', 1);
+    a.GetWindowThreadProcessId(hWnd, pidBuf);
     windows.push({
       hwnd: String(hWnd),
+      pid: koffi.decode(pidBuf, 'uint32'),      // 诊断用：exe 归属（54 轮追记四，QQ 截图误判排查）
       visible: Boolean(a.IsWindowVisible(hWnd)),
       exStyle: Number(a.GetWindowLongPtrW(hWnd, GWL_EXSTYLE)) >>> 0,
       cloaked: isCloaked(hWnd),
@@ -274,8 +290,21 @@ function tickNow(flags) {
     // 采样失败：当什么都没发生（保持上次状态），别把桌面冻死在误报上
     return { ok: false, error: s.error, pausedIds: last ? [...last.paused] : [], away: last ? last.away : false, reasons: {}, changed: false };
   }
+  // 54 轮追记四：给「eligible 且完整盖住某块屏工作区」的窗口解析进程镜像名
+  // （QQ 排除用）。只有这一小撮窗口才调 OpenProcess，通常 ≤2 个，每 2s 轮询无压力。
+  const monitors = workAreas();
+  for (const w of s.windows) {
+    if (!eligibleWindow(w)) continue;
+    if (!monitors.some((m) => m && m.work && coversWork(w.rect, m.work))) continue;
+    let name = null;
+    try {
+      const exe = desktopHost.exeOf(w.pid);
+      name = exe ? exe.split(/[\\/]/).pop() : null;
+    } catch { /* 取不到就 null：不排除（宁可误暂停不可漏暂停） */ }
+    w.imageName = name;
+  }
   const { paused, reasons } = evaluatePause({
-    monitors: workAreas(),
+    monitors,
     windows: s.windows,
     away: s.away,
     battery: f.battery === true,
@@ -338,6 +367,7 @@ module.exports = {
   eligibleWindow,
   coversWork,
   SHELL_CLASSES,
+  EXCLUDED_IMAGE_NAMES,
   sample,
   workAreas,
   tickNow,

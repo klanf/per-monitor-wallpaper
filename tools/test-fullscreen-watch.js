@@ -35,6 +35,7 @@ function win(over = {}) {
     cloaked: Boolean(over.cloaked),
     cls: over.cls || 'Chrome_WidgetWin_1',
     rect: over.rect,
+    imageName: over.imageName,
   };
 }
 
@@ -148,6 +149,26 @@ function main() {
 
     r = fw.evaluatePause({ monitors: MONITORS, windows: [win({ rect: FULL_MAIN, exStyle: 0x80000000 })] });
     check('扩展样式高位（WS_POPUP 痕迹）不影响判定', r.paused.has(1), '>>>0 转无符号');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n§7 进程镜像名排除（54 轮追记四：QQ 截图/录屏遮罩误判全屏）');
+  // -------------------------------------------------------------------------
+  {
+    let r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'QQ.exe' })] });
+    check('QQ.exe 铺满主屏 ⇒ 不暂停（镜像名命中黑名单）', r.paused.size === 0);
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'qq.exe' })] });
+    check('大小写变体 qq.exe 同样排除', r.paused.size === 0, '小写比较');
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'ELDEN RING.exe' })] });
+    check('黑名单之外的 exe 照常触发暂停', r.paused.has(1));
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN })] });
+    check('imageName 缺失（exeOf 失败）⇒ 不排除，照常暂停', r.paused.has(1), '宁可误暂停不可漏暂停');
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'QQ.exe' }), win({ rect: FULL_MAIN, imageName: 'game.exe' })] });
+    check('QQ + 真全屏应用并存 ⇒ 真应用仍触发', r.paused.has(1));
   }
 
   console.log(`\n===== 单测结果: ${pass}/${pass + fail} =====`);

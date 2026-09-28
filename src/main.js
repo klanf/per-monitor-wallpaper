@@ -1148,9 +1148,10 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
  */
 function startFullscreenWatch() {
-  // 暂停时隐藏舞台窗口（52 轮）：liveStage 无 store 依赖，配置在这里翻译进去；
-  // 改设置实时生效（applyConfigChange 每次都过这里）
-  liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused !== false);
+  // 暂停时隐藏舞台窗口：52 轮默认开（防独占全屏游戏黑屏），54 轮追记四按用户拍板
+  // 改为**默认关**——全屏暂停只冻结（停倒计时+停粒子），舞台留在原地不闪「掉/恢复」。
+  // 独占全屏游戏（艾尔登法环实测 6 次黑屏）玩之前在设置里手动勾回。
+  liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused === true);
   fullscreenWatch.start({
     getFlags: () => {
       const ls = (store && store.get().liveStage) || {};
