@@ -1648,6 +1648,21 @@ async function addDirsToAlbum(albumId) {
     folders: [...album.folders, ...fresh.map((p) => ({ path: p, enabled: true }))],
   });
   toast(`已加入相簿「${album.name}」：${fresh.map(baseName).join('、')}`);
+  // 加完目录还没人用 → 绑到空屏并收起相簿页，让用户立刻看到壁纸出来（别再卡空态）
+  if (await ensureAlbumBound(albumId)) closeAlbumsPage();
+}
+
+/** 相簿未被任何屏幕使用时，绑给「还没绑相簿」的屏 —— 新用户引导的收尾一步。
+ * 返回是否发生了绑定；所有屏都已绑别的相簿时不抢（不动现有配置），提示手动绑。 */
+async function ensureAlbumBound(albumId) {
+  if (state.channels.some((c) => c.profile && c.profile.albumId === albumId)) return false;
+  const target = state.channels.find((c) => c.profile && !c.profile.albumId);
+  if (!target) {
+    toast('相簿已更新。它还没绑定屏幕，可在显示器卡片的「相簿」下拉里选择');
+    return false;
+  }
+  await window.wp.channelCommand(target.id, 'set-profile', { albumId });
+  return true;
 }
 
 async function onAlbumListClick(e) {
@@ -2850,8 +2865,15 @@ async function refreshChannelInfo() {
 }
 
 function bindEvents() {
-  // 添加目录统一走「相簿」页（顶栏按钮已撤，空态大按钮和菜单都指向相簿）
-  $('empty-pick').addEventListener('click', () => $('btn-albums').click());
+  // 空态大按钮：直接弹原生目录对话框 —— folder:pick 会自动建相簿并绑到当前屏。
+  // ⚠️ 53 轮把它改成只开相簿页，但相簿页没有「绑定屏幕」的操作：新用户建相簿、
+  // 加完目录，频道仍绑着空 albumId 永远 0 张图，空态遮罩永远在（54 轮追记九
+  // 用户实报「选完卡在这个界面进不去」）。选择取消就留在原地，无副作用。
+  $('empty-pick').addEventListener('click', async () => {
+    if (!state.previewId) { $('btn-albums').click(); return; }
+    const folder = await window.wp.pickFolder(state.previewId);
+    if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
+  });
   $('btn-rescan').addEventListener('click', async () => {
     if (!state.previewId) { $('btn-albums').click(); return; }
     const result = await window.wp.channelCommand(state.previewId, 'rescan');
