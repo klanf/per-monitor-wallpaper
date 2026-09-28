@@ -181,6 +181,11 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('stage:pause', (_event, payload) => cb(payload));
   },
 
+  /** 主进程喂光标位置（54 轮追记六：粒子绕开鼠标；本屏 CSS px，窗外为 null） */
+  onStageCursor: (cb) => {
+    ipcRenderer.on('stage:cursor', (_event, payload) => cb(payload));
+  },
+
   /** 动态桌面自动暂停态变化（53 轮）：主窗口工具栏图标跟手 */
   onLivePaused: (cb) => {
     ipcRenderer.on('live:paused', (_event, payload) => cb(payload));

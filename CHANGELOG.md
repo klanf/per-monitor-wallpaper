@@ -2426,6 +2426,32 @@ rgb(0,0,0)）；五套基线 72/162/45/28/42 全绿。附带教训写进交接�
 实测命中正确；wiring 42/42（UI_ONLY_KEYS 断言同步）；其余基线
 live 72 / scheduler 162 / particles 45 / resume 28 不变。真机手势观感待用户验收。
 
+### 追记六（新功能：粒子绕开鼠标 —— 光标斥力避让）
+
+用户需求：粒子会绕开「以鼠标为圆心的一定范围」。
+
+**行为**：光标周围 **140px（CSS 逻辑像素）** 半径内的粒子被沿径向外推，
+推速按 `(1 - d/R)` 线性衰减（圆心处最快 260 px/s，边缘归零）——雪 / 樱花 /
+萤火虫 / 泡泡这类慢粒子会明显绕行，雨丝这类快粒子一帧穿过、隐约让路。
+**烟花不吃斥力**（候场态的 x,y 无意义、炸开态的火花是独立数组，推了会瞬移）。
+设置 → 动态桌面新增开关「粒子绕开鼠标」（顶层键 `particleCursor`，默认开，
+经 `resolveProfile` 流进各屏 profile）。
+
+**实现**（为什么这么做）：
+- 舞台窗口是点击穿透的（`WS_EX_TRANSPARENT`），渲染端**永远收不到 mousemove**
+  ——光标位置只能由主进程喂。`liveStage` 起一个 **30Hz 轮询**
+  （`screen.getCursorScreenPoint()` → 按各舞台 `getContentBounds()` 减法换算
+  成本屏 CSS px → `stage:cursor` 广播；窗外发 `null` 让该屏停用避让）。
+  Electron 里 1 CSS px = 1 DIP，坐标不用除缩放。
+- 斥力是**纯函数** `WPParticles.applyCursorAvoidance`（原地外推位置，不改速度
+  字段）：暂停恢复 / 帧率波动都由既有 DT_MAX 钳位兜住，不会瞬移。
+
+**验证**：test-particles 45 → **52**（§7 斥力 7 项：径向外推 / 线性衰减 /
+半径外不动 / null·NaN·dt=0 脏输入 / 烟花三态免疫 / 常量区间）；
+新探针 `probe-cursor-feed`（隐形不挂桌面）VERDICT OK——preload 桥 + 渲染端
+回调 + null 语义 + 常量导出全过；基线 live 72 / scheduler 162 / fs 30 / swipe 17 /
+resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用户验收。
+
 ## 第五十三轮：统一模式画面形态（跨屏拼一幅/每屏同一幅）+ 粒子 UI 互斥 + 暂停联动粒子与按钮
 
 ### 现象：用户三连反馈

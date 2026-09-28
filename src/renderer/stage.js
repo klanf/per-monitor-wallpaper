@@ -73,6 +73,7 @@ const cfg = {
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
   particles: '',               // 粒子特效（profile.particles：''/rain/sakura/random）
   particleCount: 256,          // 粒子数量（profile.particleCount；收紧 0~1000 在 particles.js）
+  particleCursor: true,        // 粒子绕开鼠标（profile.particleCursor；斥力实现在 particles.js）
   particlesActive: '',         // 实际生效种类：particles='random' 时每次换图重抽（rollParticles）
 };
 
@@ -680,6 +681,8 @@ function applyChannelConfig() {
   // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
   if (p.particles !== undefined) cfg.particles = String(p.particles || '');
   if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
+  // 粒子绕开鼠标（54 轮追记六，profile 不写 = 默认开）：关了就不把光标喂给粒子层
+  if (p.particleCursor !== undefined) cfg.particleCursor = Boolean(p.particleCursor);
   rollParticles();
   if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
   // 特效从关到开会把「静态停表」的循环唤醒（48 轮配套；已在跑/冻结时 ensureRaf 自己会挡）
@@ -786,6 +789,11 @@ async function init() {
     setFrozen(Boolean(payload && payload.paused));
     applyChannelConfig();
     wp.listChannels().then(applyChannels);
+  });
+  // 光标喂送（54 轮追记六）：主进程 30Hz 广播本屏光标，粒子层用它做斥力避让；
+  // 开关关着就不喂（粒子层拿到 null 也不碍事，但省一层白工）
+  window.wp.onStageCursor(({ x, y } = {}) => {
+    if (particleFx && cfg.particleCursor) particleFx.setCursor(x, y);
   });
   window.wp.onStagePause((payload) => {
     setFrozen(Boolean(payload && payload.paused));

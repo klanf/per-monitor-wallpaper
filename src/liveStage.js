@@ -482,16 +482,52 @@ function watchOnce() {
 
 /* ---------------------------------------------------------------- 对外接口 */
 
+/* 光标喂送（54 轮追记六：粒子绕开鼠标）——舞台窗口点击穿透收不到 mousemove，
+   由主进程轮询光标换算成各舞台本屏坐标广播。30Hz 足够：粒子 60fps 渲染，
+   光标轨迹 30Hz 插值过来肉眼无阶跃。开销 = 每拍一次原生取点 + 每窗一个小对象。 */
+const CURSOR_FEED_MS = 33;
+let cursorTimer = null;
+
+function feedCursorOnce() {
+  if (!running || stages.size === 0) return;
+  let pt;
+  try { pt = screen.getCursorScreenPoint(); } catch { return; }
+  if (!pt) return;
+  for (const rec of stages.values()) {
+    if (!rec.win || rec.win.isDestroyed()) continue;
+    let b;
+    try { b = rec.win.getContentBounds(); } catch { continue; }
+    const inside = pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
+    // 窗口外（光标在别的屏）：发null让该屏避让失效；Electron 里 1 CSS px = 1 DIP
+    rec.win.webContents.send('stage:cursor', inside
+      ? { x: pt.x - b.x, y: pt.y - b.y }
+      : { x: null, y: null });
+  }
+}
+
+function startCursorFeed() {
+  if (cursorTimer) return;
+  cursorTimer = setInterval(feedCursorOnce, CURSOR_FEED_MS);
+}
+
+function stopCursorFeed() {
+  if (!cursorTimer) return;
+  clearInterval(cursorTimer);
+  cursorTimer = null;
+}
+
 function start() {
   if (running) return;
   running = true;
   if (!watchdogTimer) watchdogTimer = setInterval(watchOnce, WATCHDOG_MS);
+  startCursorFeed();
   console.log('[live-stage] 动态桌面已启动');
 }
 
 function stop() {
   running = false;
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  stopCursorFeed();
   expectedChannels.clear();
   recreateFails.clear();
   for (const id of [...stages.keys()]) destroyStage(id);

@@ -763,6 +763,45 @@
     },
   };
 
+  /* ------------------------------------------------------------ 光标避让 */
+
+  /** 光标斥力半径（CSS 逻辑像素）：粒子绕开鼠标为圆心的这片区域 */
+  const CURSOR_RADIUS = 140;
+  /** 半径圆心处最大外推速度 px/s（线性衰减到边缘 0）——推得动雨丝，不掀烟花 */
+  const CURSOR_PUSH = 260;
+
+  /**
+   * 光标斥力：粒子在半径内按「(1-d/R)² 比例外推」被推开 —— 边缘平缓、圆心最急。
+   * 雨丝这类快粒子一帧就穿过去，慢粒子（雪/樱花/萤火虫/泡泡）会明显绕行；
+   * 烟花的候场态（x,y 无意义）与炸开态（sparks 独立数组）都不动，别把它们瞬移。
+   * 纯函数：parts 原地改写，dtMs 走 DT_MAX 钳位由调用方保证。
+   */
+  function applyCursorAvoidance(parts, cursor, dtMs) {
+    if (!cursor || !Number.isFinite(cursor.x)) return 0;
+    const dt = Math.min(Math.max(Number(dtMs) || 0, 0), DT_MAX) / 1000;
+    if (dt <= 0) return 0;
+    let touched = 0;
+    for (const p of parts) {
+      if (p.kind === 'wait' || p.kind === 'burst' || p.kind === 'rocket') continue;
+      const dx = p.x - cursor.x;
+      const dy = p.y - cursor.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= CURSOR_RADIUS * CURSOR_RADIUS) continue;
+      const d = Math.sqrt(d2);
+      const f = (1 - d / CURSOR_RADIUS) * CURSOR_PUSH * dt;   // 外推位移
+      if (d < 0.5) {
+        // 正好压在圆心上没有方向：给个固定方向扰开，下一帧起走径向
+        p.x += f * 0.71;
+        p.y += f * 0.71;
+      } else {
+        p.x += (dx / d) * f;
+        p.y += (dy / d) * f;
+      }
+      touched += 1;
+    }
+    return touched;
+  }
+
   /* ------------------------------------------------------------ 纯逻辑 API */
 
   /** 光效类（cap）的数量内置：用户数量再大也封顶 */
@@ -823,7 +862,10 @@
    */
   function createParticles(canvas, rand) {
     const ctx = canvas.getContext('2d');
-    const st = { type: '', count: 0, parts: [], W: 1, H: 1, dpr: 1, last: -1 };
+    const st = {
+      type: '', count: 0, parts: [], W: 1, H: 1, dpr: 1, last: -1,
+      cursor: null,                  // {x,y} CSS px；null = 没光标（主进程没喂或关了交互）
+    };
 
     function resize() {
       // 粒子是氛围元素不读文字：DPR 封顶 1（48 轮性能轮）——填充率按 dpr² 降，
@@ -867,20 +909,31 @@
       st.last = -1;                    // 首帧给常规步长，别拿旧 last 顶满 DT_MAX 瞬跳
     }
 
+    /**
+     * 光标位置（本屏 CSS px，主进程轮询喂进来）。x 非有限值 = 光标不在本屏，
+     * 存 null 让避让失效；开关（cfg.particleCursor）由 stage.js 控制是否转发。
+     */
+    function setCursor(x, y) {
+      st.cursor = Number.isFinite(Number(x)) && Number.isFinite(Number(y))
+        ? { x: Number(x), y: Number(y) } : null;
+    }
+
     /** rAF gate 块调用。关闭态只对齐时钟，零绘制 */
     function frame(now) {
       if (!st.type) { st.last = now; return; }
       const dt = st.last < 0 ? 16 : now - st.last;
       st.last = now;
       step(st.parts, st.type, dt, st.W, st.H, rand);
+      applyCursorAvoidance(st.parts, st.cursor, dt);
       draw(ctx, st.parts, st.type, st.W, st.H);
     }
 
-    return { setConfig, resize, frame, isActive: () => Boolean(st.type) };
+    return { setConfig, resize, frame, setCursor, isActive: () => Boolean(st.type) };
   }
 
   return {
     PARTICLE_TYPES, COUNT_MIN, COUNT_MAX, COUNT_DEFAULT, DT_MAX,
-    clampCount, clampType, spawn, step, draw, createParticles,
+    CURSOR_RADIUS, CURSOR_PUSH,
+    clampCount, clampType, spawn, step, draw, createParticles, applyCursorAvoidance,
   };
 });

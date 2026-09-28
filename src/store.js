@@ -249,6 +249,7 @@ const PROFILE_KEYS = [
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
   'particles',                 // 舞台粒子特效：rain/sakura（不写 = 关；白名单收紧在渲染端 particles.js）
   'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
+  'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
   'breathPeriod',              // 呼吸缩放周期 ms（不写 = 渲染端默认 6000；收紧 2000~15000）
   'breathAmplitude',           // 呼吸缩放幅度 %（不写 = 渲染端默认 2，即 ±2%；收紧 0.5~5）
 ];

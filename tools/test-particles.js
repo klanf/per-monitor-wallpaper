@@ -175,5 +175,54 @@ check('灰烬每粒带独立色相（0~360）且 30 粒里 ≥24 个不同色',
   emberHues.every((h) => h >= 0 && h < 360) && new Set(emberHues.map((h) => Math.round(h))).size >= 24,
   `distinct=${new Set(emberHues.map((h) => Math.round(h))).size}/30`);
 
+// ---- §7 54 轮追记六：光标斥力（粒子绕开鼠标）----
+console.log('\n§7 光标斥力（applyCursorAvoidance）');
+{
+  const cur = { x: 500, y: 400 };
+  const R = pt.CURSOR_RADIUS;
+  check('斥力常量在合理区间（R 100~200 / 推速 200~300）',
+    R >= 100 && R <= 200 && pt.CURSOR_PUSH >= 200 && pt.CURSOR_PUSH <= 300,
+    `R=${R} push=${pt.CURSOR_PUSH}`);
+
+  // 半径内：被往外推，且越靠圆心推得越远
+  const near = [{ x: 500, y: 400 - 20, v: 0 }];        // 圆心上方 20px（雪花形状字段齐全些）
+  Object.assign(near[0], { size: 3, sway: 0, freq: 1, phase: 0, drift: 0 });
+  const px0 = near[0].x;
+  const py0 = near[0].y;
+  pt.applyCursorAvoidance(near, cur, 16);
+  check('半径内粒子沿径向外推（圆心上方的粒子往上跑）',
+    near[0].y < py0 && Math.abs(near[0].x - px0) < 0.01,
+    `dy=${(near[0].y - py0).toFixed(2)}`);
+
+  const center = [{ x: 500, y: 400, size: 3, v: 0, sway: 0, freq: 1, phase: 0, drift: 0 }];
+  const edge = [{ x: 500 + R - 1, y: 400, size: 3, v: 0, sway: 0, freq: 1, phase: 0, drift: 0 }];
+  pt.applyCursorAvoidance(center, cur, 16);
+  pt.applyCursorAvoidance(edge, cur, 16);
+  const moved = (p, x0, y0) => Math.hypot(p.x - x0, p.y - y0);
+  check('圆心处推得最急、边缘处几乎不动（(1-d/R) 线性衰减）',
+    moved(center[0], 500, 400) > moved(edge[0], 500 + R - 1, 400) * 5,
+    `center ${moved(center[0], 500, 400).toFixed(2)} vs edge ${moved(edge[0], 500 + R - 1, 400).toFixed(3)}`);
+
+  // 半径外：不动
+  const far = [{ x: cur.x + R + 50, y: cur.y, size: 3, v: 0, sway: 0, freq: 1, phase: 0, drift: 0 }];
+  pt.applyCursorAvoidance(far, cur, 16);
+  check('半径外粒子纹丝不动', far[0].x === cur.x + R + 50 && far[0].y === cur.y);
+
+  // 脏输入：null 光标 / NaN 坐标 = 无操作
+  const clean = [{ x: 500, y: 400, size: 3, v: 0, sway: 0, freq: 1, phase: 0, drift: 0 }];
+  pt.applyCursorAvoidance(clean, null, 16);
+  pt.applyCursorAvoidance(clean, { x: NaN, y: 400 }, 16);
+  pt.applyCursorAvoidance(clean, cur, 0);
+  check('null / NaN / dt=0 全部无操作', clean[0].x === 500 && clean[0].y === 400);
+
+  // 烟花三段人生不吃斥力（wait 的 x,y 无意义、burst 的火花是独立数组、rocket 别打偏）
+  const fw = [{ kind: 'wait', wait: 1, x: 0, y: 0 }];
+  pt.applyCursorAvoidance(fw, cur, 16);
+  check('烟花候场态不被瞬移', fw[0].x === 0 && fw[0].y === 0);
+  const rocket = [{ kind: 'rocket', x: 500, y: 400, vy: -100 }];
+  pt.applyCursorAvoidance(rocket, cur, 16);
+  check('烟花升空态不被打偏', rocket[0].x === 500 && rocket[0].y === 400);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

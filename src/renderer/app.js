@@ -2146,6 +2146,8 @@ function applyConfigToUI() {
   $('cfg-tray').checked = c.tray !== false;
   // 桌面手势切壁纸（54 轮追记五）：顶层键 swipeSwitch，默认开
   $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
+  // 粒子绕开鼠标（54 轮追记六）：顶层键 particleCursor，默认开
+  $('cfg-particle-cursor').checked = c.particleCursor !== false;
   $('cfg-close-to-tray').checked = c.closeToTray !== false;
   $('cfg-start-hidden').checked = c.startHidden === true;
 
@@ -2407,6 +2409,11 @@ function bindSettings() {
     toast(e.target.checked
       ? '桌面手势已开：在桌面横向拖拽 / 横扫即可切壁纸'
       : '桌面手势已关');
+  });
+  // 粒子绕开鼠标（54 轮追记六）：顶层键 particleCursor，经 resolveProfile 流进各屏
+  $('cfg-particle-cursor').addEventListener('change', async (e) => {
+    await save({ particleCursor: e.target.checked });
+    toast(e.target.checked ? '粒子会绕开鼠标了' : '粒子不再避让鼠标');
   });
 
   $('cfg-tray').addEventListener('change', async (e) => {
