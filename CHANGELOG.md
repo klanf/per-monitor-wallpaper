@@ -2555,6 +2555,48 @@ portable exe 启动时把自己解包到 `%LOCALAPPDATA%\Temp\<随机>.tmp\` 再
   ② 重新勾一次「开机自启」（旧版本写入的启动项指向已失效的临时路径，
   勾选操作会用新路径覆盖写一次）。
 
+### 追记（触摸横扫不生效 + 端到端实证）
+
+**现象**：用户验收「触摸屏左右滑动切壁纸」没生效。排查期间确认本机无触摸屏
+（`GetSystemMetrics` 触点数 = 0），遂改用合成输入做端到端实证。
+
+**实证链**（全部有日志/落盘证据）：
+1. `tools/tmp/probe-touch-swipe.js` 16ms 采样：真实鼠标按下时
+   `GetAsyncKeyState(VK_LBUTTON)` 置位、桌面点根类 = Progman ✓；
+2. `tools/tmp/sim-desktop-swipe.js`（SendInput 合成按下+横拖+松开）→ 独立
+   跑 `swipeWatch` 的 e2e 脚本两次 `[FIRED]` ✓；
+3. 对**用户正在运行的实例**模拟横扫 → `playback.json` 主屏 index 252→251
+   （prev 方向正确）、`at` 时间戳与模拟松手秒级吻合 ✓ —— **鼠标路径端到端是通的**。
+
+**根因（触摸）**：代码原假设「触摸由系统合成鼠标输入，VK_LBUTTON 照常置位」
+在 Win8+ 不成立 —— 触摸走 WM_POINTER 消息级合成，不更新异步按键状态，
+轮询层在触摸下看到的是「从未按下」，手势从第一步就进不去。该假设因本机无
+触摸硬件当初就没法实测，属于裸奔上线。
+
+**改动**（src/swipeWatch.js）：
+- 新增**触摸兜底**：未按下时持续采集光标轨迹（只采桌面点），`evaluateFlick`
+  纯函数判定「快速横扫」（窗口 300ms、最短持续 40ms 防瞬移、位移/直度复用
+  evaluateSwipe）；**只在检测到触摸硬件的机器启用**（SM_MAXIMUMTOUCHES > 0，
+  查一次缓存），纯鼠标机器行为零变化；
+- 修掉死代码：`getEnabled` 一直只接线从没被读 —— 设置里的手势开关是摆设；
+  现在每拍现查，关闭时清空轨迹与按压状态；
+- `_setTouchOverride` 测试钩子 + `tools/tmp/sim-touch-flick.js`（无按键纯
+  光标滑动模拟触摸形态）：强制开启兜底后 prev/next 各触发一次、方向正确 ✓；
+  鼠标路径回归 `e2e-swipe-standalone` `[FIRED]` ✓。
+
+**验证**：swipe 单测 28/28（新增 flick 10 项）/ wiring 42 / portable-path 11 /
+scheduler 162 / live 72 / resume 28 / particles 52 / fs 30 全绿。
+**待验收**：在有触摸屏的机器上装新版实测触摸横扫；若仍不生效，先跑
+`tools/tmp/probe-touch-swipe.js` 看触摸按下时光标是否跟随（触摸不带动光标的
+机器需要另走 WM_POINTER 路线）。
+
+### 追记二（sim 脚本 INPUT 布局坑）
+
+`SendInput` 的 INPUT 结构（x64）：type(4)+pad(4) 后是 MOUSEINPUT =
+dx(+8) dy(+12) mouseData(+16) dwFlags(+20)。首版把 dwFlags 写到了 dx 位置 ——
+SendInput 照单全收**不报错**，实际只是把光标挪了 2px，等于没按，且表现为
+「脚本说成功、系统没反应」。教训：手写二进制结构先验证一遍再下结论。
+
 ## 第五十三轮：统一模式画面形态（跨屏拼一幅/每屏同一幅）+ 粒子 UI 互斥 + 暂停联动粒子与按钮
 
 ### 现象：用户三连反馈
