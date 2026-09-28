@@ -113,7 +113,7 @@ const DEFAULTS = {
    * 默认 30 而不是跟随刷新率 —— 桌面画面静止时 GPU 占用要尽量为零。
    */
   liveStage: {
-    fpsCap: 30,              // 帧率上限（5~240）
+    fpsCap: 30,              // 长驻动画（Ken Burns/呼吸/粒子/视频）帧率上限（5~240）；过渡动画不吃闸门，永远跟满垂直同步
     pauseOnFullscreen: true, // 某块屏被全屏应用占满时，只暂停那一块
     pauseOnBattery: true,    // 电池供电时暂停
     pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
@@ -243,7 +243,7 @@ const DEFAULTS = {
 const PROFILE_KEYS = [
   'albumId', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
   'kenBurns',                  // 动态桌面舞台的 Ken Burns 微缩放开关（不写 = 默认开）
-  'fpsCap',                    // 动态桌面舞台过渡帧率上限（不写 = 默认 60）
+  'fpsCap',                    // 舞台长驻动画帧率上限（不写 = 默认 30；过渡动画不吃闸门）
   'videoPlayFull',             // 视频播完再切下一张（不写 = 默认关，按 interval 定时切）
   'breath',                    // 呼吸缩放特效（不写 = 默认关；与 Ken Burns 叠加）
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）

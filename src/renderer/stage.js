@@ -64,7 +64,7 @@ const cfg = {
   animation: 'slide',
   duration: 900,      // 过渡时长 ms：520/620 用户实测偏快，900 起才有「电影感」
   fit: 'cover',
-  fpsCap: 60,         // 30 在 60Hz 屏上过渡明显掉帧；60 = 跟满垂直同步
+  fpsCap: 60,         // 只约束 Ken Burns/呼吸/粒子/视频等长驻动画；过渡动画不吃闸门（追记八）
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
@@ -448,8 +448,12 @@ function ensureRaf() {
   if (rafId || frozen) return;
   const loop = (now) => {
     rafId = 0;
+    // 过渡动画不吃 fpsCap 闸门：闸门是省电策略（画面静止时 GPU 零占用），但
+    // slide/zoom 这类位移过渡被闸在 30fps 时肉眼可见的生硬（54 轮追记八用户实报），
+    // 而过渡只持续一两秒 —— 短时全帧率可接受。Ken Burns / 呼吸 / 粒子 / 视频
+    // 是长驻动画，继续走闸门省电。
+    if (anim) animTick(now);
     if (gate(now)) {
-      animTick(now);
       kenTick(now);
       // 视频壁纸：每帧把 <video> 的当前画面画进活动层（过渡动画是 root 的
       // CSS 样式，与 canvas 内容正交，两者并行不冲突）
