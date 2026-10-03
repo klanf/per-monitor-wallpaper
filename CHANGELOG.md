@@ -2506,6 +2506,42 @@ resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用�
 **验证**：wiring 42 / live 72 / scheduler 162 / particles 52 / resume 28 /
 fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁纸出现）。
 
+## 第五十六轮：视频省电优化出按钮 —— 设置面板可开关、目标帧率三选一
+
+### 背景
+
+视频优化转码（追记：60fps→30fps 副本缓存，解码负载约减半）一直只有
+配置键 `videoOptimize` / `optimizeTargetFps`，**设置面板里没有任何 UI**，
+用户想关/想改帧率只能手改 config.json。本轮补上按钮。
+
+### 改动
+
+- 设置面板「轮播」页新增「视频省电优化」字段块：
+  - 总开关 checkbox（`cfg-video-optimize`）：关掉后永远播原件，
+    已生成的副本保留（重新打开可继续用）；
+  - 目标帧率分段选择（`cfg-optimize-fps`）：降到 30fps（推荐）/ 降到 48fps。
+    **故意不做「60fps=只转码不降帧」**：解码负载一点不省还白吃一次
+    重编画质损失，没有存在意义。
+- `store.js`：`optimizeTargetFps` 落盘前钳位，只认 30/48，其余回落 30
+  （null/undefined 删键走默认）；顺带导出 `normalizeConfig` 供单测。
+- `videoOptimize.js`（关键防线）：
+  - 转码入账时记录 `targetFps` 到索引条目；
+  - 缓存命中时校验 `copyMatchesFps(entry, targetFps)` —— 帧率策略变了
+    旧副本不直供，照常重转覆盖。**指纹 = 路径|大小|mtime 不含 targetFps，
+    不加这道校验的话改帧率等于白按**。老条目没记 targetFps 视为一致
+    （升级不触发全量重转）。
+
+### 缓存目录路径的结论（本轮讨论记录）
+
+`optimizeCacheDir` 维持默认 `D:/video-optimize-cache` 不动：
+放进项目仓库会污染 git（40GB 上限的缓存目录）；userData 在 C 盘
+不符合「缓存走 D 盘」的约定；现状与安装形态解耦。配置键本来就可改。
+
+**验证**：新增 tools/test-video-optimize.js 14/14（copyMatchesFps 8 项 +
+normalizeConfig 钳位 6 项）；wiring 43（字段块 26→27 + 新控件归属断言）/
+scheduler 162 / live 72 / resume 28 / swipe 28 / particles 52 / fs 30 /
+portable-path 11 全绿。UI 实际点击待真机验收。
+
 ## 第五十五轮：portable 版两个断点 —— 托盘「重新启动」直接退出 + 开机自启失效
 
 ### 现象：用户用 0.2.0 portable 包验收

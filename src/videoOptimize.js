@@ -187,6 +187,18 @@ function outBitrateKbps(p, targetFps) {
   return Math.max(800, Math.min(40000, Math.min(p.kbps || byFormula, byFormula)));
 }
 
+/**
+ * 副本帧率是否与当前策略一致（56 轮：目标帧率做成用户可调后必须校验，
+ * 否则 30 改 48 后旧 30fps 副本照样命中，按钮等于白按）。
+ * 指纹 = 路径|大小|mtime 不含 targetFps，所以帧率记在索引条目里；
+ * 老版本条目没这个字段 → 视为一致（不搞升级即全量重转）。
+ */
+function copyMatchesFps(entry, targetFps) {
+  if (!entry || typeof entry !== 'object') return true;
+  const t = Number(entry.targetFps);
+  return !t || t === Number(targetFps);
+}
+
 function buildArgs(srcPath, outFile, p, targetFps, encoder) {
   const kbps = outBitrateKbps(p, targetFps);
   const vcodec = encoder === 'nvenc'
@@ -242,6 +254,7 @@ async function transcodeOne(srcPath, st) {
     srcPath, srcSize: st.size, srcMtimeMs: Math.round(st.mtimeMs),
     createdAt: Date.now(), lastUsed: Date.now(), bytes,
     fps: p.fps, srcKbps: p.kbps, outKbps: outBitrateKbps(p, c.targetFps), encoder,
+    targetFps: c.targetFps,   // 56 轮：帧率策略入账，命中时校验（copyMatchesFps）
   });
   saveIndexNow();
   return true;
@@ -302,8 +315,13 @@ async function resolveForPlayback(srcPath) {
   try { cached = fs.statSync(cacheFile).size > 0; } catch { cached = false; }
   if (cached) {
     const e = loadIndex().get(fp);
-    if (e) { e.lastUsed = Date.now(); saveIndexSoon(); }
-    return { servePath: cacheFile, hit: true, hash: fp };
+    if (!copyMatchesFps(e, c.targetFps)) {
+      // 帧率策略变了：旧帧率副本不直供，往下走照常重转（part 转完 rename 覆盖旧副本）
+      cached = false;
+    } else {
+      if (e) { e.lastUsed = Date.now(); saveIndexSoon(); }
+      return { servePath: cacheFile, hit: true, hash: fp };
+    }
   }
 
   if (Date.now() < (state.failedUntil.get(fp) || 0)) return null;
@@ -376,4 +394,5 @@ module.exports = {
   configure,
   resolveForPlayback,
   cleanup,
+  copyMatchesFps,
 };

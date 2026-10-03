@@ -54,7 +54,7 @@ const orphanFields = [...block.matchAll(/^ {2}<div class="field[ "]/gm)];
 check('没有字段块漏在分类页外面', orphanFields.length === 0, `漏了 ${orphanFields.length} 个`);
 
 const fieldCount = (block.match(/^ {6}<div class="field[ "]/gm) || []).length;
-check('26 个字段块都归进了某一页', fieldCount === 26, String(fieldCount));
+check('27 个字段块都归进了某一页', fieldCount === 27, String(fieldCount));
 
 // 每个页至少有一个字段块
 const perPane = {};
@@ -83,6 +83,7 @@ check('热键在「操作」页', paneOf('id="hotkey-list"') === 'action', Strin
 check('快捷文件夹在「操作」页', paneOf('id="quick-section"') === 'action', String(paneOf('id="quick-section"')));
 check('开机自启在「系统」页', paneOf('id="cfg-launch-at-login"') === 'system', String(paneOf('id="cfg-launch-at-login"')));
 check('视频播放节奏在「轮播」页（53 轮重分类）', paneOf('id="cfg-video-play-full"') === 'play', String(paneOf('id="cfg-video-play-full"')));
+check('视频省电优化在「轮播」页（56 轮）', paneOf('id="cfg-video-optimize"') === 'play', String(paneOf('id="cfg-video-optimize"')));
 check('呼吸缩放在「外观」页（53 轮重分类）', paneOf('id="cfg-breath"') === 'look', String(paneOf('id="cfg-breath"')));
 check('动态桌面开关仍在「系统」页', paneOf('id="cfg-live-wallpaper"') === 'system', String(paneOf('id="cfg-live-wallpaper"')));
 check('缩略图缓存在「系统」页', paneOf('id="thumb-stats"') === 'system', String(paneOf('id="thumb-stats"')));

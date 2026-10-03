@@ -402,6 +402,12 @@ function normalizeConfig(obj) {
   if ('hotkeys' in out) out.hotkeys = normalizeHotkeys(out.hotkeys);
   if ('albums' in out) out.albums = normalizeAlbums(out.albums);
   if ('autoScanMinutes' in out) out.autoScanMinutes = clampAutoScanMinutes(out.autoScanMinutes);
+  // 视频省电优化目标帧率（56 轮）：只认 30/48 档，其余一律回落 30（防手改配置塞脏值）；
+  // null/undefined = 没给值，删键走默认
+  if ('optimizeTargetFps' in out) {
+    if (out.optimizeTargetFps == null) delete out.optimizeTargetFps;
+    else out.optimizeTargetFps = Number(out.optimizeTargetFps) === 48 ? 48 : 30;
+  }
   if ('settingsTab' in out) out.settingsTab = clampSettingsTab(out.settingsTab);
   if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
   return out;
@@ -663,4 +669,5 @@ module.exports = {
   normalizeAlbums,
   findAlbum,
   migrateLegacyFolders,
+  normalizeConfig,
 };

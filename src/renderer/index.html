@@ -166,6 +166,17 @@
         <div class="field-hint">只影响视频条目，图片仍按间隔切换。视频只在动态桌面里播放（系统壁纸吃不下视频）——动态桌面关闭时视频条目不显示，壁纸保持上一张图片。</div>
       </div>
 
+      <!-- 视频省电优化（56 轮）：60fps 视频解码负载约减半；遇到才转、副本缓存，原件一字不动 -->
+      <div class="field">
+        <label class="field-label">视频省电优化</label>
+        <label class="check"><input type="checkbox" id="cfg-video-optimize"><span>高帧率视频自动转低帧率副本（原件不动，副本存独立缓存目录）</span></label>
+        <div class="seg" id="cfg-optimize-fps">
+          <button data-value="30" class="seg-item">降到 30fps（推荐）</button>
+          <button data-value="48" class="seg-item">降到 48fps</button>
+        </div>
+        <div class="field-hint">60fps 视频解码很吃显卡，降到 30fps 解码负载约减半，肉眼几乎看不出差别。第一次播放到某视频时后台转码（当次照常播原件），之后一直播副本；改帧率后旧副本自动作废重转，源文件删了副本也跟着清。</div>
+      </div>
+
       <!-- 特效与动画（47 轮从「外观/系统」集中到轮播，与显示器卡片控件一一对应）：
            过渡动画/时长/粒子都是全局默认，只在统一模式显示；
            每屏独立模式下粒子在各显示器卡片里设置（53 轮互斥，下方卡片旁有指路提示） -->

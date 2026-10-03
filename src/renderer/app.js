@@ -2148,6 +2148,9 @@ function applyConfigToUI() {
   // ---- 动态桌面 ----
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
+  // 视频省电优化（56 轮）：顶层键 videoOptimize / optimizeTargetFps，默认开 + 30fps
+  $('cfg-video-optimize').checked = c.videoOptimize !== false;
+  setSegment('cfg-optimize-fps', Number(c.optimizeTargetFps) === 48 ? '48' : '30');
   $('cfg-breath').checked = c.breath === true;
   // 暂停时隐藏舞台窗口（54 轮追记四默认关）：嵌套键 liveStage.hideOnPaused
   $('cfg-live-hide-paused').checked = (c.liveStage || {}).hideOnPaused === true;
@@ -2364,6 +2367,22 @@ function bindSettings() {
   $('cfg-video-play-full').addEventListener('change', async (e) => {
     await save({ videoPlayFull: e.target.checked });
     toast(e.target.checked ? '视频将播放完整再切下一张' : '视频恢复按间隔时间切换');
+  });
+
+  // ---- 视频省电优化（56 轮）：主进程 videoOptimize 每次现读配置，存盘即生效 ----
+  $('cfg-video-optimize').addEventListener('change', async (e) => {
+    await save({ videoOptimize: e.target.checked });
+    toast(e.target.checked
+      ? '视频省电优化已开：高帧率视频首播后自动改用低帧率副本'
+      : '视频省电优化已关：之后播原件（已生成的副本保留，重新打开可继续用）');
+  });
+  $('cfg-optimize-fps').addEventListener('click', async (event) => {
+    const item = event.target.closest('.seg-item');
+    if (!item) return;
+    const fps = item.dataset.value === '48' ? 48 : 30;
+    setSegment('cfg-optimize-fps', item.dataset.value);
+    await save({ optimizeTargetFps: fps });
+    toast(`之后新转的副本按 ${fps}fps 生成；旧帧率副本在下次播放到时自动重转`);
   });
 
   $('cfg-breath').addEventListener('change', async (e) => {
