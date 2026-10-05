@@ -18,6 +18,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const desktopWallpaper = require('./desktopWallpaper');
+const slideshowGuard = require('./slideshowGuard');
 
 const execFileAsync = promisify(execFile);
 
@@ -181,6 +182,14 @@ async function setWallpaper(imagePath, cacheDir, options = {}) {
     return { ok: false, method: 'none', error: `文件不存在: ${imagePath}` };
   }
 
+  // 59 轮 slideshow.ini 守卫：写系统壁纸会把幻灯片相册配置清成 0 字节（57 轮取证）。
+  // 写之前把还有内容的 ini 快照一份，退出/让位时由 main.js 还原。
+  // 备份路径由 configureSlideshowGuard() 注入（app.getPath('userData')）；没配置 = 守卫静默跳过。
+  if (slideshowGuardBackupFile) {
+    const wpThemes = slideshowGuard.themesDir();
+    if (wpThemes) slideshowGuard.snapshotIfGood(wpThemes, slideshowGuardBackupFile);
+  }
+
   let target = imagePath;
   try {
     target = ensureNativeFormat(imagePath, cacheDir);
@@ -245,8 +254,17 @@ function backendName() {
   return 'unavailable';
 }
 
+/** slideshow.ini 快照备份的落盘路径；null = 守卫未启用（单测 / 主进程未初始化） */
+let slideshowGuardBackupFile = null;
+
+/** 主进程 ready 后调用一次：注入快照备份路径（userData 下），启用写前快照 */
+function configureSlideshowGuard(backupFile) {
+  slideshowGuardBackupFile = backupFile || null;
+}
+
 module.exports = {
   setWallpaper,
+  configureSlideshowGuard,
   getCurrentWallpaper,
   backendName,
   ensureNativeFormat,

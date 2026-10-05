@@ -50,6 +50,7 @@ protocol.registerSchemesAsPrivileged([
 const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
 const win32 = require('./win32');
+const slideshowGuard = require('./slideshowGuard');
 const desktopWallpaper = require('./desktopWallpaper');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
 const { PlaybackState } = require('./playbackState');
@@ -1220,6 +1221,9 @@ async function applyConfigChange(patch) {
   store.set(patch);
   // 纯界面状态：写盘就够了，别惊动调度器
   if (uiOnly) return store.get();
+  // 59 轮：拨到「让位」（接管=关）的瞬间，把幻灯片相册配置还回去 ——
+  // 接管期间的最后一笔写入已经把它踩空了，不还的话用户切幻灯片起不来
+  if (patch && patch.applyToSystem === false) restoreSlideshowIni();
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
@@ -1253,6 +1257,21 @@ async function applyConfigChange(patch) {
     }
   }
   return store.get();
+}
+
+/** slideshow.ini 快照备份的落盘路径（app ready 时初始化，见 configureSlideshowGuard 接线） */
+let slideshowBackupFile = null;
+
+/**
+ * slideshow.ini 守卫的还原动作（59 轮）：接管期间任何一笔系统壁纸写入都会把
+ * Windows 幻灯片的相册配置清成 0 字节 —— 让位 / 退出的瞬间把快照还回去，
+ * 用户去个性化点「幻灯片放映」就不用重选相册（模式本身不代拨，见 slideshowGuard.js）。
+ */
+function restoreSlideshowIni() {
+  if (!slideshowBackupFile) return false;
+  const dir = slideshowGuard.themesDir();
+  if (!dir) return false;
+  return slideshowGuard.restoreIfEmpty(dir, slideshowBackupFile);
 }
 
 /** 频道命令的单一入口 —— IPC 与托盘菜单共用同一份实现 */
@@ -1786,6 +1805,11 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     store = new Store(path.join(app.getPath('userData'), 'config.json'));
 
+    // slideshow.ini 守卫（59 轮）：接管期间每笔系统壁纸写入都会清空幻灯片相册配置，
+    // 写前快照到 userData，让位/退出时还原（见 restoreSlideshowIni / slideshowGuard.js）
+    slideshowBackupFile = path.join(app.getPath('userData'), 'slideshow-backup.ini');
+    win32.configureSlideshowGuard(slideshowBackupFile);
+
     /*
      * 播放位置存档：跟配置文件放同一个目录，但**是独立文件**。
      * 它每次换图都要写（间隔可能只有几秒），而 config.json 是「配置」——
@@ -1958,7 +1982,13 @@ if (!gotLock) {
       event.preventDefault();
       scheduler.anchorSystem()
         .catch((err) => console.warn('[quit] 锚点补写失败:', err.message))
-        .finally(() => { anchorFlushed = true; app.quit(); });
+        .finally(() => {
+          anchorFlushed = true;
+          restoreSlideshowIni();   // 59 轮：锚点那笔又把幻灯片配置踩空了，退出前还回去
+          app.quit();
+        });
+    } else {
+      restoreSlideshowIni();     // 59 轮：不补写也还一次（ini 可能被运行期间的任何一笔踩空）
     }
   });
 
@@ -2011,6 +2041,8 @@ function installTray() {
     isApplyToSystem: () => Boolean(store.get().applyToSystem),
     setApplyToSystem: (on) => {
       store.set({ applyToSystem: Boolean(on) });
+      // 59 轮：让位瞬间还幻灯片相册配置（接管期间的写入把它踩空了）
+      if (!on) restoreSlideshowIni();
       send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
     },
     isWindowVisible,

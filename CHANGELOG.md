@@ -2506,6 +2506,52 @@ resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用�
 **验证**：wiring 42 / live 72 / scheduler 162 / particles 52 / resume 28 /
 fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁纸出现）。
 
+## 第 58 轮追记一：退出/让位后幻灯片还是切不动 —— slideshow.ini 快照守卫
+
+### 现象（用户实报）
+
+58 轮之后：「现在我退出项目了，然后想在个性化切换壁纸模式为幻灯片还是不行，秒回壁纸。」
+
+### 取证
+
+- 全盘进程扫描（按镜像路径精确匹配）：`壁纸切换器.exe` **0 进程**，只有 tag-viewer
+  的 4 个 electron（不相干）—— 报障时应用确实已退出；
+- `Themes/slideshow.ini` = **0 字节，mtime 14:09:27**；`TranscodedWallpaper` 停在
+  14:08:45 —— 14:09:27 之后**没有任何一笔壁纸写入**，说明那次「切幻灯片」根本
+  没有真正生效过；
+- 注册表 `Explorer\Wallpapers`：`BackgroundType = 0`（图片模式），但
+  `SlideshowDirectoryPath1`（幻灯片相册 PIDL）**还在**；
+- `config.json` mtime 14:08:57（`applyToSystem: false`）—— 应用 14:08 时还活着，
+  用户是试完幻灯片才退出的；14:08:45 那笔壁纸写入发生在「接管」还开着的窗口期
+  （接管期间的任何一笔写入都会把 slideshow.ini 踩成 0 字节，57 轮已取证）。
+
+**根因**：接管期间写系统壁纸不仅打回「图片」模式，还把 slideshow.ini 里的
+**幻灯片相册配置**一并清空 —— 这个伤害是**永久性**的，退出/让位之后 Explorer
+没有相册配置可用，个性化里选「幻灯片放映」直接弹回。57 轮的「让位」开关只保证
+让位后不再写，**没救回已经被踩掉的配置**。
+
+### 改动（快照守卫）
+
+- 新增 `src/slideshowGuard.js`（纯文件操作，不碰 electron，可单测）：
+  - `snapshotIfGood()`：任何一笔系统壁纸写入**前**，若 slideshow.ini 有内容
+    （>0 字节 = 用户配置过的相册）就快照到 userData 下；ini 已空则保留手头
+    旧快照不覆盖；
+  - `restoreIfEmpty()`：ini 为空且有非空快照时还原；ini 有内容（用户自己在
+    用幻灯片）绝不动。还原的只是相册配置文件，**不代拨背景模式**；
+- `win32.setWallpaper` 写入前快照（所有写壁纸路径的单一咽喉），备份路径由
+  `configureSlideshowGuard()` 注入（主进程 ready 时传 userData 路径）；
+- `main.js` 三个还原时机：① 设置面板「接管系统壁纸」拨到关的瞬间；
+  ② 托盘「接管系统壁纸」让位的瞬间；③ `before-quit` 锚点补写完成之后
+  （锚点那一笔又会踩空，必须还回去）；
+- 新增 `tools/test-slideshow-guard.js` 14/14（临时目录隔离，不碰真实 APPDATA）。
+
+### 验证
+
+slideshow-guard 14/14；wiring 43 / scheduler 162 / live 72 / particles 52 /
+resume 28 / swipe 28 / video-optimize 14 / portable-path 11 / fs-watch 43 全绿。
+**注意**：本次用户的 slideshow.ini 已经被踩空且守卫还没跑过第一次快照，所以
+**需要在个性化里重新选一次幻灯片相册**；此后守卫接管，退出/让位都会自动救回。
+
 ## 第五十八轮：熄屏检测判死刑 —— 拔电暂停改 GetSystemPowerStatus 直查
 
 ### 现象：屏幕关闭事件真机收不到
