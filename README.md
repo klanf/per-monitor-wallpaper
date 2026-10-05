@@ -9,6 +9,8 @@
 ![node](https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodejs&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
+▶ **[视频演示（Bilibili）](https://www.bilibili.com/video/BV1i9Yi6mE9H/)** —— 一分钟看懂它长什么样、怎么用
+
 ![主界面](docs/界面-主界面.png)
 
 ## 适合谁用
