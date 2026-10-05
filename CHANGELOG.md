@@ -2506,7 +2506,62 @@ resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用�
 **验证**：wiring 42 / live 72 / scheduler 162 / particles 52 / resume 28 /
 fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁纸出现）。
 
+## 第五十九轮：全屏暂停把过渡钉死在半截 —— 主屏黑屏只剩 12px 窄条
+
+### 现象（用户实报）
+
+「壁纸切换器.vbs 打开主显示器又是黑的，不过退出后倒是会显示壁纸。」
+副屏一切正常；退出应用后系统壁纸（数据层完好）就回来了。
+上一轮的「主屏黑屏 = Explorer 渲染层卡死」其实是同一件事——重启 Explorer
+把黑掉的舞台一起带走了，误诊。
+
+### 取证（PrintWindow 逐窗口抓帧 + 注册表 + 进程时间线）
+
+- 数据层完好：`BackgroundType=0`、`CurrentWallpaperPath` 指向真实存在的
+  新世界 jpg、`TranscodedWallpaper` 2.75MB 当场重写过 —— 不是壁纸数据问题；
+- 抓两个舞台窗口本体（PrintWindow，不吃顶层窗口遮挡的亏）：**副屏 100% 非黑、
+  主屏 0.5% 非黑** —— 黑屏在主屏舞台的渲染内容里，非 12px 窄条莫属；
+- 窄条 = 一张图的右缘切片，25 分钟内非黑采样数一帧不变（966/207368）；
+- 主屏频道 playback 存档停在应用启动**之前**：interval 30s 却 30+ 分钟没推进过；
+- 主屏上有 `ELDEN RING NIGHTREIGN` 全屏窗口（2560×1440 盖满工作区，15:26 启动，
+  早于应用 17:50 的启动）—— fullscreenWatch 按设计判「全屏暂停」：
+  调度器日志实录「SAC2766 处于冻结（全屏/锁屏/电池），停表不走针」；
+- 隔离复现探针（tools/probe-freeze-pin.js）：手动 applyPauseState 打断 8s 长过渡，
+  未修复代码下「暂停落在过渡中段」时画面被**永久定格在半截**。
+
+**根因**：`setFrozen(true)` 只停 rAF，不收尾 —— 若暂停恰好落在过渡进行中
+（slide 已滑到 e≈0.995 / wipe 刚揭出 0.5%），画面被钉在中间帧；调度器同时
+「停表不走针」，永远等不到下一帧来收尾。全屏游戏一开几小时，这一黑就黑几小时。
+52 轮的「暂停=画面钉在当前帧」语义没规定"当前帧"必须是**完整帧**，这是个洞。
+
+### 改动
+
+- `stage.js` 新增 `pinAnimToEnd()`：**冻结瞬间把进行中的过渡钉到终态**
+  （incoming REST(1) / outgoing REST(0) / clearFx / shrinkCanvas）——
+  停在完整帧，不停在半截。incoming 的画布在 anim 启动前就已画好，钉终态必然有内容；
+- `stage.js` 新增**静止态自愈**（10s 巡检，开销可忽略）：不变量「anim=null 时
+  活动层必须完整盖屏（transform=REST / op=1 / 无 clip / canvas 非缩样）」，
+  被任何路径弄坏就用快照路径重画钉正 —— 冻结态也生效（drawSource 不依赖 rAF）；
+- `stage.js` 新增 `stage.html?debug=1` 诊断埋点（`WP_STAGE_DEBUG=1` 时由
+  liveStage 附加查询参数开启）：每 3s dump 双图层 transform/opacity/clip/canvas
+  尺寸，黑屏类问题从此有渲染端现场可取证。⚠️ 渲染层没有 `process`
+  （nodeIntegration=false），埋点读 `process.env` 顶层抛错会杀死整个 stage.js
+  （第一跑实锤），开关只能走查询参数；
+- 新增 `tools/diag-stage-capture.py`（PrintWindow 抓挂载舞台 + 非黑统计，
+  黑屏取证的标准工具）与 `tools/probe-freeze-pin.js`（冻结钉帧回归探针）。
+
+### 验证
+
+- 真机重启验收（游戏保持全屏）：主屏舞台 `frozen=true` 且活动层 op=1 /
+  canvas 全尺寸 / transform REST —— 冻在完整帧上，不再黑屏；
+- probe-freeze-pin 6/6：暂停后画面完整（100% 非黑）+ 解冻恢复轮播；
+- fullscreen-pause e2e 11/12（末项「撤掉全屏⇒暂停集合为空」因真机正跑着
+  全屏游戏，采样必然命中，环境性失败非回归）；wiring 43 全绿；
+- live e2e 12/13，末项「看门狗重申 Z 序」在 HEAD 未改版同样失败（对照实验确认
+  与本轮改动无关，同为游戏全屏环境干扰）。
+
 ## 第 58 轮追记一：退出/让位后幻灯片还是切不动 —— slideshow.ini 快照守卫
+
 
 ### 现象（用户实报）
 

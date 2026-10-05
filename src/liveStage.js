@@ -358,7 +358,8 @@ async function createStage(ch) {
       }
     });
 
-    await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
+    await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'),
+      process.env.WP_STAGE_DEBUG === '1' ? { search: 'debug=1' } : undefined);
     if (!running) { win.destroy(); return; }
 
     // 找挂载点。每次创建都重新 snapshot：Explorer 可能重启过，Progman 句柄会变

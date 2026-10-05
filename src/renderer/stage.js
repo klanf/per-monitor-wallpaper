@@ -53,6 +53,59 @@ const TOD_FILTERS = {
 /** resize 后重绘的防抖 */
 const RESIZE_DEBOUNCE = 200;
 
+/* ---------------- 静止态自愈（2026-10-05 黑屏修复的第二道保险） ----------------
+ * 不变量：anim=null 时，活动层必须完整盖住屏幕（root transform=REST、op=1、
+ * canvas 是全屏尺寸）——健康流程里它刚作为 incoming 被 drawSource 画过。
+ * 任何路径若把这个状态弄坏（半截过渡残留 / canvas 被误缩），桌面就会露出
+ * body 的纯黑底；调度器可能同时停表，坏状态会一直停在那里。
+ * 这里低频巡检（10s 一次，开销可忽略），发现違反就用快照路径重画钉正 ——
+ * 冻结态也照常工作（drawSource / 样式写入不依赖 rAF）。
+ * 视频壁纸每帧重画、网页壁纸 iframe 自持，都不在本检查范围。 */
+let healBusyUntil = 0;
+setInterval(() => {
+  if (anim || healBusyUntil > Date.now()) return;
+  const entry = currentEntry;
+  if (!entry || kindOf(entry) !== 'image') return;
+  const l = layers[active];
+  if (!l || !l.root || !l.canvas) return;
+  const badTransform = l.root.style.transform !== 'translate3d(0px, 0px, 0px) scale(1)';
+  const badOpacity = l.root.style.opacity !== '1';
+  const badClip = Boolean(l.root.style.clipPath);
+  const badCanvas = l.canvas.width <= 1;
+  if (!badTransform && !badOpacity && !badClip && !badCanvas) return;
+  console.warn(`[stage] 静止态自愈：活动层不完整（tf=${l.root.style.transform} op=${l.root.style.opacity}` +
+    ` clip=${l.root.style.clipPath ? '有' : '无'} canvas=${l.canvas.width}x${l.canvas.height}）→ 重画钉正`);
+  healBusyUntil = Date.now() + 10000;
+  showFrame(entry, 1, false).catch(() => { /* 取图失败等下一拍 */ });
+}, 10000);
+
+/* ---------------- 黑屏诊断埋点（stage.html?debug=1 时启用，2026-10-05） ----------------
+ * 现象：主屏 stage 图像层卡在「滑出 99.5%」的位置只剩边缘窄条，渲染循环还活着。
+ * 埋点周期性 dump 双图层的真实 DOM 状态（transform/opacity/clip/canvas 尺寸），
+ * 配合 PrintWindow 抓帧可把卡死瞬间的渲染端状态完整取证。
+ * ⚠️ 渲染层没有 process（nodeIntegration=false）——别在这里读 process.env，
+ *    顶层抛错会杀死整个 stage.js（探针第一跑实锤）。开关由 liveStage 加查询参数。 */
+const STAGE_DEBUG = new URLSearchParams(location.search).has('debug');
+if (STAGE_DEBUG) {
+  setInterval(() => {
+    const dump = (tag, l) => {
+      if (!l || !l.root) return `${tag}: <null>`;
+      const c = l.canvas || {};
+      return `${tag}: tf=${JSON.stringify(l.root.style.transform)} op=${l.root.style.opacity}` +
+        ` clip=${JSON.stringify(l.root.style.clipPath || '')} z=${l.root.style.zIndex}` +
+        ` canvas=${c.width}x${c.height} filter=${JSON.stringify(l.root.style.filter || '')}`;
+    };
+    const animInfo = anim
+      ? `p=${Math.round(Math.min(1, (performance.now() - anim.t0) / (anim.duration || 1)) * 1000) / 1000}`
+      : 'null';
+    console.log(`[stage-dbg] t=${Date.now()} active=${active} anim=${animInfo} ` +
+      `frozen=${frozen} token=${animToken} raf=${rafId} innerW=${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio} ` +
+      `entry=${currentEntry ? currentEntry.path.split(/[\\/]/).pop() : 'null'}`);
+    console.log(`[stage-dbg]   ${dump('A', layers.A)}`);
+    console.log(`[stage-dbg]   ${dump('B', layers.B)}`);
+  }, 3000);
+}
+
 /* ------------------------------------------------------------------ 状态 */
 
 let myChannel = null;          // 本窗口绑定的频道 id（stage:bind 指定）
@@ -475,12 +528,34 @@ function ensureRaf() {
   rafId = requestAnimationFrame(loop);
 }
 
+/**
+ * 冻结瞬间把进行中的过渡钉到终态（2026-10-05 黑屏修复）。
+ *
+ * 「暂停 = 画面钉在当前帧」的语义里，"当前帧"必须是**完整帧**——不能是半截过渡。
+ * 真机实锤：全屏游戏盖住主屏触发暂停时，slide/wipe 等过渡正跑到 e≈0.995，
+ * 画面被永久定格在「旧图滑出 99.5%」= 桌面全黑只剩 12px 窄条；调度器同时停表，
+ * 永远等不到下一帧来收尾，这一黑就黑到退出应用。
+ * 钉终态后：incoming 画布早已画好（anim 只在 drawSource 之后才启动），
+ * 新图完整可见；解冻后一切照常。
+ */
+function pinAnimToEnd() {
+  if (!anim) return;
+  const { incoming, outgoing } = anim;
+  anim = null;
+  clearFx(outgoing.root);
+  clearFx(incoming.root);
+  setLayer(outgoing.root, REST, 0, 'px');
+  setLayer(incoming.root, REST, 1, 'px');
+  shrinkCanvas(outgoing.canvas);
+}
+
 function setFrozen(next) {
   if (frozen === Boolean(next)) return;
   frozen = Boolean(next);
   if (frozen) {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     if (activeVideo) activeVideo.pause();          // 视频壁纸跟着冻结
+    pinAnimToEnd();                                // 过渡收尾：停在完整帧，不停在半截
   } else {
     if (activeVideo) activeVideo.play().catch(() => {});
     ken.start = performance.now();         // 恢复：Ken Burns 重置起点，避免大跳
@@ -631,6 +706,7 @@ async function showFrame(entry, dir, animate) {
   const animName = cfg.animation === 'random'
     ? RANDOM_POOL[Math.floor(Math.random() * RANDOM_POOL.length)]
     : cfg.animation;
+  if (STAGE_DEBUG) console.log(`[stage-dbg] showFrame anim=${animName} dir=${currentDir} duration=${duration} incoming=${incomingKey} entry=${entry.path.split(/[\\/]/).pop()}`);
   const v = variantFor(animName, currentDir);
   // 清掉上一次过渡可能残留的自绘样式（快速连切时上一次可能没走到收尾分支）
   clearFx(incoming.root);
