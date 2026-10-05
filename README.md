@@ -568,8 +568,10 @@ python tools/build-exe.py --open       # 打完打开 dist 目录
   "liveStage": {                    // 动态桌面的性能与暂停策略
     "fpsCap": 30,                   // 渲染帧率上限（5~240）
     "pauseOnFullscreen": true,      // 某块屏被全屏应用占满时只暂停那一块
-    "pauseOnBattery": true,         // 电池供电时暂停
+    "pauseOnBattery": true,         // 电池供电时暂停（拔电 2 秒内冻结，插回恢复）
     "pauseOnLock": true,            // 锁屏 / 息屏 / 睡眠时暂停
+    "pauseOnIdle": true,            // 键鼠无输入超过 idlePauseMinutes 也当「人离开」暂停
+    "idlePauseMinutes": 5,          // 无输入判定阈值（分钟，0 = 关闭；纯熄屏不锁屏的平板靠它省电）
     "hideOnPaused": true,           // 暂停时隐藏桌面画面（防独占全屏游戏黑屏，推荐开）
     "unifiedSplit": "span"          // 统一模式画面形态：span=跨屏拼一幅 / per-display=每屏同一幅
   },

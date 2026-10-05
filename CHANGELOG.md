@@ -2506,6 +2506,47 @@ resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用�
 **验证**：wiring 42 / live 72 / scheduler 162 / particles 52 / resume 28 /
 fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁纸出现）。
 
+## 第五十八轮：熄屏检测判死刑 —— 拔电暂停改 GetSystemPowerStatus 直查
+
+### 现象：屏幕关闭事件真机收不到
+
+57 轮之后继续推进「熄屏毫秒级暂停」：displayWatch 三件套（worker 线程隐藏窗口 +
+RegisterPowerSettingNotification + POWERBROADCAST_SETTING 解析）全部写完，
+koffi 一串坑（proto 参数顺序 / GUID 结构体 / register 回调 / worker terminate 挂死）
+逐个排掉，worker 注册成功（READY 315ms）、优雅退出也通了。但**真机手动熄屏
+监听 3 分钟，零事件** —— `GUID_MONITOR_POWERED_ON` 压根不对普通窗口投递
+（只给系统电源管理器/服务用），SC_MONITORPOWER 广播同样收不到。
+
+### 决定（用户拍板）
+
+「要不就监测拔电池好了」—— 放弃熄屏事件检测，电池供电检测就够了：
+平板耗电的根因是「拔电后还在跑」，`pauseOnBattery` 修的正是这个。
+
+### 改动
+
+- **拆掉 displayWatch 整条链**：`displayWatch.js` / `displayWatchWorker.js` /
+  `displayPowerCodec.js` / 单测 / 真机探针 / main.js 接线（start/stop/getFlags）/
+  设置面板复选框（`cfg-pause-display-off`）/ store 键 `pauseOnDisplayOff`，
+  全删。`evaluatePause` 移除 displayOff 参数（reason 集合回到
+  away/idle/battery/fullscreen 四种）；
+- **电池检测换成 koffi 直查**：`fullscreenWatch.isOnBattery()` 走
+  `kernel32!GetSystemPowerStatus`（12 字节结构体一次同步调用，ACLineStatus
+  0=电池 1=市电 255=未知不瞎猜），**无窗口无线程，不依赖任何系统消息投递**
+  —— 熄屏事件收不到的教训就是别赌消息能到。查不到再退回
+  `powerMonitor.isOnBatteryPower()`。轮询 2s 一拍，拔电 2 秒内冻结、插回恢复；
+- 顺手修一个存量 bug：`sample()` 用了 `GetWindowThreadProcessId`（54 轮追记四
+  QQ 排除引入），但 `load()` 里**从未注册**这个函数，全屏暂停真机 e2e 一直在
+  这里炸（单测是纯函数吃假数据，测不出来）；
+- README 配置示例补上 57 轮的 `pauseOnIdle` / `idlePauseMinutes`；设置页
+  提示文案同步（「用电池」直接读系统电源状态，不再提系统电源事件）。
+
+### 验证
+
+fs-watch 43/43（§9 重写为电池：触发/开关/恢复/优先级压过全屏/真机 isOnBattery
+不炸）；fullscreen-pause 真机 e2e 12/12（修复后首次全过）；wiring 43 /
+scheduler 162 / live 72 / particles 52 / resume 28 / swipe 28 / video-optimize 14 /
+portable-path 11 全绿。平板真机拔电冻结待验收。
+
 ## 第五十七轮：托盘可让出系统壁纸（修 Windows 幻灯片被踩）+ 挂机/熄屏自动暂停（修平板合盖耗电）
 
 ### 问题 1：关掉软件后，Windows 个性化的幻灯片放映切不动

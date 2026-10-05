@@ -199,6 +199,36 @@ function main() {
     check('用户动了一下（10s）⇒ 解除', r.paused.size === 0);
   }
 
+  console.log('\n§9 电池供电暂停（58 轮改判：displayWatch 熄屏事件真机收不到，弃用；拔电走 GetSystemPowerStatus 直查）');
+  {
+    const base = { monitors: MONITORS, windows: [], idleSec: 0, idlePauseSeconds: 300 };
+    // 用电池 + 开关开 ⇒ 全部暂停
+    let r = fw.evaluatePause({ ...base, battery: true, pauseOnBattery: true });
+    check('用电池 + pauseOnBattery ⇒ 全部暂停（reason=battery）',
+      r.paused.size === MONITORS.length && Object.values(r.reasons).every((x) => x === 'battery'),
+      Object.values(r.reasons).join(','));
+    // 用电池 + 开关关 ⇒ 照常
+    r = fw.evaluatePause({ ...base, battery: true, pauseOnBattery: false });
+    check('pauseOnBattery=false ⇒ 用电池也不暂停', r.paused.size === 0);
+    // 接回电源 ⇒ 恢复
+    r = fw.evaluatePause({ ...base, battery: false, pauseOnBattery: true });
+    check('接回市电 ⇒ 不暂停（自动恢复）', r.paused.size === 0);
+    // 优先级：锁屏比电池证据更直接
+    r = fw.evaluatePause({ ...base, away: true, battery: true, pauseOnBattery: true });
+    check('锁屏 + 用电池并存 ⇒ reason=away', Object.values(r.reasons).every((x) => x === 'away'));
+    // 优先级：电池压过全屏应用（省电压倒一切，48 轮拍板）
+    r = fw.evaluatePause({
+      monitors: MONITORS,
+      windows: [{ visible: true, exStyle: 0, cloaked: false, cls: 'Chrome_WidgetWin_1', rect: { l: 0, t: 0, r: 1920, b: 1040 } }],
+      battery: true,
+      pauseOnBattery: true,
+    });
+    check('用电池 + 全屏应用并存 ⇒ reason=battery', Object.values(r.reasons).every((x) => x === 'battery'));
+    // isOnBattery()：真机调用要能出结果（台式机返回 false 或 null 都算正常，绝不能炸）
+    const b = fw.isOnBattery();
+    check('isOnBattery() 真机调用不炸（boolean 或 null）', b === true || b === false || b === null, String(b));
+  }
+
   console.log(`\n===== 单测结果: ${pass}/${pass + fail} =====`);
   process.exit(fail ? 1 : 0);
 }

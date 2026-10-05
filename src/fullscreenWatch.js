@@ -99,7 +99,7 @@ function coversWork(rect, work) {
  * @param {number}  [input.idlePauseSeconds=300] 无输入判定阈值（秒；0 = 关闭该判定）
  * @param {boolean} [input.pauseOnFullscreen=true]
  * @param {boolean} [input.pauseOnAway=true]
- * @param {boolean} [input.battery=false]      正在用电池供电（48 轮：平板场景）
+ * @param {boolean} [input.battery=false]      正在用电池供电（GetSystemPowerStatus 直查）
  * @param {boolean} [input.pauseOnBattery=false] 用电池时全部暂停
  * @returns {{ paused: Set<string>, reasons: Object<string,string> }}
  *   reasons: id -> 'away' | 'idle' | 'battery' | 'fullscreen'
@@ -160,6 +160,43 @@ const GWL_EXSTYLE = -20;
 const MONITOR_DEFAULTTONEAREST = 2;
 const QUNS_NOT_PRESENT = 1;
 
+/** SYSTEM_POWER_STATUS（kernel32!GetSystemPowerStatus），只关心 ACLineStatus */
+koffi.struct('WpFsWatchPowerStatus', {
+  ACLineStatus: 'uint8',          // 0=用电池 1=接市电 255=未知
+  BatteryFlag: 'uint8',
+  BatteryLifePercent: 'uint8',
+  Reserved0: 'uint8',
+  BatteryLifeTime: 'uint32',
+  BatteryFullLifeTime: 'uint32',
+});
+
+let k32 = null;
+let k32Error = null;
+
+/**
+ * 电池供电直查（58 轮改判：displayWatch 熄屏事件真机收不到，弃用；
+ * 拔电检测改走 GetSystemPowerStatus —— 一次同步调用，无窗口无线程，
+ * 不依赖任何系统消息投递，比 powerMonitor.isOnBatteryPower() 的缓存值可靠）。
+ * @returns {boolean|null} true=用电池 false=接市电 null=查不到（调用方自行兜底）
+ */
+function isOnBattery() {
+  try {
+    if (!k32) {
+      if (k32Error) return null;
+      const a = koffi.load('kernel32.dll');
+      k32 = { GetSystemPowerStatus: a.func('bool GetSystemPowerStatus(_Out_ WpFsWatchPowerStatus *st)') };
+    }
+    const st = { ACLineStatus: 255, BatteryFlag: 0, BatteryLifePercent: 0, Reserved0: 0, BatteryLifeTime: 0, BatteryFullLifeTime: 0 };
+    if (!k32.GetSystemPowerStatus(st)) return null;
+    if (st.ACLineStatus === 0) return true;   // 拔电（电池供电）
+    if (st.ACLineStatus === 1) return false;  // 接电
+    return null;                              // 255 = 未知（台式机无电池常见），别瞎猜
+  } catch (err) {
+    k32Error = err;
+    return null;
+  }
+}
+
 function load() {
   if (api || loadError) return api;
   try {
@@ -177,6 +214,7 @@ function load() {
       GetClassNameW: u.func('int GetClassNameW(void *hWnd, _Out_ uint16 *buf, int cch)'),
       GetWindowRect: u.func('bool GetWindowRect(void *hWnd, _Out_ WpFsWatchRect *r)'),
       GetWindowLongPtrW: u.func('intptr_t GetWindowLongPtrW(void *hWnd, int index)'),
+      GetWindowThreadProcessId: u.func('uint32 GetWindowThreadProcessId(void *hWnd, _Out_ uint32 *pid)'),
       SHQueryUserNotificationState: s.func('int32 SHQueryUserNotificationState(_Out_ int32 *state)'),
       dwmCloaked,
     };
@@ -325,7 +363,7 @@ function tickNow(flags) {
     pauseOnIdle: f.pauseOnIdle !== false,
     idlePauseSeconds: Number(f.idlePauseSeconds) || 0,
   });
-  const key = `${s.away ? 'A' : '-'}${idleAway ? 'I' : '-'}|[${[...paused].sort((x, y) => x - y).join(',')}]`;
+  const key = `${s.away ? 'A' : '-'}${idleAway ? 'I' : '-'}${f.battery === true ? 'B' : '-'}|[${[...paused].sort((x, y) => x - y).join(',')}]`;
   const changed = last === null || key !== last.key;
   last = { key, paused, away: s.away || idleAway, reasons };
   return {
@@ -379,6 +417,7 @@ module.exports = {
   evaluatePause,
   eligibleWindow,
   coversWork,
+  isOnBattery,
   SHELL_CLASSES,
   EXCLUDED_IMAGE_NAMES,
   sample,

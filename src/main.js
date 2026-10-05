@@ -1182,8 +1182,11 @@ function startFullscreenWatch() {
   fullscreenWatch.start({
     getFlags: () => {
       const ls = (store && store.get().liveStage) || {};
-      let battery = false;
-      try { battery = powerMonitor.isOnBatteryPower(); } catch { /* 早期取不到就当市电 */ }
+      let battery = fullscreenWatch.isOnBattery();
+      if (battery == null) {
+        // GetSystemPowerStatus 查不到（无电池/异常）就退回 Electron 缓存值
+        try { battery = powerMonitor.isOnBatteryPower(); } catch { battery = false; }
+      }
       return {
         pauseOnFullscreen: ls.pauseOnFullscreen !== false,
         pauseOnAway: ls.pauseOnLock !== false,
