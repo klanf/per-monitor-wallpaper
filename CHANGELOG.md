@@ -2506,6 +2506,44 @@ resume 28 / wiring 42 不变。真机观感（140px 半径合不合适）待用�
 **验证**：wiring 42 / live 72 / scheduler 162 / particles 52 / resume 28 /
 fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁纸出现）。
 
+## 第五十七轮：托盘可让出系统壁纸（修 Windows 幻灯片被踩）+ 挂机/熄屏自动暂停（修平板合盖耗电）
+
+### 问题 1：关掉软件后，Windows 个性化的幻灯片放映切不动
+
+**根因（本机取证）**：「关窗口」不是退出 —— `closeToTray` 默认开，进程还活着，
+调度器每个间隔照写系统壁纸（IDesktopWallpaper）。每次写入都会把个性化里刚选的
+「幻灯片放映」打回「图片」模式并**清空 slideshow.ini**（本机 `%APPDATA%\Microsoft\
+Windows\Themes\slideshow.ini` 实测 0 字节，进程列表里实例活着）。真正的退出要托盘
+右键 →「退出」。
+
+**改动**：
+- 托盘菜单新增勾选项「接管系统壁纸」：关掉 = 让位，本程序停止写入系统壁纸，
+  Windows 幻灯片随便选随便切；动态桌面 / 预览 / 手势等其余功能照常。让位与收回
+  都有气泡提示（收回时会覆盖幻灯片，明说）。
+
+### 问题 2：MateBook E 合盖熄屏后还在跑，几小时把电池跑光
+
+**根因（两层）**：
+- 挂机判定用的 `SHQueryUserNotificationState`（QUNS_NOT_PRESENT）只覆盖
+  **锁屏 / 屏保** —— 平板「合盖 = 仅熄屏」不锁屏不睡眠，QUNS 照常 RUNNING，
+  代码注释里写「息屏」是错的（本轮修正）；
+- 暂停轮询此前**随动态桌面启停**，静态系统壁纸模式下整条电池/挂机暂停链路
+  根本没在跑。
+
+**改动**：
+- `evaluatePause` 新增 idle 判定：无输入 ≥ `idlePauseMinutes` 分钟也算「人离开」
+  （reason='idle'），动一下输入立即解除。熄屏 = 无输入，天然被兜住；
+- 暂停轮询**常驻**（不再随动态桌面启停）：静态壁纸模式的平板同样吃到
+  电池 / 挂机暂停（`scheduler.isFrozen` 钩子本来就常装，这次链路才真正通到它）；
+- 新配置 `liveStage.pauseOnIdle`（默认开）/ `idlePauseMinutes`（默认 5，0~120）；
+- 设置「系统」页新增 UI：挂机暂停开关 + 3/5/10/15 分钟档 + 电池暂停开关
+  （pauseOnBattery 默认开但一直没有 UI，一并露出）。
+
+**验证**：test-fullscreen-watch 37/37（新增 §8 七项：超阈值触发 / 未超不触发 /
+阈值 0 关闭 / 显式关开关 / 锁屏并存时 reason 归属 / 旧调用方兼容 / 恢复解除）；
+wiring 43 / scheduler 162 / live 72 / resume 28 / swipe 28 / particles 52 /
+video-optimize 14 / portable-path 11 全绿。托盘勾选、平板实际耗电待真机验收。
+
 ## 第五十六轮：视频省电优化出按钮 —— 设置面板可开关、目标帧率三选一
 
 ### 背景

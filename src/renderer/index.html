@@ -479,6 +479,15 @@
         <label class="check"><input type="checkbox" id="cfg-tray"><span>显示托盘图标</span></label>
         <label class="check"><input type="checkbox" id="cfg-close-to-tray"><span>关闭窗口时隐藏到托盘（不退出）</span></label>
         <label class="check"><input type="checkbox" id="cfg-launch-at-login"><span>开机自动启动</span></label>
+        <label class="check"><input type="checkbox" id="cfg-pause-on-idle"><span>人离开 / 熄屏自动暂停（平板合盖熄屏不睡眠的那种，就靠这条省电）</span></label>
+        <div class="seg" id="cfg-idle-minutes">
+          <button data-value="3" class="seg-item">3 分钟</button>
+          <button data-value="5" class="seg-item">5 分钟</button>
+          <button data-value="10" class="seg-item">10 分钟</button>
+          <button data-value="15" class="seg-item">15 分钟</button>
+        </div>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="cfg-pause-on-battery"><span>用电池时自动暂停（拔掉电源就冻结，接回恢复；台式机常插电不受影响）</span></label>
+        <div class="field-hint">「人离开」= 键鼠无输入超过上方设定分钟，动一下鼠标立即恢复。自动暂停会同时停住桌面画面和系统壁纸切换；关盖只是熄屏（不锁屏不睡眠）的平板就靠这两条不吃电池。</div>
         <label class="check"><input type="checkbox" id="cfg-start-hidden"><span>启动时不显示窗口</span></label>
         <div class="field-hint">托盘开启后，关掉窗口不影响桌面继续轮播；右键托盘图标可以逐屏控制。</div>
         <div class="field-hint mono" id="login-hint"></div>

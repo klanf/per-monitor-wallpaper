@@ -1190,6 +1190,10 @@ function startFullscreenWatch() {
         battery,
         // pauseOnBattery 此前配置里有键但从未接线（48 轮修）：平板/笔记本用电池时全停
         pauseOnBattery: ls.pauseOnBattery === true,
+        // 挂机/熄屏暂停（57 轮）：纯熄屏不触发 QUNS，靠无输入超时兜底
+        pauseOnIdle: ls.pauseOnIdle !== false,
+        idlePauseSeconds: Math.max(0, Number(ls.idlePauseMinutes) || 0) * 60,
+        idleSec: (() => { try { return powerMonitor.getSystemIdleTime(); } catch { return 0; } })(),
       };
     },
     onTick: ({ pausedIds, away, reasons }) => {
@@ -1236,11 +1240,9 @@ async function applyConfigChange(patch) {
       liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
       liveStage.start();
       liveStage.syncTo(scheduler.list());
-      // 全屏/锁屏/电池/挂机暂停轮询必须跟着启停（49 轮修：此前从未启动，
-      // 所有 pauseOn* 在生产里都是死的——最大化后照常切图就是它）
+      // 暂停轮询（57 轮起常驻，不随动态桌面启停）：开着也无妨，start 幂等
       startFullscreenWatch();
     } else {
-      stopFullscreenWatch();
       liveStage.stop();
       // 关掉动态桌面：系统壁纸还停在最后一次锚点图 → 补写当前帧
       // （reason='stop' 在锚点白名单里，必定真写，见 liveDesktop.js）
@@ -1875,9 +1877,10 @@ if (!gotLock) {
       liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
       liveStage.start();
       liveStage.syncTo(scheduler.list());
-      // 全屏 / 锁屏 / 电池 / 挂机暂停轮询（49 轮修：此前漏挂，所有 pauseOn* 都是死的）
-      startFullscreenWatch();
     }
+    // 全屏 / 锁屏 / 电池 / 挂机暂停轮询（49 轮修：此前漏挂，所有 pauseOn* 都是死的；
+    // 57 轮改为常驻——静态系统壁纸模式同样需要电池/挂机暂停，不再随动态桌面启停）
+    startFullscreenWatch();
 
     // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫。不依赖动态桌面 ——
     // 静态系统壁纸模式同样能切（scheduler.step 会写系统壁纸）。
@@ -1999,6 +2002,12 @@ function installTray() {
     },
     setAllPlaying: (playing) => {
       for (const ch of scheduler.channels.values()) scheduler.setPlaying(ch.id, playing);
+      send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
+    },
+    /** 托盘一键让位/收回系统壁纸（57 轮）：让位后 Windows 自带幻灯片随便切 */
+    isApplyToSystem: () => Boolean(store.get().applyToSystem),
+    setApplyToSystem: (on) => {
+      store.set({ applyToSystem: Boolean(on) });
       send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
     },
     isWindowVisible,

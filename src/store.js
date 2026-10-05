@@ -117,6 +117,8 @@ const DEFAULTS = {
     pauseOnFullscreen: true, // 某块屏被全屏应用占满时，只暂停那一块
     pauseOnBattery: true,    // 电池供电时暂停
     pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
+    pauseOnIdle: true,       // 无输入超时也算「人离开」（57 轮：纯熄屏不锁屏的平板合盖就靠它）
+    idlePauseMinutes: 5,     // 无输入判定阈值（分钟，0~120；0 = 关闭该判定）
     // 暂停时把舞台窗口整个藏起来（52 轮）：独占全屏游戏做模式切换时，
     // 桌面下挂着的 4K 交换链窗口会触发驱动挂死（艾尔登法环实锤），藏掉最稳
     hideOnPaused: true,
@@ -541,11 +543,16 @@ function clampLiveStage(value) {
   const src = isPlainObject(value) ? value : {};
   const d = DEFAULTS.liveStage;
   const bool = (key) => (key in src ? toBool(src[key]) : d[key]);
+  const idleMinRaw = Math.round(Number(src.idlePauseMinutes));
   return {
     fpsCap: clampLiveFps(src.fpsCap),
     pauseOnFullscreen: bool('pauseOnFullscreen'),
     pauseOnBattery: bool('pauseOnBattery'),
     pauseOnLock: bool('pauseOnLock'),
+    pauseOnIdle: bool('pauseOnIdle'),
+    idlePauseMinutes: Number.isFinite(idleMinRaw)
+      ? Math.min(Math.max(idleMinRaw, 0), 120)
+      : d.idlePauseMinutes,
     hideOnPaused: bool('hideOnPaused'),
     unifiedSplit: src.unifiedSplit === 'per-display' ? 'per-display' : 'span',
   };

@@ -171,6 +171,34 @@ function main() {
     check('QQ + 真全屏应用并存 ⇒ 真应用仍触发', r.paused.has(1));
   }
 
+  console.log('\n§8 挂机/熄屏兜底（57 轮：纯熄屏不触发 QUNS，靠无输入超时）');
+  {
+    const base = { monitors: MONITORS, windows: [], pauseOnBattery: false };
+    // QUNS 正常 + 无输入超阈值 ⇒ idle 暂停（合盖熄屏场景：不锁屏不进屏保）
+    let r = fw.evaluatePause({ ...base, away: false, idleSec: 600, idlePauseSeconds: 300 });
+    check('QUNS 正常、无输入 600s ≥ 300s ⇒ 全部暂停（reason=idle）',
+      r.paused.size === MONITORS.length && Object.values(r.reasons).every((x) => x === 'idle'),
+      [...r.reasons.values?.() || Object.values(r.reasons)].join(','));
+    // 未超阈值
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 299, idlePauseSeconds: 300 });
+    check('无输入 299s < 300s ⇒ 不暂停', r.paused.size === 0);
+    // idlePauseSeconds=0 = 关闭判定
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 99999, idlePauseSeconds: 0 });
+    check('idlePauseSeconds=0 ⇒ 判定关闭，永不触发', r.paused.size === 0);
+    // pauseOnIdle=false 显式关闭
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 99999, pauseOnIdle: false, idlePauseSeconds: 300 });
+    check('pauseOnIdle=false ⇒ 不暂停', r.paused.size === 0);
+    // 锁屏（QUNS）与 idle 并存 ⇒ reason 取 away（QUNS 是更明确的人离开证据）
+    r = fw.evaluatePause({ ...base, away: true, idleSec: 600, idlePauseSeconds: 300 });
+    check('锁屏 + 超时并存 ⇒ reason=away', Object.values(r.reasons).every((x) => x === 'away'));
+    // 默认值：不传 idlePauseSeconds ⇒ 0 ⇒ 不触发（向后兼容旧调用方）
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 99999 });
+    check('不传 idlePauseSeconds（旧调用方）⇒ 不触发', r.paused.size === 0);
+    // idle 恢复：回掉阈值下 ⇒ 解除
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 10, idlePauseSeconds: 300 });
+    check('用户动了一下（10s）⇒ 解除', r.paused.size === 0);
+  }
+
   console.log(`\n===== 单测结果: ${pass}/${pass + fail} =====`);
   process.exit(fail ? 1 : 0);
 }

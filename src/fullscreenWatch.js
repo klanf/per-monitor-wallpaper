@@ -92,22 +92,32 @@ function coversWork(rect, work) {
  * @param {object} input
  * @param {Array}  input.monitors   [{ id, work: {l,t,r,b} }]（物理像素）
  * @param {Array}  input.windows    [{ visible, exStyle, cloaked, cls, rect: {l,t,r,b} }]
- * @param {boolean} input.away      QUNS_NOT_PRESENT（锁屏 / 屏保 / 息屏）
+ * @param {boolean} input.away      QUNS_NOT_PRESENT（锁屏 / 屏保；**纯熄屏不算**，
+ *                                  平板「合盖=仅熄屏」不锁屏不进屏保，QUNS 照常 RUNNING）
+ * @param {number}  [input.idleSec=0]      系统无输入秒数（powerMonitor.getSystemIdleTime）
+ * @param {boolean} [input.pauseOnIdle=true]  无输入超时也当「人离开」
+ * @param {number}  [input.idlePauseSeconds=300] 无输入判定阈值（秒；0 = 关闭该判定）
  * @param {boolean} [input.pauseOnFullscreen=true]
  * @param {boolean} [input.pauseOnAway=true]
  * @param {boolean} [input.battery=false]      正在用电池供电（48 轮：平板场景）
  * @param {boolean} [input.pauseOnBattery=false] 用电池时全部暂停
  * @returns {{ paused: Set<string>, reasons: Object<string,string> }}
- *   reasons: id -> 'away' | 'battery' | 'fullscreen'
+ *   reasons: id -> 'away' | 'idle' | 'battery' | 'fullscreen'
  */
 function evaluatePause(input) {
   const monitors = (input && input.monitors) || [];
   const windows = (input && input.windows) || [];
   const away = Boolean(input && input.away);
   const battery = Boolean(input && input.battery);
+  const idleSec = Number((input && input.idleSec) || 0);
   const pauseOnFullscreen = !(input && input.pauseOnFullscreen === false);
   const pauseOnAway = !(input && input.pauseOnAway === false);
   const pauseOnBattery = Boolean(input && input.pauseOnBattery);
+  const pauseOnIdle = !(input && input.pauseOnIdle === false);
+  const idlePauseSeconds = Math.max(0, Number((input && input.idlePauseSeconds) || 0));
+
+  // 熄屏/合盖（不锁屏不睡眠）时 QUNS 不变，靠「无输入超时」兜底当成人离开 —— 56→57 轮，修平板熄屏耗电
+  const idleAway = pauseOnIdle && idlePauseSeconds > 0 && idleSec >= idlePauseSeconds;
 
   const eligible = windows.filter(eligibleWindow)
     .filter((w) => !(w.imageName && EXCLUDED_IMAGE_NAMES.has(String(w.imageName).toLowerCase())));
@@ -116,8 +126,8 @@ function evaluatePause(input) {
   for (const m of monitors) {
     if (!m || m.id == null || !m.work) continue;
     let why = null;
-    if (away && pauseOnAway) {
-      why = 'away';
+    if ((away && pauseOnAway) || idleAway) {
+      why = (away && pauseOnAway) ? 'away' : 'idle';
     } else if (battery && pauseOnBattery) {
       why = 'battery';                            // 电池优先于全屏判定：平板省电压倒一切
     } else if (pauseOnFullscreen && eligible.some((w) => coversWork(w.rect, m.work))) {
@@ -128,7 +138,7 @@ function evaluatePause(input) {
       reasons[m.id] = why;
     }
   }
-  return { paused, reasons };
+  return { paused, reasons, idleAway };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +313,7 @@ function tickNow(flags) {
     } catch { /* 取不到就 null：不排除（宁可误暂停不可漏暂停） */ }
     w.imageName = name;
   }
-  const { paused, reasons } = evaluatePause({
+  const { paused, reasons, idleAway } = evaluatePause({
     monitors,
     windows: s.windows,
     away: s.away,
@@ -311,14 +321,17 @@ function tickNow(flags) {
     pauseOnFullscreen: f.pauseOnFullscreen !== false,
     pauseOnAway: f.pauseOnAway !== false,
     pauseOnBattery: f.pauseOnBattery === true,
+    idleSec: Number(f.idleSec) || 0,
+    pauseOnIdle: f.pauseOnIdle !== false,
+    idlePauseSeconds: Number(f.idlePauseSeconds) || 0,
   });
-  const key = `${s.away ? 'A' : '-'}|[${[...paused].sort((x, y) => x - y).join(',')}]`;
+  const key = `${s.away ? 'A' : '-'}${idleAway ? 'I' : '-'}|[${[...paused].sort((x, y) => x - y).join(',')}]`;
   const changed = last === null || key !== last.key;
-  last = { key, paused, away: s.away, reasons };
+  last = { key, paused, away: s.away || idleAway, reasons };
   return {
     ok: true,
     pausedIds: [...paused],
-    away: s.away,
+    away: s.away || idleAway,
     reasons,
     changed,
   };

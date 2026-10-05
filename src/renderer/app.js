@@ -2171,6 +2171,11 @@ function applyConfigToUI() {
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
+  // 自动暂停（57 轮）：嵌套键 liveStage.pauseOnIdle / idlePauseMinutes / pauseOnBattery
+  const lsNow = c.liveStage || {};
+  $('cfg-pause-on-idle').checked = lsNow.pauseOnIdle !== false;
+  $('cfg-pause-on-battery').checked = lsNow.pauseOnBattery === true;
+  setSegment('cfg-idle-minutes', String([3, 5, 10, 15].includes(Number(lsNow.idlePauseMinutes)) ? Number(lsNow.idlePauseMinutes) : 5));
   // 桌面手势切壁纸（54 轮追记五）：顶层键 swipeSwitch，默认开
   $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
   // 粒子绕开鼠标（54 轮追记六）：顶层键 particleCursor，默认开
@@ -2462,6 +2467,30 @@ function bindSettings() {
   $('cfg-tray').addEventListener('change', async (e) => {
     await save({ tray: e.target.checked });
     toast(e.target.checked ? '托盘图标会在下次启动时出现' : '托盘图标会在下次启动时移除（当前实例仍保留）');
+  });
+
+  // ---- 自动暂停（57 轮）：主进程 fullscreenWatch 每拍现读配置，存盘即生效 ----
+  $('cfg-pause-on-idle').addEventListener('change', async (e) => {
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, pauseOnIdle: e.target.checked } });
+    toast(e.target.checked
+      ? '已开启：无输入超时 / 熄屏后自动冻结轮播，动一下鼠标恢复'
+      : '已关闭：人离开时轮播照常跑（平板耗电请重新打开）');
+  });
+  $('cfg-idle-minutes').addEventListener('click', async (event) => {
+    const item = event.target.closest('.seg-item');
+    if (!item) return;
+    setSegment('cfg-idle-minutes', item.dataset.value);
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, idlePauseMinutes: Number(item.dataset.value) || 5 } });
+    toast(`无输入 ${item.dataset.value} 分钟后自动暂停`);
+  });
+  $('cfg-pause-on-battery').addEventListener('change', async (e) => {
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, pauseOnBattery: e.target.checked } });
+    toast(e.target.checked
+      ? '已开启：拔掉电源自动冻结，接回恢复'
+      : '已关闭：用电池时轮播照常跑');
   });
 
   $('cfg-close-to-tray').addEventListener('change', async (e) => {
