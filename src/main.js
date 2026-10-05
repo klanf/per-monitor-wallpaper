@@ -1271,7 +1271,22 @@ function restoreSlideshowIni() {
   if (!slideshowBackupFile) return false;
   const dir = slideshowGuard.themesDir();
   if (!dir) return false;
-  return slideshowGuard.restoreIfEmpty(dir, slideshowBackupFile);
+  const restored = slideshowGuard.restoreIfEmpty(dir, slideshowBackupFile);
+  if (restored) return true;
+  // 59 轮追记二兜底：连快照都没有（守卫上线前 ini 就被踩空）→ 用记录的相册路径
+  // 走 IDesktopWallpaper::SetSlideshow 让系统重建 ini。相册文件由修复流程落盘。
+  try {
+    const albumFile = path.join(path.dirname(slideshowBackupFile), 'slideshow-album.txt');
+    if (!fs.existsSync(albumFile)) return false;
+    const folder = fs.readFileSync(albumFile, 'utf8').trim();
+    if (!folder) return false;
+    const r = desktopWallpaper.setSlideshow(folder);
+    console.log('[slideshow-guard] 快照缺失，SetSlideshow 兜底修复:', JSON.stringify(r));
+    return r.ok;
+  } catch (err) {
+    console.warn('[slideshow-guard] SetSlideshow 兜底修复失败:', err.message);
+    return false;
+  }
 }
 
 /** 频道命令的单一入口 —— IPC 与托盘菜单共用同一份实现 */
