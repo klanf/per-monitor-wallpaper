@@ -234,17 +234,15 @@ function lookup(entryPath) {
   if (!trio) return null;
   if (fs.existsSync(trio.depth)) {
     state.stats.hits += 1;
-    const maskOk = fs.existsSync(trio.mask);
-    const bgOk = fs.existsSync(trio.bg);
     // 图层分割回填：老缓存只有 depth —— 缺 mask/bg 就补（worker 走 depth_in
-    // 复用现有深度图，不重跑模型，秒级）。齐了之后渲染端才走双平面。
-    if (!maskOk || !bgOk) {
+    // 复用现有深度图，不重跑模型，秒级）。素材只积累，不影响本次返回值。
+    if (!fs.existsSync(trio.mask) || !fs.existsSync(trio.bg)) {
       enqueue({ path: entryPath, out: trio.depth, out_mask: trio.mask, out_bg: trio.bg,
         depth_in: trio.depth });
     }
-    const out = { depth: trio.depth };
-    if (maskOk && bgOk) { out.mask = trio.mask; out.bg = trio.bg; }
-    return out;
+    // ⚠️ 返回契约=深度图路径字符串（渲染端第五轮版本按字符串用；
+    // 第七轮曾误返 {depth,mask,bg} 对象导致 GL 深度路径整体失效、视差全没）
+    return trio.depth;
   }
   state.stats.misses += 1;
   enqueue({ path: entryPath, out: trio.depth, out_mask: trio.mask, out_bg: trio.bg });
