@@ -415,22 +415,17 @@ function stopLayerVideo(layer) {
 
 const DEPTH_FS = `
 precision highp float;
-uniform sampler2D uImg;     // 0：原图（前景平面 / 单平面）
-uniform sampler2D uDepth;   // 1：深度
-uniform sampler2D uBG;      // 2：背景板（双平面模式，inpaint 补全）
-uniform sampler2D uMask;    // 3：前景 alpha（双平面模式）
+uniform sampler2D uImg;
+uniform sampler2D uDepth;
 uniform vec2  uCanvas;
 uniform float uImgAspect;
 uniform float uTime;
 uniform vec2  uCam;
 uniform float uAmp;
-uniform float uAmpScale;    // 前景平面 1.35 / 背景与单平面 1.0（分层视差）
 uniform float uNrm;
 uniform float uLight;
 uniform float uLightsOn;
 uniform float uHasDepth;
-uniform float uHasMask;     // 1=双平面（层带 bg+mask）
-uniform float uIsBG;        // 1=本次画背景板平面
 uniform float uAlpha;
 
 void main() {
@@ -447,34 +442,17 @@ void main() {
   vec2 uv = vec2(0.5) + (uv01 - 0.5) * zoom;
 
   float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 无深度=平面
-  // 深度四邻一次性取好：梯度阻尼（L1）与灯光法线共用
-  vec2 px = 1.5 / vec2(1024.0, 1024.0);
-  float dl = 0.5; float dr = 0.5; float db = 0.5; float dt = 0.5;
-  if (uHasDepth > 0.5) {
-    dl = texture2D(uDepth, uv - vec2(px.x, 0.0)).r;
-    dr = texture2D(uDepth, uv + vec2(px.x, 0.0)).r;
-    db = texture2D(uDepth, uv - vec2(0.0, px.y)).r;
-    dt = texture2D(uDepth, uv + vec2(0.0, px.y)).r;
-  }
-  // 位移 = 相机×深度；再乘深度梯度阻尼（边缘/深陡处趋零，穿帮带消失），
-  // 最后钳幅兜底（任何参数下位移有上限，大角度拉不出长条纹）
-  vec2 par = uCam * (d - 0.5) * uAmp * uAmpScale;
-  par *= 1.0 / (1.0 + 40.0 * (abs(dl - dr) + abs(db - dt)));
-  float plen = length(par);
-  if (plen > 0.035) par *= 0.035 / plen;
+  vec2 par = uCam * (d - 0.5) * uAmp;
   vec2 uvP = uv - par;
   vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
-
-  float a = uAlpha;
-  vec3 col;
-  if (uHasMask > 0.5 && uIsBG > 0.5) {
-    col = texture2D(uBG, uvC).rgb;                    // 背景板：大角度露洞由修补内容填
-  } else {
-    col = texture2D(uImg, uvC).rgb;                   // 前景 / 单平面
-    if (uHasMask > 0.5) a *= texture2D(uMask, uvC).r; // mask 羽化边=两层无缝
-  }
+  vec3 col = texture2D(uImg, uvC).rgb;
 
   if (uHasDepth > 0.5) {
+    vec2 px = 1.5 / vec2(1024.0, 1024.0);
+    float dl = texture2D(uDepth, uvC - vec2(px.x, 0.0)).r;
+    float dr = texture2D(uDepth, uvC + vec2(px.x, 0.0)).r;
+    float db = texture2D(uDepth, uvC - vec2(0.0, px.y)).r;
+    float dt = texture2D(uDepth, uvC + vec2(0.0, px.y)).r;
     vec3 nrm = normalize(vec3((dl - dr) * uNrm, (db - dt) * uNrm, 1.0));
 
     if (uLightsOn > 0.5) {
@@ -499,7 +477,7 @@ void main() {
       col += c1 * att1 * (0.35 + 0.65 * diff1 * 0.5) * a1 * (1.0 - d * 0.5);
     }
   }
-  gl_FragColor = vec4(col, a);
+  gl_FragColor = vec4(col, uAlpha);
 }
 `;
 
@@ -535,12 +513,10 @@ function glInit() {
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const n of ['uImg', 'uDepth', 'uBG', 'uMask', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
-      'uAmpScale', 'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uHasMask', 'uIsBG', 'uAlpha']) U[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
+      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
-    gl.uniform1i(U.uBG, 2);
-    gl.uniform1i(U.uMask, 3);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
     glState.ok = true;
   } catch (err) {
@@ -569,35 +545,28 @@ function glFreeLayer(L) {
   if (L._bmp) { try { L._bmp.close(); } catch (_) { /* 已关 */ } L._bmp = null; }
 }
 
-/** 取/建视差图层描述；任何一步失败返回 null（调用方回退 2D）。
- *  maskPath/bgPath 任一缺失或加载失败 → 层不带该纹理 → 自动降级单平面。
+/** 取/建视差图层描述 {imgTex, depTex, aspect}；任何一步失败返回 null（调用方回退 2D）。
  *  ⚠️ glLayerFor 返回的层不携带位图（bmp 已关）；需要位图垫底用 glLoadLayer。 */
-async function glLayerFor(imagePath, depthPath, maskPath, bgPath) {
-  const loaded = await glLoadLayer(imagePath, depthPath, maskPath, bgPath);
+async function glLayerFor(imagePath, depthPath) {
+  const loaded = await glLoadLayer(imagePath, depthPath);
   if (!loaded) return null;
   loaded.bmp.close();
   return loaded.layer;
 }
 
 /** 同 glLayerFor，但把原图位图一并带回（不关）—— showFrame 给 2D 层垫底用 */
-async function glLoadLayer(imagePath, depthPath, maskPath, bgPath) {
+async function glLoadLayer(imagePath, depthPath) {
   try {
-    const [bmp, depBmp, maskBmp, bgBmp] = await Promise.all([
+    const [bmp, depBmp] = await Promise.all([
       fetchBitmap({ path: imagePath }),
       depthPath ? fetchBitmap({ path: depthPath }).catch(() => null) : Promise.resolve(null),
-      maskPath ? fetchBitmap({ path: maskPath }).catch(() => null) : Promise.resolve(null),
-      bgPath ? fetchBitmap({ path: bgPath }).catch(() => null) : Promise.resolve(null),
     ]);
     const layer = {
       imgTex: glMakeTex(0, bmp),
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
-      maskTex: (maskBmp && bgBmp) ? glMakeTex(3, maskBmp) : null,
-      bgTex: (maskBmp && bgBmp) ? glMakeTex(2, bgBmp) : null,
       aspect: bmp.width / bmp.height,
     };
     if (depBmp) depBmp.close();
-    if (maskBmp) maskBmp.close();
-    if (bgBmp) bgBmp.close();
     return { layer, bmp };   // 原图位图不关：调用方 2D 垫底后自行 close
   } catch (err) {
     console.warn('[stage] 视差纹理加载失败（本帧回退 2D）:', imagePath, err.message);
@@ -618,18 +587,12 @@ function glCam(tSec, nowMs) {
   ];
 }
 
-/** plane: 'single' 单平面（旧路径）| 'bg' 背景板平面 | 'fg' 前景平面（双平面模式） */
-function glDrawLayer(L, alpha, cam, tSec, plane) {
+function glDrawLayer(L, alpha, cam, tSec) {
   const gl = glState.gl;
-  const two = L.maskTex && L.bgTex;
   gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, plane === 'bg' ? L.bgTex : L.imgTex);
+  gl.bindTexture(gl.TEXTURE_2D, L.imgTex);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, L.depTex || L.imgTex);   // 无深度时占位（uHasDepth 压平）
-  gl.activeTexture(gl.TEXTURE2);
-  gl.bindTexture(gl.TEXTURE_2D, (two && L.bgTex) ? L.bgTex : L.imgTex);
-  gl.activeTexture(gl.TEXTURE3);
-  gl.bindTexture(gl.TEXTURE_2D, (two && L.maskTex) ? L.maskTex : L.imgTex);
   const { w, h } = canvasSize(glState.canvas);
   gl.viewport(0, 0, w, h);
   gl.uniform2f(glState.U.uCanvas, w, h);
@@ -637,25 +600,12 @@ function glDrawLayer(L, alpha, cam, tSec, plane) {
   gl.uniform1f(glState.U.uTime, tSec);
   gl.uniform2f(glState.U.uCam, cam[0], cam[1]);
   gl.uniform1f(glState.U.uAmp, cfg.depthAmp);
-  gl.uniform1f(glState.U.uAmpScale, plane === 'fg' ? 1.35 : 1.0);
   gl.uniform1f(glState.U.uNrm, 9.0);
   gl.uniform1f(glState.U.uLight, cfg.depthLight);
   gl.uniform1f(glState.U.uLightsOn, 1);
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
-  gl.uniform1f(glState.U.uHasMask, (two && plane !== 'single') ? 1 : 0);
-  gl.uniform1f(glState.U.uIsBG, plane === 'bg' ? 1 : 0);
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-
-/** 一「层」= 双平面模式画背景+前景两刀，单平面画一刀 */
-function glDrawPair(L, alpha, cam, tSec) {
-  if (L.maskTex && L.bgTex) {
-    glDrawLayer(L, alpha, cam, tSec, 'bg');
-    glDrawLayer(L, alpha, cam, tSec, 'fg');
-  } else {
-    glDrawLayer(L, alpha, cam, tSec, 'single');
-  }
 }
 
 /** 每帧调（gate 之后）：有内容就画，没内容就把 canvas 藏起来 */
@@ -671,11 +621,11 @@ function glTick(now) {
   if (glState.anim) {
     const p = Math.min(1, (now - glState.anim.t0) / Math.max(1, glState.anim.duration));
     const e = easeCubicBezier(p);
-    if (glState.anim.out) glDrawPair(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
+    if (glState.anim.out) glDrawLayer(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
     if (glState.anim.in) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      glDrawPair(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
+      glDrawLayer(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
     }
     if (p >= 1) {
       glFreeLayer(glState.anim.out);
@@ -684,7 +634,7 @@ function glTick(now) {
       if (!glState.cur) { glActive = false; glState.canvas.style.display = 'none'; }
     }
   } else if (glState.cur) {
-    glDrawPair(glState.cur, 1, cam, tSec);
+    glDrawLayer(glState.cur, 1, cam, tSec);
   }
 }
 
@@ -713,7 +663,7 @@ async function glShowFrame(entry, outgoingPath, token) {
   try {
     glInit();
     if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return { ok: false }; }
-    const loaded = await glLoadLayer(entry.path, entry.depth, entry.mask, entry.bg);
+    const loaded = await glLoadLayer(entry.path, entry.depth);
     if (!loaded) { slog('gl: 纹理加载失败，回退 2D', String(entry.path).split(/[\\/]/).pop()); return { ok: false }; }
     const inLayer = loaded.layer;
     inLayer._bmp = loaded.bmp;      // 随层带走：成功时给 2D 垫底；废弃时 glFreeLayer 关闭
@@ -894,13 +844,12 @@ async function showFrame(entry, dir, animate) {
 
   if (kind === 'image') {
     // ── 深度视差：查 sidecar（命中→GL 路径；未命中→主进程入队后台生成，本帧 2D）──
-    // depthFor 现在返回 {depth, mask?, bg?}（第六轮图层分割；mask/bg 缺=单平面降级）
     if (cfg.depthEnabled && typeof window.wp.depthFor === 'function') {
-      let dinfo = null;
-      try { dinfo = await window.wp.depthFor(entry.path); } catch (_) { /* 查询失败按无深度 */ }
-      slog(`tick ${dinfo && dinfo.depth ? 'hit ' : 'miss'} ${String(entry.path).split(/[\\/]/).pop()}`);
-      if (dinfo && dinfo.depth && entry.depth !== false) {
-        const depthEntry = { ...entry, depth: dinfo.depth, mask: dinfo.mask, bg: dinfo.bg };
+      let depthPath = null;
+      try { depthPath = await window.wp.depthFor(entry.path); } catch (_) { /* 查询失败按无深度 */ }
+      slog(`tick ${depthPath ? 'hit ' : 'miss'} ${String(entry.path).split(/[\\/]/).pop()}`);
+      if (depthPath && entry.depth !== false) {
+        const depthEntry = { ...entry, depth: depthPath };
         const gl = await glShowFrame(depthEntry, currentEntry && currentEntry !== entry ? currentEntry.path : null, token);
         if (gl.ok) {
           hideIframe(incoming);
@@ -1174,12 +1123,9 @@ async function init() {
     if (!glState.ok) { slog('upgrade: GL 不可用', payload.path.split(/[\\/]/).pop()); return; }
     let dp = null;
     try { dp = await window.wp.depthFor(currentEntry.path); } catch (_) { return; }
-    if (!dp || !dp.depth || payload.path !== (currentEntry && currentEntry.path)) return;
+    if (!dp || payload.path !== (currentEntry && currentEntry.path)) return;
     if (glState.anim && glState.anim.in) return;       // await 期间起了 GL 过渡/升级
-    const loaded = await glLoadLayer(currentEntry.path, dp.depth, dp.mask, dp.bg);
-    if (!loaded || payload.path !== (currentEntry && currentEntry.path)) { glFreeLayer(loaded && loaded.layer); return; }
-    const inLayer = loaded.layer;
-    try { loaded.bmp.close(); } catch (_) { /* 升级叠层不需要位图垫底 */ }
+    const inLayer = await glLayerFor(currentEntry.path, dp);
     if (!inLayer || payload.path !== (currentEntry && currentEntry.path)) { glFreeLayer(inLayer); return; }
     if (glState.anim && glState.anim.in) { glFreeLayer(inLayer); return; }   // 纹理等待期间被抢
     glState.anim = { t0: performance.now(), duration: 800, out: null, in: inLayer };
