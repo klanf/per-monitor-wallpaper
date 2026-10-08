@@ -3463,3 +3463,35 @@ mount 期 resize 触发了 4 次重画（4 次里一次成功）；副屏只有 
 ### 验证
 
 node --check 通过；真机重启观察两屏是否都首帧即显（含连续多次重启看随机性是否消失）。
+
+## 深度视差第六轮：图层分割（2.5D 双平面）+ 深度梯度阻尼/位移钳制（2026-10-09 02:3x）
+
+### 设计
+
+用户拍板：在 MoyuFloat 单平面视差上增加 Layer Segmentation。单平面 uv 偏移的撕裂
+是物理性的（源图没有「被前景挡住的背景」），抠出前景分层才能根治：
+
+- 背景层 = 背景板（原图抠掉前景 + Telea inpaint 补全），视差幅度 ×1.0
+- 前景层 = 原图 + mask alpha（Otsu 阈值 + 形态学清理 + 去碎连通域 + 高斯羽化），×1.35
+- 露洞处显示背景板的修补内容，大角度不再拉伸出条纹；mask 羽化边让两层无缝，
+  边缘穿帮顺带解决（比引导滤波更彻底）
+
+### 改动
+
+- `tools/depth_worker.py`：推理后顺带产出 mask.png + bg.jpg（按文件存在性交付，
+  失败只 WARN 不 FAIL）；新增 depth_in 入参 —— 老缓存回填复用现有深度图，不重跑
+  模型。cv2.imwrite 的 .tmp 扩展名坑改走 imencode（PIL 同款坑第二次踩）。
+- `src/depthService.js`：缓存从单文件变三件套（<key>.depth.png/.mask.png/.bg.jpg），
+  lookup 返回 {depth, mask?, bg?}；命中 depth 但缺 mask/bg 自动入队回填。
+- `src/renderer/stage.js`：DEPTH_FS 增 uBG/uMask/uHasMask/uIsBG/uAmpScale，
+  双平面模式画两刀（背景板→前景带 alpha 淡入合成）；glDrawPair 按层能力自动选
+  双平面/单平面；**L1 一并落**：位移乘深度梯度阻尼（四邻梯度，与灯光法线共用采样）
+  + 0.035 uv 钳幅兜底；旧缓存/无 mask 自动单平面，全链 fail-soft。
+
+### 验证
+
+- 三文件 node --check / ast.parse 通过。
+- 真图端到端（F://壁纸 实测图 + 真模型 CUDA）：单张 layers 2.91s（含 cv2 冷启动），
+  mask 3500×1967 前景占比 24.5%、羽化中间带 0.5%，背景板 554KB；旧缓存 depth.png
+  （mode L 8bit 半分辨率）确认可作 depth_in 回填。
+- 真机观感（穿帮带/大角度撕裂是否消失、双平面立体感）待用户重启验收。

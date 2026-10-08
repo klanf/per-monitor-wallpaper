@@ -56,13 +56,20 @@ function log(...args) {
   debugLog.dlog('depth', ...args);   // VBS 启动丢 stdout，关键诊断要落文件
 }
 
-function cachePathFor(entryPath) {
+function keyFor(entryPath) {
   let st;
   try { st = fs.statSync(entryPath); } catch { return null; }
-  const key = crypto.createHash('sha1')
+  return crypto.createHash('sha1')
     .update(`${entryPath}|${st.mtimeMs}|${st.size}`)
     .digest('hex');
-  return path.join(state.cacheDir, `${key}.depth.png`);
+}
+
+/** 三件套路径：depth（单平面必需）+ mask/bg（图层分割，第六轮起） */
+function trioFor(entryPath) {
+  const key = keyFor(entryPath);
+  if (!key) return null;
+  const base = path.join(state.cacheDir, key);
+  return { depth: `${base}.depth.png`, mask: `${base}.mask.png`, bg: `${base}.bg.jpg` };
 }
 
 /** 常驻 worker 的 stdout 行分发 */
@@ -72,6 +79,10 @@ function handleWorkerLine(line) {
   if (text === 'READY') { log('worker 模型就绪'); return; }
   const job = state.currentJob;
   if (!job) return;                       // 迟到的行（超时已放弃）忽略
+  if (text.startsWith('WARN')) {          // 图层分割子产物失败：不消耗 job，等 DONE
+    log('WARN:', path.basename(job.path), text.slice(0, 160));
+    return;
+  }
   clearTimeout(state.jobTimer);
   state.currentJob = null;
   state.busy = false;
@@ -183,7 +194,10 @@ function pump() {
   state.currentJob = job;
   state.busy = true;
   try {
-    state.worker.stdin.write(`${JSON.stringify({ path: job.path, out: job.out })}\n`);
+    state.worker.stdin.write(`${JSON.stringify({
+      path: job.path, out: job.out,
+      out_mask: job.out_mask, out_bg: job.out_bg, depth_in: job.depth_in,
+    })}\n`);
   } catch (err) {
     log('派活失败:', err.message);
     state.workerFails += 1;
@@ -204,11 +218,11 @@ function pump() {
   if (state.jobTimer.unref) state.jobTimer.unref();
 }
 
-function enqueue(entryPath, out) {
+function enqueue(job) {
   if (state.queue.length >= QUEUE_MAX) { state.stats.dropped += 1; return; }
-  if (state.queuedSet.has(entryPath)) return;
-  state.queuedSet.add(entryPath);
-  state.queue.push({ path: entryPath, out });
+  if (state.queuedSet.has(job.path)) return;
+  state.queuedSet.add(job.path);
+  state.queue.push(job);
   pump();
 }
 
@@ -216,11 +230,24 @@ function enqueue(entryPath, out) {
 
 function lookup(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return null;
-  const out = cachePathFor(entryPath);
-  if (!out) return null;
-  if (fs.existsSync(out)) { state.stats.hits += 1; return out; }
+  const trio = trioFor(entryPath);
+  if (!trio) return null;
+  if (fs.existsSync(trio.depth)) {
+    state.stats.hits += 1;
+    const maskOk = fs.existsSync(trio.mask);
+    const bgOk = fs.existsSync(trio.bg);
+    // 图层分割回填：老缓存只有 depth —— 缺 mask/bg 就补（worker 走 depth_in
+    // 复用现有深度图，不重跑模型，秒级）。齐了之后渲染端才走双平面。
+    if (!maskOk || !bgOk) {
+      enqueue({ path: entryPath, out: trio.depth, out_mask: trio.mask, out_bg: trio.bg,
+        depth_in: trio.depth });
+    }
+    const out = { depth: trio.depth };
+    if (maskOk && bgOk) { out.mask = trio.mask; out.bg = trio.bg; }
+    return out;
+  }
   state.stats.misses += 1;
-  enqueue(entryPath, out);
+  enqueue({ path: entryPath, out: trio.depth, out_mask: trio.mask, out_bg: trio.bg });
   return null;
 }
 
