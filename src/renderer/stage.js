@@ -296,13 +296,30 @@ function drawSource(layer, src, sw, sh) {
 
 /**
  * 取原图并解码。wpimg:// 是 no-store 的（不进 Chromium 磁盘缓存 —— 那缓存在 C 盘）。
+ * ⚠️ 必须带超时（2026-10-09 副屏黑屏实锤）：启动期 wpimg 流可能被卡住且 fetch
+ * **永不返回** —— 无超时 = 无回退、无日志，GL 分支整个 await 挂死，桌面黑到下一个
+ * 调度 tick（用户观感「副屏要等切换壁纸才显示」且哪块屏黑随机）。8s 超时后重开
+ * 一次新请求（卡住的流换一条大概率就好），再失败抛错走调用方兜底并落日志。
  */
+async function fetchOnce(entry, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const res = await fetch(window.wp.stageUrl(entry.path), { signal: ctl.signal });
+    if (!res.ok) throw new Error(`wpimg ${res.status}`);
+    return await res.blob();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchBitmap(entry) {
-  const res = await fetch(window.wp.stageUrl(entry.path));
-  if (!res.ok) throw new Error(`wpimg ${res.status}`);
-  const blob = await res.blob();
-  const bmp = await createImageBitmap(blob);   // 解码在后台线程，不卡渲染
-  return bmp;
+  try {
+    return await createImageBitmap(await fetchOnce(entry, 8000));
+  } catch (err) {
+    slog('取图超时/失败，重开一次请求 ——', String(entry.path).split(/[\\/]/).pop(), err.message);
+    return await createImageBitmap(await fetchOnce(entry, 8000));
+  }
 }
 
 /* ------------------------- 阶段 4/5：视频 / 网页壁纸 ------------------------- */
@@ -525,10 +542,20 @@ function glMakeTex(unit, src) {
 function glFreeLayer(L) {
   if (!L || !glState.gl) return;
   for (const t of [L.imgTex, L.depTex]) if (t) glState.gl.deleteTexture(t);
+  if (L._bmp) { try { L._bmp.close(); } catch (_) { /* 已关 */ } L._bmp = null; }
 }
 
-/** 取/建视差图层描述 {imgTex, depTex, aspect}；任何一步失败返回 null（调用方回退 2D） */
+/** 取/建视差图层描述 {imgTex, depTex, aspect}；任何一步失败返回 null（调用方回退 2D）。
+ *  ⚠️ glLayerFor 返回的层不携带位图（bmp 已关）；需要位图垫底用 glLoadLayer。 */
 async function glLayerFor(imagePath, depthPath) {
+  const loaded = await glLoadLayer(imagePath, depthPath);
+  if (!loaded) return null;
+  loaded.bmp.close();
+  return loaded.layer;
+}
+
+/** 同 glLayerFor，但把原图位图一并带回（不关）—— showFrame 给 2D 层垫底用 */
+async function glLoadLayer(imagePath, depthPath) {
   try {
     const [bmp, depBmp] = await Promise.all([
       fetchBitmap({ path: imagePath }),
@@ -539,9 +566,8 @@ async function glLayerFor(imagePath, depthPath) {
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
       aspect: bmp.width / bmp.height,
     };
-    bmp.close();
     if (depBmp) depBmp.close();
-    return layer;
+    return { layer, bmp };   // 原图位图不关：调用方 2D 垫底后自行 close
   } catch (err) {
     console.warn('[stage] 视差纹理加载失败（本帧回退 2D）:', imagePath, err.message);
     return null;
@@ -636,17 +662,19 @@ function glFadeOutIfAny() {
 async function glShowFrame(entry, outgoingPath, token) {
   try {
     glInit();
-    if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return false; }
-    const inLayer = await glLayerFor(entry.path, entry.depth);
-    if (!inLayer) { slog('gl: 纹理加载失败，回退 2D', String(entry.path).split(/[\\/]/).pop()); return false; }
-    if (token !== animToken) { glFreeLayer(inLayer); return false; }   // 等待期间又被切走
+    if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return { ok: false }; }
+    const loaded = await glLoadLayer(entry.path, entry.depth);
+    if (!loaded) { slog('gl: 纹理加载失败，回退 2D', String(entry.path).split(/[\\/]/).pop()); return { ok: false }; }
+    const inLayer = loaded.layer;
+    inLayer._bmp = loaded.bmp;      // 随层带走：成功时给 2D 垫底；废弃时 glFreeLayer 关闭
+    if (token !== animToken) { glFreeLayer(inLayer); return { ok: false }; }   // 等待期间又被切走
     // 出场快照：刚才就是视差 → 复用它的纹理；否则抓一张平图做底（video/html 不抓）
     let outLayer = null;
     if (glState.cur && (!outgoingPath || glState.cur.imgPath === outgoingPath)) {
       outLayer = glState.cur;
     } else if (outgoingPath && kindOf({ path: outgoingPath }) === 'image') {
       outLayer = await glLayerFor(outgoingPath, null);
-      if (token !== animToken) { glFreeLayer(inLayer); glFreeLayer(outLayer); return false; }
+      if (token !== animToken) { glFreeLayer(inLayer); glFreeLayer(outLayer); return { ok: false }; }
     }
     if (glState.anim) {   // 打断进行中的升级/过渡：旧的出场层直接释放
       glFreeLayer(glState.anim.out !== glState.cur ? glState.anim.out : null);
@@ -658,11 +686,11 @@ async function glShowFrame(entry, outgoingPath, token) {
     glState.cur = null;
     glActive = true;
     everRendered = true;
-    return true;
+    return { ok: true, bmp: inLayer._bmp, layer: inLayer };
   } catch (err) {
     try { slog('gl: 异常，回退 2D ——', err && err.message); } catch (_) { /* 忽略 */ }
     console.warn('[stage] glShowFrame 异常:', err);
-    return false;
+    return { ok: false };
   }
 }
 
@@ -822,11 +850,23 @@ async function showFrame(entry, dir, animate) {
       slog(`tick ${depthPath ? 'hit ' : 'miss'} ${String(entry.path).split(/[\\/]/).pop()}`);
       if (depthPath && entry.depth !== false) {
         const depthEntry = { ...entry, depth: depthPath };
-        const ok = await glShowFrame(depthEntry, currentEntry && currentEntry !== entry ? currentEntry.path : null, token);
-        if (ok) {
+        const gl = await glShowFrame(depthEntry, currentEntry && currentEntry !== entry ? currentEntry.path : null, token);
+        if (gl.ok) {
           hideIframe(incoming);
           hideIframe(outgoing);
-          // 2D 层钉到终态但内容不上屏（canvas 留空 = 透明），全屏内容由 GL 层负责
+          // 2D 垫底（仅无过渡的启动/重显场景）：GL 万一没画出来（纹理流卡死、
+          // glTick 没跑），桌面也不至于黑屏 —— GL 内容与垫底相同，淡入叠上去无感知。
+          // 真实过渡（animate=true）仍由 GL 全权做交叉淡入，不垫底以免硬切穿帮。
+          if (!animate && gl.bmp) {
+            try {
+              drawSource(incoming, gl.bmp, gl.bmp.width, gl.bmp.height);
+              everRendered = true;
+            } catch (_) { /* 垫底失败不致命 */ }
+            try { gl.bmp.close(); } catch (_) { /* 已关 */ }
+            gl.bmp = null;
+            if (gl.layer) gl.layer._bmp = null;
+          }
+          // GL 在管内容：2D 层钉到终态（垫底图留在 GL 层下面被盖住）
           setLayer(incoming.root, REST, 1, 'px');
           setLayer(outgoing.root, REST, 0, 'px');
           active = incomingKey;
