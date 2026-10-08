@@ -19,7 +19,7 @@
  *   tray.js           托盘图标 + 开机自启
  */
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, globalShortcut, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, globalShortcut } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -35,22 +35,14 @@ const videoOptimize = require('./videoOptimize');
 const liveStage = require('./liveStage');
 const fullscreenWatch = require('./fullscreenWatch');
 const swipeWatch = require('./swipeWatch');
-const portablePath = require('./portablePath');
 
-// 自定义协议必须在 app ready 之前注册，所以放在模块顶层。
-// ⚠️ registerSchemesAsPrivileged **多次调用会互相覆盖**（54 轮实锤：原先两个
-// 协议各调一次，wpthumb 被 wpimg 的注册整个清掉，fetch 支持从未生效——胶片条
-// 只用 <img> 不走 fetch，所以一直没暴露）。必须合成一个数组、只调一次。
-const { protocol } = require('electron');
-protocol.registerSchemesAsPrivileged([
-  thumbnails.schemePrivileges(),
-  stageProtocol.schemePrivileges(),
-]);
+// 自定义协议必须在 app ready 之前注册，所以放在模块顶层
+thumbnails.registerScheme();
+stageProtocol.registerScheme();
 
 const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
 const win32 = require('./win32');
-const slideshowGuard = require('./slideshowGuard');
 const desktopWallpaper = require('./desktopWallpaper');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
 const { PlaybackState } = require('./playbackState');
@@ -97,6 +89,8 @@ if (process.env.WP_USER_DATA) app.setPath('userData', path.resolve(process.env.W
 let store = null;
 let mainWindow = null;
 let scheduler = null;
+const depthService = require('./depthService');
+const debugLog = require('./debugLog');
 /** 播放位置的磁盘存档（跨进程重启「接着上次那张播」，见 playbackState.js） */
 let playback = null;
 let quitting = false;
@@ -115,16 +109,10 @@ function listMonitors() {
     ok: result.ok,
     error: result.error,
     backend: desktopWallpaper.backendName(),
-    // 幻影显示器过滤：系统偶尔会枚举出「没有当前分辨率」的幽灵输出
-    // （断开的显示器 / 远程会话残留），频道建出来预览能切过去但写入永不生效，
-    // 用户看到的就是「只有一块屏却显示两个显示器」（2026-09-26 用户实测）。
-    // 没有有效宽高的一律不当成显示器。
-    monitors: (result.monitors || [])
-      .filter((m) => m && m.id && m.width > 0 && m.height > 0)
-      .map((m) => ({
-        id: m.id, index: m.index, label: m.label, width: m.width, height: m.height,
-        x: m.x, y: m.y, primary: m.primary, current: m.current,
-      })),
+    monitors: (result.monitors || []).map((m) => ({
+      id: m.id, index: m.index, label: m.label, width: m.width, height: m.height,
+      x: m.x, y: m.y, primary: m.primary, current: m.current,
+    })),
   };
 }
 
@@ -266,16 +254,8 @@ function toggleWindow() {
  */
 function restartApp() {
   quitting = true;
-  // 带上原来的启动参数（比如 --hidden），重启后行为和手动重开一致。
-  // portable 坑：execPath 是解包到 %TEMP% 的临时 exe，app.quit() 后启动器会删掉
-  // 整个临时目录 —— 默认 relaunch 目标已消失，表现为「点重启 = 直接退出」。
-  // 所以 portable 下要显式 relaunch 原始 exe（PORTABLE_EXECUTABLE_FILE 等环境变量给出）。
-  const relaunchPath = portablePath.resolvePortableExecutablePath();
-  app.relaunch({
-    path: relaunchPath || undefined,
-    // portable 启动器会把命令行参数透传给内部应用，照原样带上（比如 --hidden）
-    args: process.argv.slice(1),
-  });
+  // 带上原来的启动参数（比如 --hidden），重启后行为和手动重开一致
+  app.relaunch({ args: process.argv.slice(1) });
   app.quit();
 }
 
@@ -463,7 +443,6 @@ async function monitorIdForPointRetry(x, y) {
  * 切下一张和删除都要先过这一步，抽出来免得两边各写一份、各自漏掉回退分支。
  * 每条失败路径都要给说法 —— 桌面菜单点下去无声无息的话，用户只会以为功能坏了。
  */
-/** 「给一个屏幕上的点」→ 那块屏接管的轮播频道（桌面菜单与桌面手势共用，54 轮追记五） */
 async function channelAt(pt) {
   const monitorId = await monitorIdForPointRetry(pt.x, pt.y);
 
@@ -496,19 +475,6 @@ async function channelAtCursor() {
  * 只动这一路频道：别的屏不受影响。scheduler.step 内部会把新的一张写进系统壁纸，
  * 所以点完菜单桌面上那块屏当场就换图。
  */
-async function stepWallpaperAtCursor() {
-  const pt = win32.cursorPoint();
-  if (!pt) {
-    send('notice', { text: '读不到光标位置，切不了', error: true });
-    return { ok: false, error: '读不到光标位置' };
-  }
-  return stepWallpaperAt(pt, 1);
-}
-
-/**
- * 「给一个屏幕上的点」切那块屏的壁纸，dir=+1 下一张 / -1 上一张。
- * 桌面右键菜单（光标点）与桌面手势（起手点）共用，54 轮追记五抽出。
- */
 async function stepWallpaperAt(pt, dir) {
   const at = await channelAt(pt);
   if (!at.ok) {
@@ -525,9 +491,9 @@ async function stepWallpaperAt(pt, dir) {
   const entry = await scheduler.step(at.id, dir);
   tray.refresh(scheduler.list());
 
-  // 窗口可见时界面自己会跟着刷，别重复打扰；藏进托盘才需要气泡（菜单路径）
-  if (entry && dir > 0 && !isWindowVisible() && store.get().tray !== false) {
-    tray.notify('壁纸切换器', `已切到下一张：${entry.name}（${at.label}）`);
+  // 窗口可见时界面自己会跟着刷，别重复打扰；藏进托盘才需要气泡
+  if (entry && !isWindowVisible() && store.get().tray !== false) {
+    tray.notify('壁纸切换器', `已切到${dir > 0 ? '下一' : '上一'}张：${entry.name}（${at.label}）`);
   }
   return {
     ok: true,
@@ -535,6 +501,15 @@ async function stepWallpaperAt(pt, dir) {
     label: at.label,
     entry: entry ? { path: entry.path, name: entry.name } : null,
   };
+}
+
+async function stepWallpaperAtCursor() {
+  const pt = win32.cursorPoint();
+  if (!pt) {
+    send('notice', { text: '读不到光标位置，切不了', error: true });
+    return { ok: false, error: '读不到光标位置' };
+  }
+  return stepWallpaperAt(pt, 1);
 }
 
 /**
@@ -1166,7 +1141,7 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
  * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
  */
-  const UI_ONLY_KEYS = ['settingsTab', 'expandedMonitors', 'hintParticlesPerMonitor', 'swipeSwitch'];
+const UI_ONLY_KEYS = ['settingsTab', 'swipeSwitch'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */
@@ -1176,34 +1151,25 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
  */
 function startFullscreenWatch() {
-  // 暂停时隐藏舞台窗口：52 轮默认开（防独占全屏游戏黑屏），54 轮追记四按用户拍板
-  // 改为**默认关**——全屏暂停只冻结（停倒计时+停粒子），舞台留在原地不闪「掉/恢复」。
-  // 独占全屏游戏（艾尔登法环实测 6 次黑屏）玩之前在设置里手动勾回。
-  liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused === true);
   fullscreenWatch.start({
     getFlags: () => {
-      const ls = (store && store.get().liveStage) || {};
-      let battery = fullscreenWatch.isOnBattery();
-      if (battery == null) {
-        // GetSystemPowerStatus 查不到（无电池/异常）就退回 Electron 缓存值
-        try { battery = powerMonitor.isOnBatteryPower(); } catch { battery = false; }
+      const st = (store && store.get()) || {};
+      const ls = st.liveStage || {};
+      // 每屏覆盖：monitors[displayId].pauseOnFullscreen（undefined = 跟全局）
+      const perDisplay = {};
+      for (const [did, mo] of Object.entries(st.monitors || {})) {
+        if (mo && typeof mo === 'object' && mo.pauseOnFullscreen !== undefined) {
+          perDisplay[did] = { pauseOnFullscreen: Boolean(mo.pauseOnFullscreen) };
+        }
       }
       return {
         pauseOnFullscreen: ls.pauseOnFullscreen !== false,
         pauseOnAway: ls.pauseOnLock !== false,
-        battery,
-        // pauseOnBattery 此前配置里有键但从未接线（48 轮修）：平板/笔记本用电池时全停
-        pauseOnBattery: ls.pauseOnBattery === true,
-        // 挂机/熄屏暂停（57 轮）：纯熄屏不触发 QUNS，靠无输入超时兜底
-        pauseOnIdle: ls.pauseOnIdle !== false,
-        idlePauseSeconds: Math.max(0, Number(ls.idlePauseMinutes) || 0) * 60,
-        idleSec: (() => { try { return powerMonitor.getSystemIdleTime(); } catch { return 0; } })(),
+        perDisplay,
       };
     },
     onTick: ({ pausedIds, away, reasons }) => {
       liveStage.applyPauseState({ pausedIds, away, reasons });
-      // 工具栏播放/暂停图标同步自动暂停态（53 轮：用户要求全屏/锁屏时按钮跟手）
-      send('live:paused', { any: (pausedIds && pausedIds.length > 0) || Boolean(away), pausedIds, away });
     },
   });
 }
@@ -1221,16 +1187,12 @@ async function applyConfigChange(patch) {
   store.set(patch);
   // 纯界面状态：写盘就够了，别惊动调度器
   if (uiOnly) return store.get();
-  // 59 轮：拨到「让位」（接管=关）的瞬间，把幻灯片相册配置还回去 ——
-  // 接管期间的最后一笔写入已经把它踩空了，不还的话用户切幻灯片起不来
-  if (patch && patch.applyToSystem === false) restoreSlideshowIni();
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
-  // hideOnPaused / unifiedSplit 改动实时生效（轮询还开着时也要立刻跟上新设置）；
-  // unifiedSplit 换形态要立刻按新模式重铺舞台窗口
+  // hideOnPaused / pauseOn* 改动实时生效（轮询还开着时也要立刻跟上新设置）
+  // （60~72 轮重构丢了这整块 → 全屏/锁屏暂停监控从未启动，2026-10-09 恢复）
   if (keys.includes('liveStage')) {
-    liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
     if (store.get().liveWallpaper) {
       startFullscreenWatch();
       liveStage.syncTo(scheduler.list());
@@ -1244,7 +1206,6 @@ async function applyConfigChange(patch) {
   const liveAfter = Boolean(store.get().liveWallpaper);
   if (liveBefore !== liveAfter) {
     if (liveAfter) {
-      liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
       liveStage.start();
       liveStage.syncTo(scheduler.list());
       // 暂停轮询（57 轮起常驻，不随动态桌面启停）：开着也无妨，start 幂等
@@ -1257,36 +1218,6 @@ async function applyConfigChange(patch) {
     }
   }
   return store.get();
-}
-
-/** slideshow.ini 快照备份的落盘路径（app ready 时初始化，见 configureSlideshowGuard 接线） */
-let slideshowBackupFile = null;
-
-/**
- * slideshow.ini 守卫的还原动作（59 轮）：接管期间任何一笔系统壁纸写入都会把
- * Windows 幻灯片的相册配置清成 0 字节 —— 让位 / 退出的瞬间把快照还回去，
- * 用户去个性化点「幻灯片放映」就不用重选相册（模式本身不代拨，见 slideshowGuard.js）。
- */
-function restoreSlideshowIni() {
-  if (!slideshowBackupFile) return false;
-  const dir = slideshowGuard.themesDir();
-  if (!dir) return false;
-  const restored = slideshowGuard.restoreIfEmpty(dir, slideshowBackupFile);
-  if (restored) return true;
-  // 59 轮追记二兜底：连快照都没有（守卫上线前 ini 就被踩空）→ 用记录的相册路径
-  // 走 IDesktopWallpaper::SetSlideshow 让系统重建 ini。相册文件由修复流程落盘。
-  try {
-    const albumFile = path.join(path.dirname(slideshowBackupFile), 'slideshow-album.txt');
-    if (!fs.existsSync(albumFile)) return false;
-    const folder = fs.readFileSync(albumFile, 'utf8').trim();
-    if (!folder) return false;
-    const r = desktopWallpaper.setSlideshow(folder);
-    console.log('[slideshow-guard] 快照缺失，SetSlideshow 兜底修复:', JSON.stringify(r));
-    return r.ok;
-  } catch (err) {
-    console.warn('[slideshow-guard] SetSlideshow 兜底修复失败:', err.message);
-    return false;
-  }
 }
 
 /** 频道命令的单一入口 —— IPC 与托盘菜单共用同一份实现 */
@@ -1318,12 +1249,19 @@ function registerIpc() {
   ipcMain.handle('config:set', (_e, patch) => applyConfigChange(patch || {}));
   // videoPlayFull（视频播完再切）：舞台渲染端视频 ended / 加载失败时推进频道。
   // advanced=false（暂停中 / 当前已不是视频）时渲染端原地重播，视频不会停在最后一帧。
-  // 53 轮防启动黑屏：渲染端首帧画上屏 → 亮出对应舞台窗口（挂载后一直藏着）
-  ipcMain.on('stage:first-frame', (e) => liveStage.onFirstFrame(e.sender));
+  ipcMain.on('stage:log', (_e, msg) => {
+    debugLog.dlog('stage', msg);
+  });
+
   ipcMain.handle('stage:video-ended', async (_e, channelId) => {
     if (!scheduler || typeof channelId !== 'string') return { advanced: false };
     const next = await scheduler.videoEnded(channelId);
     return { advanced: Boolean(next) };
+  });
+
+  // 深度视差：查深度 sidecar（命中→路径；未命中→入队后台生成并返回 null）
+  ipcMain.handle('depth:lookup', (_e, imagePath) => {
+    try { return depthService.lookup(imagePath); } catch { return null; }
   });
 
   // ---- 频道 ----
@@ -1679,7 +1617,7 @@ function registerIpc() {
   ipcMain.handle('tray:state', () => ({
     installed: tray.isInstalled(),
     launchAtLogin: tray.getLaunchAtLogin(),
-    loginCommand: `${tray.launcherPath()} ${tray.loginArgs().join(' ')}`,
+    loginCommand: `${process.execPath} ${tray.loginArgs().join(' ')}`,
   }));
   ipcMain.handle('tray:set-launch-at-login', (_e, enabled) => {
     const result = tray.setLaunchAtLogin(enabled);
@@ -1820,11 +1758,6 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     store = new Store(path.join(app.getPath('userData'), 'config.json'));
 
-    // slideshow.ini 守卫（59 轮）：接管期间每笔系统壁纸写入都会清空幻灯片相册配置，
-    // 写前快照到 userData，让位/退出时还原（见 restoreSlideshowIni / slideshowGuard.js）
-    slideshowBackupFile = path.join(app.getPath('userData'), 'slideshow-backup.ini');
-    win32.configureSlideshowGuard(slideshowBackupFile);
-
     /*
      * 播放位置存档：跟配置文件放同一个目录，但**是独立文件**。
      * 它每次换图都要写（间隔可能只有几秒），而 config.json 是「配置」——
@@ -1840,6 +1773,21 @@ if (!gotLock) {
     thumbnails.handleProtocol();
     stageProtocol.handleProtocol();   // wpimg:// 动态桌面的原图通道（no-store）
 
+    // 深度视差（按需生成 + 集中缓存，fail-soft 降级）：缓存目录可配置
+    // （config.depthCacheDir，想放 F 盘就写 "F:\\壁纸\\.depth-cache"）；
+    // Python/模型目录同理（depthPython / depthModelDir）。默认值见 depthService.js。
+    debugLog.init(path.join(app.getPath('userData'), 'logs'));
+    depthService.configure({
+      cacheDir: store.get().depthCacheDir || path.join(app.getPath('userData'), 'depth-cache'),
+      python: store.get().depthPython,
+      modelDir: store.get().depthModelDir,
+      onReady: (imagePath) => {
+        // 现场升级：正在显示这张图的舞台立刻从 2D 切视差
+        send('depth:ready', { path: imagePath });
+        liveStage.broadcast('depth:ready', { path: imagePath });
+      },
+    });
+
     // 视频优化转码（遇到才转）：协议层在服务视频前会调 resolveForPlayback，
     // 这里只负责接上配置。getter 每次现取 config —— 改配置不用重启。
     videoOptimize.configure({ getConfig: () => store.get() });
@@ -1854,10 +1802,6 @@ if (!gotLock) {
       playback,
       // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
       isLiveDegraded: () => liveStage.isDegraded(),
-      // 舞台被冻结（全屏/锁屏/电池/挂机）的频道「停表不走针」（48 轮）
-      isFrozen: (id) => liveStage.isChannelFrozen(id),
-      // 扫描缓存落盘：大图库冷启动先用上次的清单立即出画面，后台再校准（48 轮）
-      scanCacheFile: path.join(app.getPath('userData'), 'scan-cache.json'),
       enumerate: () => {
         const info = listMonitors();
         return { ok: info.ok, error: info.error, monitors: info.monitors };
@@ -1865,7 +1809,7 @@ if (!gotLock) {
       resolveUnifiedTarget,
       onEvent: (type, payload) => {
         if (type === 'tick') {
-          console.log(`[tick-bus] ${new Date().toLocaleTimeString('zh-CN', { hour12: false })} tick id=${payload.id} index=${payload.index}/${payload.count}`);
+          console.log(`[tick-bus] tick id=${payload.id} index=${payload.index}/${payload.count}`);
           send('channel:tick', payload);
           // stage 窗口也收全量 tick，各自按频道 id 过滤（每块屏只听自己的频道）
           liveStage.broadcast('channel:tick', payload);
@@ -1875,10 +1819,6 @@ if (!gotLock) {
           const broadcast = channelBroadcast(payload);
           send('channels:changed', broadcast);
           liveStage.broadcast('channels:changed', broadcast);
-          // 手动暂停 → 舞台冻结（粒子也停，53 轮）；恢复同理。
-          // playing=false 的集合每次全量重算，天然覆盖启动即暂停的情况
-          liveStage.applyManualPause((payload.channels || scheduler.list())
-            .filter((c) => c && c.playing === false).map((c) => c.id));
           liveStage.syncTo(payload.channels || scheduler.list());
           tray.refresh(payload.channels || scheduler.list());
         }
@@ -1916,16 +1856,16 @@ if (!gotLock) {
 
     // 动态桌面：配置开着就随应用启动（窗口在这里创建并挂到桌面图标下面）
     if (store.get().liveWallpaper) {
-      liveStage.setUnifiedSplit((store.get().liveStage || {}).unifiedSplit);
       liveStage.start();
       liveStage.syncTo(scheduler.list());
+      // 全屏/锁屏暂停轮询（57 轮起常驻）。⚠️ 60~72 轮重构丢了这行 → 暂停系统
+      // 整个没启动（2026-10-09 从日志与调用点对拍实锤），恢复。
+      startFullscreenWatch();
     }
-    // 全屏 / 锁屏 / 电池 / 挂机暂停轮询（49 轮修：此前漏挂，所有 pauseOn* 都是死的；
-    // 57 轮改为常驻——静态系统壁纸模式同样需要电池/挂机暂停，不再随动态桌面启停）
-    startFullscreenWatch();
 
     // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫。不依赖动态桌面 ——
     // 静态系统壁纸模式同样能切（scheduler.step 会写系统壁纸）。
+    // ⚠️ 60~72 轮重构把 swipeWatch 整个删了（含设置开关），2026-10-09 恢复。
     swipeWatch.start({
       getEnabled: () => store.get().swipeSwitch !== false,
       onSwipe: (dir, pt) => {
@@ -1934,10 +1874,6 @@ if (!gotLock) {
         });
       },
     });
-
-    // 启动加速（48 轮）：舞台已经用「上次的清单」出画面了，后台再真扫一遍校准，
-    // 清单有变化（新增/删除）时补一次 rebuild —— 不 await，校验慢不拖慢出画面
-    scheduler.drainRefreshQueue().catch((err) => console.warn('[scheduler] 启动校准失败:', err.message));
 
     /*
      * 桌面右键菜单点下去时 App 可能没在跑（比如开机后还没启动过）。
@@ -1997,13 +1933,7 @@ if (!gotLock) {
       event.preventDefault();
       scheduler.anchorSystem()
         .catch((err) => console.warn('[quit] 锚点补写失败:', err.message))
-        .finally(() => {
-          anchorFlushed = true;
-          restoreSlideshowIni();   // 59 轮：锚点那笔又把幻灯片配置踩空了，退出前还回去
-          app.quit();
-        });
-    } else {
-      restoreSlideshowIni();     // 59 轮：不补写也还一次（ini 可能被运行期间的任何一笔踩空）
+        .finally(() => { anchorFlushed = true; app.quit(); });
     }
   });
 
@@ -2050,14 +1980,6 @@ function installTray() {
     },
     setAllPlaying: (playing) => {
       for (const ch of scheduler.channels.values()) scheduler.setPlaying(ch.id, playing);
-      send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
-    },
-    /** 托盘一键让位/收回系统壁纸（57 轮）：让位后 Windows 自带幻灯片随便切 */
-    isApplyToSystem: () => Boolean(store.get().applyToSystem),
-    setApplyToSystem: (on) => {
-      store.set({ applyToSystem: Boolean(on) });
-      // 59 轮：让位瞬间还幻灯片相册配置（接管期间的写入把它踩空了）
-      if (!on) restoreSlideshowIni();
       send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
     },
     isWindowVisible,

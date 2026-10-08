@@ -81,13 +81,9 @@ function stageUrl(imagePath) {
   return `${SCHEME}://img/${encodePath(imagePath)}`;
 }
 
-/**
- * scheme 特权描述（54 轮）：不再各自调用 registerSchemesAsPrivileged ——
- * 它多次调用会互相覆盖（见 thumbnails.js schemePrivileges 注释），
- * 两个自定义协议在 main.js 合成一个数组、只调一次。
- */
-function schemePrivileges() {
-  return {
+/** 必须在 app ready 之前调用 */
+function registerScheme() {
+  protocol.registerSchemesAsPrivileged([{
     scheme: SCHEME,
     privileges: {
       standard: true, secure: true, supportFetchAPI: true, stream: true,
@@ -95,7 +91,7 @@ function schemePrivileges() {
       // Chromium 直接拒掉（实测 Failed to fetch，ACAO 响应头都轮不到看）
       corsEnabled: true,
     },
-  };
+  }]);
 }
 
 /** 必须在 app ready 之后调用 */
@@ -197,7 +193,7 @@ function handleProtocol() {
 
 module.exports = {
   SCHEME,
-  schemePrivileges,
+  registerScheme,
   handleProtocol,
   stageUrl,
   encodePath,

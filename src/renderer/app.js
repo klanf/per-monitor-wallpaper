@@ -80,7 +80,6 @@ const state = {
   index: 0,
   active: 'B',                // 当前可见图层
   playing: false,
-  autoPaused: false,          // 动态桌面自动暂停中（全屏/锁屏/电池/挂机，53 轮）
   cleanupTimer: null,
   animToken: 0,
   firstPaintDone: false,
@@ -252,18 +251,11 @@ function restartProgress() {
   fill.style.animationPlayState = state.playing ? 'running' : 'paused';
 }
 
-/** 播放 / 暂停按钮的图标与 body 标记。
- *  自动暂停（全屏/锁屏/电池/挂机，主进程 live:paused 推送）时图标也切到暂停态
- *  ——用户点 ⏸ 停下的和系统自动停下的都是「当前没在播」，按钮要如实反映。 */
+/** 播放 / 暂停按钮的图标与 body 标记 */
 function updatePlayIcon() {
-  const active = Boolean(state.playing) && !state.autoPaused;
-  document.body.classList.toggle('playing', active);
-  document.body.classList.toggle('auto-paused', Boolean(state.autoPaused));
-  if (els.iconPause) els.iconPause.style.display = active ? '' : 'none';
-  if (els.iconPlay) els.iconPlay.style.display = active ? 'none' : '';
-  const btn = $('btn-play');
-  if (btn) btn.title = state.autoPaused ? '已自动暂停（全屏 / 锁屏），切回去自动恢复（空格）'
-    : state.playing ? '暂停 / 继续（空格）' : '继续播放（空格）';
+  document.body.classList.toggle('playing', Boolean(state.playing));
+  if (els.iconPause) els.iconPause.style.display = state.playing ? '' : 'none';
+  if (els.iconPlay) els.iconPlay.style.display = state.playing ? 'none' : '';
 }
 
 /* ------------------------------------------------------------ 解码预热 */
@@ -521,12 +513,9 @@ async function render(index, dir, animate) {
     outgoing.root.style.transition = 'none';
     applyVars(outgoing.root, { opacity: '0', clipPath: '', filter: '', zIndex: '' });
   } else {
-    // random：每次预览切换随机抽一种（与 stage.js 的 RANDOM_POOL 同一清单）。
-    // ⚠️ 不含 blur-dissolve：入场从 blur(24px) 渐清晰，4K 图上 GPU 模糊又慢，
-    // 随机抽中时整个过渡期画面都是糊的（用户报「切图有时候很模糊」）。
-    // 它仍保留在动画下拉里，想要可以显式选。
+    // random：每次预览切换随机抽一种（与 stage.js 的 RANDOM_POOL 同一清单）
     const pool = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
-      'wipe', 'iris', 'clock', 'blinds', 'split'];
+      'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
     const animName = profile.animation === 'random'
       ? pool[Math.floor(Math.random() * pool.length)]
       : profile.animation;
@@ -558,19 +547,13 @@ async function render(index, dir, animate) {
 
   state.active = incomingKey;
 
-  // 动画结束后把后层钉死在透明+原位，并清掉 clip/filter 残留，避免下次复用穿帮；
-  // 活跃层也顺手清掉 clip/filter（blur-dissolve 的终态会把 blur(0px) 永久挂在
-  // 活跃层上 —— filter 非空会让巨图一直占一块合成层，白白吃显存）。
-  // 只清 filter/clip，不动 opacity/transform/zIndex —— 那些是活跃层的正常状态。
+  // 动画结束后把后层钉死在透明+原位，并清掉 clip/filter 残留，避免下次复用穿帮
   clearTimeout(state.cleanupTimer);
   state.cleanupTimer = setTimeout(() => {
     if (token !== state.animToken) return;
     const stale = layers[state.active === 'A' ? 'B' : 'A'];
     stale.root.style.transition = 'none';
     applyVars(stale.root, { transform: 'translate3d(0,0,0)', opacity: '0', clipPath: '', filter: '', zIndex: '' });
-    const active = layers[state.active];
-    active.root.style.transition = 'none';
-    applyVars(active.root, { clipPath: '', filter: '' });
   }, duration + 60);
 }
 
@@ -656,10 +639,6 @@ function makeFilmItem(index) {
   img.decoding = 'async';
   img.draggable = false;
   img.alt = '';
-  // 54 轮：加载完成前 img 透明（CSS），格子显示微光占位 —— 启动那几秒不再是一排
-  // 纯黑块。load/error 都可能早于监听（内存缓存），先查 complete 兜一手。
-  img.addEventListener('load', () => { img.classList.add('ready'); el.classList.add('has-img'); });
-  if (img.complete && img.naturalWidth > 0) { img.classList.add('ready'); el.classList.add('has-img'); }
   img.src = window.wp.thumbUrl(entry.path);
   // 极端格式（avif / 部分 tiff）缩略图生成失败时会 404，别留一个破图占位
   img.addEventListener('error', () => { img.classList.add('broken'); el.classList.add('broken'); });
@@ -1144,12 +1123,6 @@ async function setPreview(id) {
   const previous = channelById(state.previewId);
   state.previewId = id;
   state.firstPaintDone = false;
-  // 预览哪块屏就展开哪块卡的设置（并记住），其余卡片维持原折叠状态（47 轮）
-  const openList = new Set(state.config.expandedMonitors || []);
-  if (!openList.has(id)) {
-    openList.add(id);
-    state.config = await window.wp.setConfig({ expandedMonitors: [...openList] });
-  }
   renderCards();
   updateBadges();
   await loadPreviewChannel();
@@ -1371,32 +1344,10 @@ function albumOptions(selectedId, withBlank = true) {
   return opts.join('');
 }
 
-/**
- * 每屏卡片的粒子下拉。三态语义：
- *   '' = 跟随全局（不写覆盖，落盘发 null 删除）；'off' = 显式关闭（覆盖写 ''）；
- *   其余 = 这块屏固定用该种类（random = 每次换图随机抽）。
- */
-function particleOptions(value) {
-  const opts = [
-    ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
-    ['snow', '雪'], ['fireflies', '萤火虫'], ['stars', '星空流星'], ['bubbles', '泡泡'],
-    ['leaves', '落叶'], ['confetti', '彩带纸屑'],
-    ['fireworks', '烟花'], ['embers', '火焰灰烬'], ['splash', '雨落水花'], ['raindrops', '雨滴挂屏'],
-    ['random', '随机（每次换图抽一种）'],
-  ];
-  return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
-}
-
 function cardHtml(ch) {
   const p = ch.profile;
-  // 「跟随全局」要显示的是有没有**原始覆盖**，resolveProfile 合并后的值区分不出来 —— 直接读 monitors
-  const ov = (state.config && state.config.monitors && state.config.monitors[ch.id]) || {};
-  // 折叠状态记在 config.expandedMonitors（UI_ONLY，不触发重建）：默认全折叠，
-  // 预览哪块屏就展开哪块，重进还保持（47 轮）
-  const open = (state.config.expandedMonitors || []).includes(ch.id);
   const previewing = ch.id === state.previewId;
   const classes = ['monitor-card'];
-  if (open) classes.push('open');
   if (previewing) classes.push('previewing');
   if (!p.enabled) classes.push('off');
 
@@ -1430,9 +1381,6 @@ function cardHtml(ch) {
         <div class="mc-title">${escapeHtml(channelName(ch))}</div>
         <div class="mc-res">@ ${ch.x},${ch.y}${ch.primary ? ' · 主屏' : ''}</div>
       </div>
-      <button class="eye mc-toggle" data-act="toggle-open" title="${open ? '折叠这块屏的设置' : '展开这块屏的设置'}">
-        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
-      </button>
       <button class="eye" data-act="preview" title="把窗口预览切到这块屏">
         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6">
           <path d="M1 8s2.6-4.4 7-4.4S15 8 15 8s-2.6 4.4-7 4.4S1 8 1 8z"/><circle cx="8" cy="8" r="1.8"/>
@@ -1485,17 +1433,8 @@ function cardHtml(ch) {
         <label class="field-label">填充方式</label>
         <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示']])}</div>
       </div>
-      <div class="mc-block">
-        <label class="field-label">粒子特效</label>
-        <div class="field-row">
-          <select class="select sm" data-field="particles" title="这块屏的粒子特效；跟随全局 = 用「系统」页里的全局设置">${particleOptions(ov.particles)}</select>
-          <input type="number" class="select sm" data-field="particleCount" min="0" max="1000" step="4"
-            placeholder="数量跟随全局" title="这块屏的粒子数量；留空 = 跟随全局（0~1000）"
-            value="${ov.particleCount !== undefined ? ov.particleCount : ''}" style="width:118px;flex:0 0 auto">
-        </div>
-        <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；烟花数量内置（最多同时 5 发）。</div>
-      </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
+      <label class="check"><input type="checkbox" data-field="pauseOnFullscreen"${p.pauseOnFullscreen !== false ? ' checked' : ''}><span>本屏被全屏窗口盖住时暂停（玩游戏的那块屏可以单独关掉，壁纸照常动）</span></label>
     </div>
   </div>`;
 }
@@ -1648,21 +1587,6 @@ async function addDirsToAlbum(albumId) {
     folders: [...album.folders, ...fresh.map((p) => ({ path: p, enabled: true }))],
   });
   toast(`已加入相簿「${album.name}」：${fresh.map(baseName).join('、')}`);
-  // 加完目录还没人用 → 绑到空屏并收起相簿页，让用户立刻看到壁纸出来（别再卡空态）
-  if (await ensureAlbumBound(albumId)) closeAlbumsPage();
-}
-
-/** 相簿未被任何屏幕使用时，绑给「还没绑相簿」的屏 —— 新用户引导的收尾一步。
- * 返回是否发生了绑定；所有屏都已绑别的相簿时不抢（不动现有配置），提示手动绑。 */
-async function ensureAlbumBound(albumId) {
-  if (state.channels.some((c) => c.profile && c.profile.albumId === albumId)) return false;
-  const target = state.channels.find((c) => c.profile && !c.profile.albumId);
-  if (!target) {
-    toast('相簿已更新。它还没绑定屏幕，可在显示器卡片的「相簿」下拉里选择');
-    return false;
-  }
-  await window.wp.channelCommand(target.id, 'set-profile', { albumId });
-  return true;
 }
 
 async function onAlbumListClick(e) {
@@ -1764,7 +1688,6 @@ function openSettings() {
   document.body.classList.remove('idle');
   closeAlbumsPage();              // 两个覆盖层互斥，别叠在一起
   refreshThumbStats();
-  refreshMemLabel();              // 「释放内存」旁边常驻显示缓存有多大（47 轮）
   refreshTrayState();
   refreshHotkeys();
 }
@@ -1850,15 +1773,6 @@ async function refreshThumbStats() {
   } catch (err) {
     els.thumbStats.textContent = `读取失败：${err.message}`;
   }
-}
-
-/** 「释放内存」旁的状态条：缓存大小常驻，释放后附带主进程内存读数 */
-async function refreshMemLabel(mem) {
-  try {
-    const s = await window.wp.thumbStats();
-    els.memLabel.textContent = (mem ? `主进程 RSS ${mem.rss} MB · ` : '')
-      + `缩略图缓存 ${s.mb} MB（${s.files.toLocaleString('zh-CN')} 张）`;
-  } catch { /* 缓存统计拿不到就算了，别在装饰性信息上弹错误 */ }
 }
 
 async function refreshTrayState() {
@@ -2147,39 +2061,14 @@ function applyConfigToUI() {
 
   // ---- 动态桌面 ----
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
+  // 桌面手势切壁纸（54 轮追记五）：顶层键 swipeSwitch，默认开
+  $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
-  // 视频省电优化（56 轮）：顶层键 videoOptimize / optimizeTargetFps，默认开 + 30fps
-  $('cfg-video-optimize').checked = c.videoOptimize !== false;
-  setSegment('cfg-optimize-fps', Number(c.optimizeTargetFps) === 48 ? '48' : '30');
   $('cfg-breath').checked = c.breath === true;
-  // 暂停时隐藏舞台窗口（54 轮追记四默认关）：嵌套键 liveStage.hideOnPaused
-  $('cfg-live-hide-paused').checked = (c.liveStage || {}).hideOnPaused === true;
-  // 统一模式动态桌面形态（53 轮）：跨屏拼一幅 / 每屏同一幅
-  setSegment('cfg-live-split', ((c.liveStage || {}).unifiedSplit === 'per-display') ? 'per-display' : 'span');
-  // 呼吸节奏滑条：默认与 stage.js 的 cfg 默认保持一致（6000ms / ±2%）
-  const bp = Math.round(Number(c.breathPeriod));
-  $('cfg-breath-period').value = String(Number.isFinite(bp) ? Math.min(Math.max(bp, 2000), 15000) / 1000 : 6);
-  $('cfg-breath-period-out').textContent = `${$('cfg-breath-period').value} 秒/周期`;
-  const ba = Number(c.breathAmplitude);
-  $('cfg-breath-amplitude').value = String(Number.isFinite(ba) ? Math.min(Math.max(ba, 0.5), 5) : 2);
-  $('cfg-breath-amplitude-out').textContent = `±${$('cfg-breath-amplitude').value}%`;
-  // 粒子数量滑条：上限/默认与 particles.js 的 COUNT_MAX / COUNT_DEFAULT 保持一致
-  $('cfg-particles').value = typeof c.particles === 'string' ? c.particles : '';
-  const pc = Math.round(Number(c.particleCount));
-  $('cfg-particle-count').value = String(Number.isFinite(pc) ? Math.min(Math.max(pc, 0), 1000) : 256);
-  $('cfg-particle-count-out').textContent = `${$('cfg-particle-count').value} 粒`;
+  $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
-  // 自动暂停（57 轮）：嵌套键 liveStage.pauseOnIdle / idlePauseMinutes / pauseOnBattery
-  const lsNow = c.liveStage || {};
-  $('cfg-pause-on-idle').checked = lsNow.pauseOnIdle !== false;
-  $('cfg-pause-on-battery').checked = lsNow.pauseOnBattery === true;
-  setSegment('cfg-idle-minutes', String([3, 5, 10, 15].includes(Number(lsNow.idlePauseMinutes)) ? Number(lsNow.idlePauseMinutes) : 5));
-  // 桌面手势切壁纸（54 轮追记五）：顶层键 swipeSwitch，默认开
-  $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
-  // 粒子绕开鼠标（54 轮追记六）：顶层键 particleCursor，默认开
-  $('cfg-particle-cursor').checked = c.particleCursor !== false;
   $('cfg-close-to-tray').checked = c.closeToTray !== false;
   $('cfg-start-hidden').checked = c.startHidden === true;
 
@@ -2209,8 +2098,9 @@ function applyConfigToUI() {
   setSegment('cfg-shuffle', c.shuffle ? 'random' : 'order');
   setSegment('cfg-mode', c.perMonitor ? 'per-monitor' : 'unified');
 
-  // 53 轮追记：「写入目标显示器」UI 已撤（舞台为主）；config.monitor 键保留，
-  // 老配置里存过 primary/window/指定屏 的仍由后端 resolveUnifiedTarget 尊重。
+  const select = $('cfg-monitor');
+  select.value = c.monitor || 'all';
+  if (!select.value) { select.value = 'all'; c.monitor = 'all'; }
 
   // 统一模式的相簿下拉（选项列表来自 state.albums，见 albumOptions）
   syncAlbumSelect();
@@ -2221,19 +2111,34 @@ function applyConfigToUI() {
   document.body.classList.toggle('mode-per-monitor', Boolean(c.perMonitor));
   document.body.classList.toggle('fit-contain', c.fit === 'contain');
   document.body.classList.toggle('filmstrip-off', c.filmstrip === false);
-  // 单屏机器：隐藏「统一/每屏」切换（refreshChannelInfo 会自动落到每屏语义，
-  // 单屏下两种模式本来就等价，隐藏掉省得选）
-  const displayCount = (state.backendInfo && state.backendInfo.monitors && state.backendInfo.monitors.length)
-    || state.channels.length || 1;
-  document.body.classList.toggle('single-monitor', displayCount <= 1);
 }
 
-/** 全局粒子设置保存时的提醒：有每屏覆盖的屏不跟随全局（用户真实踩过：全局设了樱花，
- *  一块屏覆盖成 random、另一块覆盖成关闭+数量0，看上去就是「粒子没有生效」） */
-function particleOverrideNote() {
-  const n = Object.values((state.config && state.config.monitors) || {})
-    .filter((m) => m && m.particles !== undefined).length;
-  return n ? `。注意：${n} 块屏设了独立粒子覆盖（卡片里选「跟随全局」才会吃到这条设置）` : '';
+/** 统一模式的目标下拉框：动态追加具体显示器 */
+function refreshMonitorTargets() {
+  const select = $('cfg-monitor');
+  for (const group of select.querySelectorAll('optgroup')) group.remove();
+
+  const monitors = (state.backendInfo && state.backendInfo.monitors) || [];
+  if (monitors.length > 1) {
+    const group = document.createElement('optgroup');
+    group.label = '指定某一台';
+    for (const monitor of monitors) {
+      const option = document.createElement('option');
+      option.value = monitor.id;
+      option.textContent = monitor.label;
+      group.appendChild(option);
+    }
+    select.appendChild(group);
+  }
+
+  select.value = state.config.monitor || 'all';
+  if (!select.value) select.value = 'all';
+
+  const hint = $('monitor-target-hint');
+  const err = (state.backendInfo && state.backendInfo.monitorsError) || null;
+  if (err) hint.textContent = `每屏壁纸接口不可用：${err}`;
+  else if (monitors.length <= 1) hint.textContent = '当前只检测到 1 台显示器；接入第二台后这里会自动出现独立选项。';
+  else hint.textContent = `已检测到 ${monitors.length} 台显示器。仅修改所选屏幕，其他屏幕保持原样。`;
 }
 
 function bindSettings() {
@@ -2275,24 +2180,7 @@ function bindSettings() {
     toast(perMonitor
       ? '已切换到每屏独立模式：可以给每台显示器单独设置目录和节奏'
       : '已切换到统一配置模式：所有显示器共用一套设置');
-    // 53 轮：首次切到每屏独立，指路粒子/目录设置入口（勾选「不再提示」后消失）
-    if (perMonitor && state.config && state.config.hintParticlesPerMonitor !== true) {
-      showPerMonitorHintOnce();
-    }
   });
-
-  // ---- 一次性指路弹窗（53 轮）----
-  function showPerMonitorHintOnce() {
-    const overlay = $('pm-hint-overlay');
-    if (!overlay) return;
-    overlay.hidden = false;
-    const close = async (remember) => {
-      overlay.hidden = true;
-      if (remember) await save({ hintParticlesPerMonitor: true });
-    };
-    $('pm-hint-ok').onclick = () => close($('pm-hint-dont-show').checked);
-    overlay.onclick = (e) => { if (e.target === overlay) close($('pm-hint-dont-show').checked); };
-  }
 
   // ---- 统一模式的字段 ----
   $('cfg-interval').addEventListener('input', (e) => {
@@ -2369,25 +2257,14 @@ function bindSettings() {
     toast(e.target.checked ? '动态桌面已开启：桌面壁纸随切换实时更新' : '动态桌面已关闭：桌面回到普通静态壁纸');
   });
 
+  $('cfg-swipe-switch').addEventListener('change', async (e) => {
+    await save({ swipeSwitch: e.target.checked });
+    toast(e.target.checked ? '桌面手势切壁纸已开启' : '桌面手势切壁纸已关闭');
+  });
+
   $('cfg-video-play-full').addEventListener('change', async (e) => {
     await save({ videoPlayFull: e.target.checked });
     toast(e.target.checked ? '视频将播放完整再切下一张' : '视频恢复按间隔时间切换');
-  });
-
-  // ---- 视频省电优化（56 轮）：主进程 videoOptimize 每次现读配置，存盘即生效 ----
-  $('cfg-video-optimize').addEventListener('change', async (e) => {
-    await save({ videoOptimize: e.target.checked });
-    toast(e.target.checked
-      ? '视频省电优化已开：高帧率视频首播后自动改用低帧率副本'
-      : '视频省电优化已关：之后播原件（已生成的副本保留，重新打开可继续用）');
-  });
-  $('cfg-optimize-fps').addEventListener('click', async (event) => {
-    const item = event.target.closest('.seg-item');
-    if (!item) return;
-    const fps = item.dataset.value === '48' ? 48 : 30;
-    setSegment('cfg-optimize-fps', item.dataset.value);
-    await save({ optimizeTargetFps: fps });
-    toast(`之后新转的副本按 ${fps}fps 生成；旧帧率副本在下次播放到时自动重转`);
   });
 
   $('cfg-breath').addEventListener('change', async (e) => {
@@ -2395,102 +2272,26 @@ function bindSettings() {
     toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
   });
 
-  // 暂停时隐藏舞台窗口（52 轮）：嵌套合并写 liveStage.hideOnPaused，即时生效
-  $('cfg-live-hide-paused').addEventListener('change', async (e) => {
-    const current = (state.config && state.config.liveStage) || {};
-    await save({ liveStage: { ...current, hideOnPaused: e.target.checked } });
-    toast(e.target.checked
-      ? '已开启：全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏黑屏）'
-      : '已关闭：暂停时保留画面（若独占全屏游戏黑屏请重新开启）');
-  });
-
-  // 统一模式动态桌面形态（53 轮）：span=跨屏拼一幅 / per-display=每屏同一幅
-  $('cfg-live-split').addEventListener('click', async (event) => {
-    const item = event.target.closest('.seg-item');
-    if (!item) return;
-    const split = item.dataset.value === 'per-display' ? 'per-display' : 'span';
-    if (((state.config && state.config.liveStage) || {}).unifiedSplit === split) return;
-    setSegment('cfg-live-split', item.dataset.value);
-    const current = (state.config && state.config.liveStage) || {};
-    await save({ liveStage: { ...current, unifiedSplit: split } });
-    toast(split === 'per-display'
-      ? '每屏同一幅：每块显示器一个画面窗口，各自显示当前这张'
-      : '跨屏拼一幅：一块画面窗口横跨所有显示器（换屏/改分辨率后自动重铺）');
-  });
-
-  // 呼吸节奏（47 轮）：周期/幅度滑条，落 profile 键，每屏卡片也能单独覆盖
-  $('cfg-breath-period').addEventListener('input', (e) => {
-    $('cfg-breath-period-out').textContent = `${e.target.value} 秒/周期`;
-  });
-  $('cfg-breath-period').addEventListener('change', async (e) => {
-    await save({ breathPeriod: Math.round(Number(e.target.value) * 1000) });
-  });
-
-  $('cfg-breath-amplitude').addEventListener('input', (e) => {
-    $('cfg-breath-amplitude-out').textContent = `±${e.target.value}%`;
-  });
-  $('cfg-breath-amplitude').addEventListener('change', async (e) => {
-    await save({ breathAmplitude: Number(e.target.value) });
-  });
-
-  $('cfg-particles').addEventListener('change', async (e) => {
+  const TOD_LABEL = {
+    morning: '早晨 · 暖金斜阳', noon: '中午 · 顶光通透', overcast: '阴天 · 灰蓝低饱和',
+    dusk: '黄昏 · 落日橙紫', night: '夜晚 · 深蓝压暗',
+  };
+  $('cfg-timeofday').addEventListener('change', async (e) => {
     const v = e.target.value;
-    await save({ particles: v });
-    toast(v ? `粒子特效已开启（叠加在动态桌面画面上）${particleOverrideNote()}` : `粒子特效已关闭${particleOverrideNote()}`);
+    await save({ timeOfDay: v });
+    toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
   });
 
-  $('cfg-particle-count').addEventListener('input', (e) => {
-    $('cfg-particle-count-out').textContent = `${e.target.value} 粒`;
-  });
-  $('cfg-particle-count').addEventListener('change', async (e) => {
-    const n = Math.min(Math.max(Math.round(Number(e.target.value) || 0), 0), 1000);
-    e.target.value = String(n);
-    $('cfg-particle-count-out').textContent = `${n} 粒`;
-    await save({ particleCount: n });
-    toast(`粒子数量已设为 ${n} 粒${particleOverrideNote()}`);
+  $('cfg-monitor').addEventListener('change', async (e) => {
+    await save({ monitor: e.target.value });
+    const label = e.target.selectedOptions[0] ? e.target.selectedOptions[0].textContent : e.target.value;
+    toast(e.target.value !== 'all' ? `只写入「${label}」` : '所有显示器都会跟着切换');
   });
 
   // ---- 后台驻留 ----
-  // 桌面手势切壁纸（54 轮追记五）：主进程每笔手势起手时现读配置，存盘即生效
-  $('cfg-swipe-switch').addEventListener('change', async (e) => {
-    await save({ swipeSwitch: e.target.checked });
-    toast(e.target.checked
-      ? '桌面手势已开：在桌面横向拖拽 / 横扫即可切壁纸'
-      : '桌面手势已关');
-  });
-  // 粒子绕开鼠标（54 轮追记六）：顶层键 particleCursor，经 resolveProfile 流进各屏
-  $('cfg-particle-cursor').addEventListener('change', async (e) => {
-    await save({ particleCursor: e.target.checked });
-    toast(e.target.checked ? '粒子会绕开鼠标了' : '粒子不再避让鼠标');
-  });
-
   $('cfg-tray').addEventListener('change', async (e) => {
     await save({ tray: e.target.checked });
     toast(e.target.checked ? '托盘图标会在下次启动时出现' : '托盘图标会在下次启动时移除（当前实例仍保留）');
-  });
-
-  // ---- 自动暂停（57 轮）：主进程 fullscreenWatch 每拍现读配置，存盘即生效 ----
-  $('cfg-pause-on-idle').addEventListener('change', async (e) => {
-    const current = (state.config && state.config.liveStage) || {};
-    await save({ liveStage: { ...current, pauseOnIdle: e.target.checked } });
-    toast(e.target.checked
-      ? '已开启：无输入超时 / 熄屏后自动冻结轮播，动一下鼠标恢复'
-      : '已关闭：人离开时轮播照常跑（平板耗电请重新打开）');
-  });
-  $('cfg-idle-minutes').addEventListener('click', async (event) => {
-    const item = event.target.closest('.seg-item');
-    if (!item) return;
-    setSegment('cfg-idle-minutes', item.dataset.value);
-    const current = (state.config && state.config.liveStage) || {};
-    await save({ liveStage: { ...current, idlePauseMinutes: Number(item.dataset.value) || 5 } });
-    toast(`无输入 ${item.dataset.value} 分钟后自动暂停`);
-  });
-  $('cfg-pause-on-battery').addEventListener('change', async (e) => {
-    const current = (state.config && state.config.liveStage) || {};
-    await save({ liveStage: { ...current, pauseOnBattery: e.target.checked } });
-    toast(e.target.checked
-      ? '已开启：拔掉电源自动冻结，接回恢复'
-      : '已关闭：用电池时轮播照常跑');
   });
 
   $('cfg-close-to-tray').addEventListener('change', async (e) => {
@@ -2726,21 +2527,9 @@ function bindSettings() {
           : '已清空这块屏的相簿（不再轮播图片）');
       } else if (field === 'animation') {
         await pushProfile(id, { animation: e.target.value });
-      } else if (field === 'particles') {
-        // '' = 跟随全局（null 删除覆盖回落顶层）；'off' = 显式关闭（覆盖写 ''）
-        const v = e.target.value;
-        const result = await pushProfile(id, { particles: v === '' ? null : (v === 'off' ? '' : v) });
-        // 卡片的「跟随全局」态读的是 monitors 原始覆盖，用返回的最新 config 重画
-        if (result && result.config) { state.config = result.config; renderCards(); }
       }
     }
     else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
-    else if (e.target.type === 'number') {
-      // 数值类覆盖（粒子数量）：留空 = 跟随全局（null 删除覆盖回落顶层）
-      const raw = String(e.target.value).trim();
-      const result = await pushProfile(id, { [field]: raw === '' ? null : Math.min(1000, Math.max(0, Math.round(Number(raw) || 0))) });
-      if (result && result.config) { state.config = result.config; renderCards(); }
-    }
     else if (e.target.type === 'checkbox') await pushProfile(id, { [field]: e.target.checked });
   });
 
@@ -2763,14 +2552,6 @@ function bindSettings() {
       case 'preview':
         await setPreview(id);
         break;
-      case 'toggle-open': {
-        // 折叠状态记在 config.expandedMonitors（UI_ONLY，不触发重建）
-        const list = new Set(state.config.expandedMonitors || []);
-        if (list.has(id)) list.delete(id); else list.add(id);
-        state.config = await window.wp.setConfig({ expandedMonitors: [...list] });
-        renderCards();
-        break;
-      }
       case 'pick': {
         // folder:pick 的语义是「选目录加入这块屏的相簿」（没有相簿会自动建一个）
         const folder = await window.wp.pickFolder(id);
@@ -2797,8 +2578,7 @@ function bindSettings() {
 
   $('btn-free-memory').addEventListener('click', async () => {
     const mem = await window.wp.freeMemory();
-    await refreshThumbStats();
-    await refreshMemLabel(mem);
+    els.memLabel.textContent = `主进程 RSS ${mem.rss} MB · 堆 ${mem.heap} MB`;
     toast(`已清理缓存   ·   主进程内存 ${mem.rss} MB`);
   });
 
@@ -2901,27 +2681,13 @@ function pokeBars() {
 async function refreshChannelInfo() {
   const info = await window.wp.listChannels();
   state.backendInfo = info;
-  // 单屏机器：自动落到「每屏独立」语义 —— 单屏下统一/每屏等价，但只有每屏语义
-  // 显示器卡片才可编辑；模式切换在单屏时由 CSS 隐藏（见 applyConfigToUI）。
-  // 一次性写盘，之后条件不成立不会反复触发。
-  const monitorCount = (info.monitors || []).length;
-  if (monitorCount > 0 && monitorCount <= 1 && state.config && state.config.perMonitor !== true) {
-    state.config = await window.wp.setConfig({ perMonitor: true });
-    applyConfigToUI();
-  }
+  refreshMonitorTargets();
   applyChannelInfo(info);
 }
 
 function bindEvents() {
-  // 空态大按钮：直接弹原生目录对话框 —— folder:pick 会自动建相簿并绑到当前屏。
-  // ⚠️ 53 轮把它改成只开相簿页，但相簿页没有「绑定屏幕」的操作：新用户建相簿、
-  // 加完目录，频道仍绑着空 albumId 永远 0 张图，空态遮罩永远在（54 轮追记九
-  // 用户实报「选完卡在这个界面进不去」）。选择取消就留在原地，无副作用。
-  $('empty-pick').addEventListener('click', async () => {
-    if (!state.previewId) { $('btn-albums').click(); return; }
-    const folder = await window.wp.pickFolder(state.previewId);
-    if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
-  });
+  // 添加目录统一走「相簿」页（顶栏按钮已撤，空态大按钮和菜单都指向相簿）
+  $('empty-pick').addEventListener('click', () => $('btn-albums').click());
   $('btn-rescan').addEventListener('click', async () => {
     if (!state.previewId) { $('btn-albums').click(); return; }
     const result = await window.wp.channelCommand(state.previewId, 'rescan');
@@ -3193,15 +2959,6 @@ function bindEvents() {
 
   window.wp.onNotice((payload) => {
     if (payload && payload.text) toast(payload.text, Boolean(payload.error));
-  });
-
-  // 动态桌面自动暂停态 → 工具栏图标跟手（53 轮）
-  window.wp.onLivePaused((payload) => {
-    const any = Boolean(payload && payload.any);
-    if (state.autoPaused !== any) {
-      state.autoPaused = any;
-      updatePlayIcon();
-    }
   });
 
   window.wp.onFilesChanged((payload) => {

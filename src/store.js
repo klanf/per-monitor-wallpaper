@@ -58,13 +58,6 @@ const DEFAULTS = {
    * 默认应该落回用户上次看的那一页 —— 否则每次打开都要重新点一遍。
    */
   settingsTab: 'play',
-
-  /**
-   * 每屏卡片哪些是展开的（频道 id 数组）。默认全折叠 —— 卡片多了以后
-   * 全展开就是一条长列；常调的那块屏展开一次，重进还保持。
-   * 纯界面状态（UI_ONLY_KEYS），改动不触发频道重建。
-   */
-  expandedMonitors: [],
   animation: 'slide',      // 全清单见下方 ANIMATIONS（含 random 随机轮换）
   duration: 520,           // 毫秒
   shuffle: false,
@@ -113,25 +106,37 @@ const DEFAULTS = {
    * 默认 30 而不是跟随刷新率 —— 桌面画面静止时 GPU 占用要尽量为零。
    */
   liveStage: {
-    fpsCap: 30,              // 长驻动画（Ken Burns/呼吸/粒子/视频）帧率上限（5~240）；过渡动画不吃闸门，永远跟满垂直同步
+    fpsCap: 30,              // 帧率上限（5~240）
     pauseOnFullscreen: true, // 某块屏被全屏应用占满时，只暂停那一块
     pauseOnBattery: true,    // 电池供电时暂停
     pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
-    pauseOnIdle: true,       // 无输入超时也算「人离开」（57 轮：纯熄屏不锁屏的平板合盖就靠它）
-    idlePauseMinutes: 5,     // 无输入判定阈值（分钟，0~120；0 = 关闭该判定）
-    // 暂停时把舞台窗口整个藏起来（52 轮）：独占全屏游戏做模式切换时，
-    // 桌面下挂着的 4K 交换链窗口会触发驱动挂死（艾尔登法环实锤），藏掉最稳
-    hideOnPaused: true,
-    // 统一配置模式下动态桌面的画面形态（53 轮）：
-    //   'span'        跨屏拼一幅（一块窗口盖虚拟桌面并集）
-    //   'per-display' 每屏同一幅（每块屏一个窗口，各自渲染同一张）
-    unifiedSplit: 'span',
   },
 
-  // 「切到每屏独立时提示粒子去哪设置」弹窗已看过（53 轮，true = 不再弹）
-  hintParticlesPerMonitor: false,
 
+  /**
+   * 动态桌面总开关：把渲染窗口挂到桌面图标**下面**实时渲染（Wallpaper Engine 那种活桌面）。
+   *
+   * 挂法是 SetParent 到持有 SHELLDLL_DefView 的窗口（本机是 Progman），再插到图标层之后
+   * —— 不用网上那套「找 WorkerW」，那套在本机必然误选（见 desktopHost.js 头注释）。
+   *
+   * 开启后系统壁纸**降频写**：只在锚点时机（启动/重建、停止前）写一次，判定见 liveDesktop.js。
+   * 实测每写一次系统壁纸，Explorer 会重建 WorkerW 把我们的窗口盖住约 1 秒（任务书 §2.14），
+   * 照原来「每换图都写」的节奏，桌面会每 30 秒闪一下。
+   */
+  liveWallpaper: false,
 
+  /**
+   * 动态桌面的性能策略（拍板：省电优先 + 暂停必须**按屏独立**）。
+   *
+   * fpsCap 只约束渲染层自己 tick 驱动的动画 —— 纯 CSS 动画跑在合成器里，
+   * rAF 节流对它无效（任务书 §2.8），所以过渡/缓动一律由渲染层出帧。
+   */
+  liveStage: {
+    fpsCap: 30,              // 帧率上限（5~240）
+    pauseOnFullscreen: true, // 某块屏被全屏应用占满时只暂停那块屏，其它屏照常
+    pauseOnBattery: true,    // 电池供电时暂停
+    pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
+  },
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
   fit: 'cover',            // cover | contain
 
@@ -224,8 +229,6 @@ const DEFAULTS = {
 
   // ---- 右键菜单 ----
   contextMenu: true,
-  // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫切上/下一张，不写 = 默认开
-  swipeSwitch: true,
   // 快捷移动/复制目标，[{ id, name, path }]
   quickFolders: [],
   /**
@@ -245,15 +248,10 @@ const DEFAULTS = {
 const PROFILE_KEYS = [
   'albumId', 'recursive', 'interval', 'animation', 'duration', 'shuffle', 'fit', 'skipSizeTwin',
   'kenBurns',                  // 动态桌面舞台的 Ken Burns 微缩放开关（不写 = 默认开）
-  'fpsCap',                    // 舞台长驻动画帧率上限（不写 = 默认 30；过渡动画不吃闸门）
+  'fpsCap',                    // 动态桌面舞台过渡帧率上限（不写 = 默认 60）
   'videoPlayFull',             // 视频播完再切下一张（不写 = 默认关，按 interval 定时切）
   'breath',                    // 呼吸缩放特效（不写 = 默认关；与 Ken Burns 叠加）
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
-  'particles',                 // 舞台粒子特效：rain/sakura（不写 = 关；白名单收紧在渲染端 particles.js）
-  'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
-  'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
-  'breathPeriod',              // 呼吸缩放周期 ms（不写 = 渲染端默认 6000；收紧 2000~15000）
-  'breathAmplitude',           // 呼吸缩放幅度 %（不写 = 渲染端默认 2，即 ±2%；收紧 0.5~5）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */
@@ -404,13 +402,8 @@ function normalizeConfig(obj) {
   if ('hotkeys' in out) out.hotkeys = normalizeHotkeys(out.hotkeys);
   if ('albums' in out) out.albums = normalizeAlbums(out.albums);
   if ('autoScanMinutes' in out) out.autoScanMinutes = clampAutoScanMinutes(out.autoScanMinutes);
-  // 视频省电优化目标帧率（56 轮）：只认 30/48 档，其余一律回落 30（防手改配置塞脏值）；
-  // null/undefined = 没给值，删键走默认
-  if ('optimizeTargetFps' in out) {
-    if (out.optimizeTargetFps == null) delete out.optimizeTargetFps;
-    else out.optimizeTargetFps = Number(out.optimizeTargetFps) === 48 ? 48 : 30;
-  }
   if ('settingsTab' in out) out.settingsTab = clampSettingsTab(out.settingsTab);
+  if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
   if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
   return out;
 }
@@ -445,13 +438,6 @@ function deepMerge(base, patch) {
 function resolveProfile(config, monitorId) {
   const base = {};
   for (const key of PROFILE_KEYS) base[key] = config[key];
-
-  // fpsCap 的用户入口是嵌套的 liveStage.fpsCap —— 顶层从不存在这个键，
-  // 不接上的话 profile.fpsCap 恒为 undefined，舞台永远跑默认 60，
-  // 用户设置的 30 形同虚设（48 轮实锤）。每屏显式覆盖仍会在此之后覆盖它。
-  if (isPlainObject(config.liveStage) && Number.isFinite(config.liveStage.fpsCap)) {
-    base.fpsCap = config.liveStage.fpsCap;
-  }
 
   // 只读派生的 folder：绑定的是单目录相簿时回填目录路径。
   // 目的不是回退数据模型，而是让 tools/status.js 显示和旧验证脚本的断言继续可用；
@@ -519,6 +505,28 @@ function clampAutoScanMinutes(value) {
 function clampSettingsTab(value) {
   return SETTINGS_TABS.includes(value) ? value : DEFAULTS.settingsTab;
 }
+/**
+ * 动态桌面的帧率上限：下限 5（再低就不像动画了），上限 240 纯防手滑（配置能手改）。
+ * 只约束渲染层自己 tick 驱动的动画 —— CSS 动画在合成器里，rAF 节流无效。
+ */
+function clampLiveFps(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULTS.liveStage.fpsCap;
+  return Math.min(Math.max(Math.round(n), 5), 240);
+}
+
+/** 动态桌面子配置收紧：字段补默认、布尔归位；整体不是对象时整块回默认。 */
+function clampLiveStage(value) {
+  const src = isPlainObject(value) ? value : {};
+  const d = DEFAULTS.liveStage;
+  return {
+    fpsCap: clampLiveFps(src.fpsCap),
+    pauseOnFullscreen: 'pauseOnFullscreen' in src ? toBool(src.pauseOnFullscreen) : d.pauseOnFullscreen,
+    pauseOnBattery: 'pauseOnBattery' in src ? toBool(src.pauseOnBattery) : d.pauseOnBattery,
+    pauseOnLock: 'pauseOnLock' in src ? toBool(src.pauseOnLock) : d.pauseOnLock,
+  };
+}
+
 
 /**
  * 动态桌面帧率上限。
@@ -543,18 +551,11 @@ function clampLiveStage(value) {
   const src = isPlainObject(value) ? value : {};
   const d = DEFAULTS.liveStage;
   const bool = (key) => (key in src ? toBool(src[key]) : d[key]);
-  const idleMinRaw = Math.round(Number(src.idlePauseMinutes));
   return {
     fpsCap: clampLiveFps(src.fpsCap),
     pauseOnFullscreen: bool('pauseOnFullscreen'),
     pauseOnBattery: bool('pauseOnBattery'),
     pauseOnLock: bool('pauseOnLock'),
-    pauseOnIdle: bool('pauseOnIdle'),
-    idlePauseMinutes: Number.isFinite(idleMinRaw)
-      ? Math.min(Math.max(idleMinRaw, 0), 120)
-      : d.idlePauseMinutes,
-    hideOnPaused: bool('hideOnPaused'),
-    unifiedSplit: src.unifiedSplit === 'per-display' ? 'per-display' : 'span',
   };
 }
 
@@ -672,9 +673,9 @@ module.exports = {
   writeProfile,
   clampInterval,
   clampLiveStage,
+  clampLiveStage,
   newAlbumId,
   normalizeAlbums,
   findAlbum,
   migrateLegacyFolders,
-  normalizeConfig,
 };

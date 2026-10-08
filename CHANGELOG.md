@@ -2560,20 +2560,6 @@ fs 30 / swipe 17 全绿。新用户流程待真机走一遍（选目录 → 壁�
 - live e2e 12/13，末项「看门狗重申 Z 序」在 HEAD 未改版同样失败（对照实验确认
   与本轮改动无关，同为游戏全屏环境干扰）。
 
-### 追记：README 补齐 55–59 轮功能（真机验收通过后）
-
-用户确认 59 轮修复真机验收通过、重出安装版与 portable 包后，同步 README：
-
-- 托盘段落补「接管系统壁纸」让位开关（57 轮）；
-- 动态桌面一节重写暂停体系为四条件表（全屏 / 锁屏 / 挂机 / 电池），
-  删掉已判死刑的「息屏检测」表述（58 轮），补「暂停时停在完整帧」（59 轮）；
-- 新增「视频壁纸与省电优化」小节 + config 注释补 `videoOptimize` /
-  `optimizeTargetFps` / `optimizeCacheDir`（56 轮）；
-- 「会顶掉系统幻灯片」三处表述改为快照守卫自动还原（58 轮追记）；
-- 「它不是什么」「已知限制」修正与动态桌面自相矛盾的「不做视频壁纸」；
-- 开发与验证段落计数更新（unit 153→162、wiring 37→43）；
-- 「四个入口」→「五个入口」（补桌面右键菜单）。
-
 ## 第 58 轮追记一：退出/让位后幻灯片还是切不动 —— slideshow.ini 快照守卫
 
 
@@ -3209,3 +3195,241 @@ stageBounds() 算出了正确的 displayId（stage:bind 载荷用的局部变量
 
 如果以后想上，只有一处要改：`win32.js` / `desktopWallpaper.js` 从 `koffi` 换成 `windows-rs`，
 前端 `index.html` / `style.css` / `app.js` 和 `scheduler.js` 的调度逻辑可以直接平移。
+## 深度视差壁纸（depth3d）第一轮（2026-10-08）
+
+### 现象 / 需求
+
+用户要求「正在查看的所有壁纸都自动带视差效果」——2D 插画伪 3D 化
+（灵感来自开源项目 MoyuFloat：AI 深度 → 视差 + 法线光照）。
+
+### 决定
+
+- **深度离线按需生成**，不走浏览器端推理（transformers.js 首次要下载 50MB 模型、
+  推理峰值和 ComfyUI 抢卡、坏缓存都是事故源；壁纸是「不能黑屏的东西」）。
+- **缓存集中存放**（`userData/depth-cache`，可配 `depthCacheDir` 挪到 F 盘），
+  绝不散落进相簿目录 —— 相簿在 Syncthing 同步范围内，sidecar 进去会同步垃圾。
+  缓存键 = sha1(路径|mtimeMs|size)，图一换内容自动失效。
+- **渲染进 stage 原生 WebGL 层**（不做 html 旁路）：暂停/挂机/fpsCap/TOD 滤镜
+  全套基建直接联动。
+- **调度器零改动**：渲染端拿 entry 后自己 `depthFor(path)`（IPC → depthService），
+  有缓存即视差、没缓存先 2D 播、生成完 `depth:ready` 广播现场升级。
+
+### 改动
+
+- `src/depthService.js`（新）：按需生成 + 集中缓存 + 常驻 Python worker 管理。
+  队列上限 64、单并发、单张超时 90s、空闲 10 分钟杀 worker 省显存（3070 Ti 还
+  要跑 ComfyUI）；worker 连挂 3 次 → 功能静默降级（永远返回 null，壁纸照常 2D）。
+- `tools/depth_worker.py`（新）：stdin 行协议常驻 worker，模型从本地目录离线加载
+  （`--model`，默认指向 D:/workbuddy/tools/MoyuFloat/wallpaper/model，99MB 三件套，
+  curl 直拉 —— 沙箱代理下 HF hub 元数据校验必炸）。输出走「.tmp + os.replace」
+  原子落盘。⚠️ PIL 对 `.tmp` 扩展名推不出格式，save 必须显式 `format='PNG'`
+  （冒烟测试实锤：FAIL ValueError: unknown file extension: .tmp）。
+- `src/preload.js`：+`depthFor(path)`、`onDepthReady(cb)`。
+- `src/main.js`：depthService.configure + `depth:lookup` IPC + ready 广播
+  （主窗口与全部舞台都收，各自判定是否与当前帧相关）。
+- `src/renderer/stage.html` / `stage.css`：+`#depthgl` WebGL 层（z-index 3，
+  在 2D 图层之上、#tod 之下 —— #tod 补 z-index:4 让时段滤镜罩住视差层）。
+- `src/renderer/stage.js`：+WebGL 单 quad 视差渲染路径：
+  - 自动漂移（双频 Lissajous）+ 两盏巡游彩灯 + 鼠标临时接管（停 2.5s 淡回自动）；
+  - 过渡：视差帧进/出统一交叉淡入（变换型动画只作用于 2D 层，不复刻到视差帧
+    —— 视差自带运动，叠位移会晕）；视差→普通内容时旧视差层淡出让路
+    （glFadeOutIfAny，html/video/2D 图三个路径都挂）；
+  - Ken Burns 在视差模式下不叠加（双重运动会晕）；fpsCap/暂停照常联动；
+  - profile 开关：`depthParallax`（默认**开**）/ `depthAmp` / `depthDrift` / `depthLight`。
+
+### 验证
+
+- **已实测**（无头 Chromium + mock window.wp，不与真实实例并存）：
+  - stage.js 完整 GL 路径：取深度 → 纹理 → 视差+灯光 → 上屏，零控制台报错，
+    截图画面正确；
+  - ⚠️ 实锤坑：`UNPACK_FLIP_Y_WEBGL` 对 `createImageBitmap` 源不生效（Chromium），
+    首测画面上下颠倒 —— 改为纹理按「v=0 图顶」上传 + shader 里翻 uv01.y，
+    两条上传路径都确定；
+  - worker 冒烟：模型冷启动 9.4s，热态 **1.1s/张**（2048 最长边，2048×1152 输出）；
+  - 全部改动文件 node --check 通过。
+- **未实测**（要用户重启应用看真机）：真实实例上的观感、GPU 常驻占用（预估 <2%）、
+  全屏暂停联动、多屏双舞台。e2e 基线本轮未跑（避免与用户在跑的实例起桌面冲突），
+  下轮补 `probe-depth` 探针回归。
+
+## 深度视差第二轮：每屏独立暂停开关 + 文件日志（2026-10-08 深夜）
+
+### 现象（用户真机反馈）
+
+1. 视差「一张行一张不行」交替；
+2. 双屏一块在跑全屏游戏，希望**分开设置**；
+3. 主窗口左右滑动切图疑似消失；
+4. VBS 启动丢 stdout ⇒ [depth]/暂停日志全部看不到（老坑复发）。
+
+### 根因分析
+
+- 「时好时坏」两个候选机制并存：①暂停语义按屏生效（fullscreenWatch 逐屏判
+  coversWork），游戏盖住的屏冻结=视差停，焦点切出即恢复——与交替现象吻合；
+  ②按需深度首次出场先 2D 后升级（冷启动 9.4s + 游戏抢 VRAM 会放大）。
+  无日志无法定谳 ⇒ 先补日志再下结论。
+- 滑动切图在 app.js 主窗口（els.stage 指针事件），本轮深度改动没碰 app.js，
+  #depthgl 在桌面窗口且 pointer-events:none，不构成遮挡；app.js 相对 HEAD 的
+  -315 行来自 60~72 轮（未提交、历史被啃），滑动代码块现存完好。疑为主窗口
+  渲染层 JS 报错或用户在桌面（而非主窗口）操作，待用户确认。
+
+### 改动
+
+- `src/fullscreenWatch.js`：evaluatePause 增 `perDisplay` 覆盖
+  （monitors[displayId].pauseOnFullscreen，undefined=跟全局；away 语义保持全局）。
+- `src/main.js`：getFlags 组装 perDisplay（读 store.monitors）；+debugLog.init。
+- `src/renderer/app.js`：每屏卡片加复选框「本屏被全屏窗口盖住时暂停」
+  （data-field=pauseOnFullscreen，走既有 pushProfile → monitors[did] 持久化）。
+- `src/debugLog.js`（新）：userData/logs/live-debug.log 文件日志（appendFile 静默失败），
+  depthService.log 与 liveStage.applyPauseState 双写——VBS 丢 stdout 的诊断兜底。
+
+### 验证
+
+- 全部改动 node --check 通过；evaluatePause 纯函数段抽出后 8/8 断言过
+  （覆盖开/关/跟全局/away 不受覆盖/空覆盖）。
+- 未实测：真机（用户重启后观察）+ live-debug.log 落盘效果。
+
+### 深度视差第二轮补丁：worker 编码 bug（2026-10-09 00:2x，实锤修复）
+
+- **现象**：live-debug.log 首战立功 —— `[depth] 生成失败 … FAIL JSONDecodeError:
+  Invalid \escape`，与成功记录交替出现（≈一半任务挂）。这才是「一张行一张不行」
+  的主根因（全屏暂停只是叠加因素）。
+- **根因**：depthService spawn worker 时继承 Electron 环境（用户桌面无 PYTHONUTF8），
+  worker 按系统默认 cp936 解码 stdin。主进程写的是 UTF-8 JSON 行，GBK 双字节解码
+  错位时**尾字节会吃掉 0x5C（反斜杠）**——JSON 里 `\\` 被吃剩 `\`，中文/日文路径
+  变非法转义。字节排列不同，有的行吃得到有的吃不到 → 伪随机失败。沙箱测试没踩到
+  是因为沙箱环境有 PYTHONUTF8=1（workbuddy 注入），掩盖了问题。
+- **修复（双侧）**：worker `sys.stdin/stdout/stderr.reconfigure(utf-8)`；
+  depthService spawn env 钉死 `PYTHONUTF8=1` + `PYTHONIOENCODING=utf-8`（双保险）。
+- **验证**：模拟用户环境（剥掉两个变量，探针证实子进程 stdin=gbk）下，
+  日文路径任务 DONE（0.9s/张，输出 202KB 正常）。修复前该路径必挂。
+- 失败的任务不自动重试（丢弃），图下次出场 miss 会再入队 → 自愈。
+
+### 深度视差第二轮补丁 2：首播升级被退场动画卡死（2026-10-09 00:25，真机「隔一张」定谳）
+
+- **现象**：编码修复后生成 100% 成功（log 零 FAIL，缓存 5→22 张），但真机仍
+  「隔一张才有视差」。
+- **根因**：stage.js 的 depth:ready 升级处理器 `if (glActive || glState.anim …) return`
+  —— 上一张视差的退场淡出（duration≈900ms）和本张 depth:ready（生成延迟≈1s）
+  几乎同时到期；ready 抢在淡出结束前到达 → 处理器看到 glState.anim 直接放弃
+  → 本张永远停在 2D。而 2D 图后面没有退场动画 → 下一张升级必然成功
+  ⇒ **严格隔一张交替**。tick 间隔（60s）远大于竞态窗，交替完全由
+  「上一张是否视差」决定，所以是规律性的不是随机的。
+- **修复**：处理器改具名 tryDepthUpgrade，遇到退场淡出未完 → 250ms 后重试
+  （等 glTick 自然收尾），不再放弃；稳态视差/GL 过渡进行中仍跳过。
+- **观测**：新增渲染端→主进程文件日志通道（preload.stageLog → ipc stage:log →
+  debugLog.dlog），stage 每拍 tick 记 depthFor hit/miss、升级成功/等待，
+  与 [depth] 生成日志同文件可对时间线。
+- 已 node --check；真机待用户重启验证。
+
+### 深度视差第二轮补丁 3：slog 作用域 bug（2026-10-09 00:40，上一补丁的回归，实锤修复）
+
+- **现象**：重启后壁纸彻底切不动了（上一补丁引入的回归）。
+- **根因**：补丁 2 把 slog 定义在 init() 内部，却在顶层函数 showFrame 里调用
+  → ReferenceError: slog is not defined，showFrame 在 depthFor 之后、上屏之前
+  抛异常 —— 每张图都上不了屏。深度入队在炸点之前，所以 [depth] 生成日志照常
+  （真机日志特征：有生成、无 tick 记录、仅 2 条 upgrade —— 与作用域完全吻合）。
+- **修复**：slog 提升到模块顶层（showFrame 与 init 内处理器共用），删除 init 内
+  重复定义。
+- **快速切图的队列策略**：depthService pump 改 LIFO（取队尾）—— 短时间连切 N 张
+  时正在看的那张插队先生成，积压的老任务等停下来再补（path 去重，不重复生成；
+  上限 64 不变）。此前 FIFO + 单并发 + 4K 单张 5~30s，连切时最新一张要排在
+  几十张后面。
+- **其他快速切换保障（已有机制确认）**：渲染端 animToken 令牌——连切时旧 showFrame
+  全部作废、最后一张赢；depth:ready 迟到广播按 path 对当前帧校验，过期即弃。
+- **验证**：无头 Chromium + mock window.wp 同会话闭环：__stageLogs 捕获
+  "tick hit demo.jpg"、控制台零报错、GL 视差渲染正常。
+  ⚠️ 取证教训：agent-browser 会话被 SIGTERM 重置后 eval/截图打到 about:blank
+  或残影页面（本次截图一度是昨天 8437 预览页的残影）——取证前必须先 eval
+  location.href 验页面身份。
+
+### 深度视差第二轮补丁 4：升级守卫顺序 bug —— 「隔一张」真正根因（2026-10-09 01:0x，实锤修复）
+
+- **真机日志定谳**：升级成功的全部紧跟在「前一张是 2D」之后，失败的全部紧跟
+  在「前一张刚升级成视差」之后 —— 严格交替指纹。
+- **根因**：tryDepthUpgrade 第一行守卫 `if (glActive) return`（意图：已是稳态视差
+  不用升）。但新图上屏时旧视差层要走 ~900ms 退场淡出，**期间 glActive 仍为
+  true**——ready 在这个窗口到达就被第一行丢弃，补丁 2 的重试分支
+  （`glState.anim && !anim.in`）排在它后面永远走不到。前一张视差 → 本张必丢
+  （停 2D）→ 下一张前面无退场 → 必成功 ⇒ 严格隔一张。补丁 2 修的「放弃不重试」
+  只是半截：重试分支本身到不了。
+- **修复**：稳态判断改为精确比对 `glActive && cur.imgPath === payload.path`；
+  其余 glActive 状态（退场淡出中）一律走 250ms 重试（上限 40 次=10s 兜底）；
+  补回 depthFor 查询块（编辑事故自查发现 dp 未定义）与 await 后的过渡守卫。
+- **验证**（无头 Chromium + mock window.wp，DOM 落日志跨 eval 稳定读取）：
+  场景 a 图升级 → 切 b（退场窗口内 ready 到达）→ 日志呈
+  「升级完成 a → tick miss b → 等视差层退场 0/1 → 升级完成 b」，两图全部升级、
+  控制台零报错 —— 旧代码在 b 处必丢。
+- ⚠️ 取证坑：agent-browser 会话中 eval 的 JS 世界在两次调用间会被重置
+  （window 自定义变量读不到），**断言结果必须落 DOM（textContent）再读**；
+  另遇 http.server 假响应 size=0（重开即好）与旧服务残留 8439（TaskStop 只杀
+  外壳，python 子进程存活——按 netstat PID+镜像路径确认后处理）。
+
+## 深度视差第三轮：启动黑屏防护 + 恢复被 60~72 轮重构删掉的功能（2026-10-09 01:2x）
+
+### 用户真机反馈
+
+1. 重启后桌面黑屏，要手动切换壁纸才出画面；
+2. 「桌面手势切壁纸」（左右滑动切图）整个消失，设置里的开关也没了。
+
+### 排查结论
+
+- **手势切壁纸消失 ≠ 本轮深度改动**：对拍 HEAD 实锤 —— 60~72 轮（未提交、
+  提交历史被 .git 啃食事故吞掉的那批改动）把 swipeWatch 功能整个删除：
+  src/swipeWatch.js（270 行，54 轮的桌面手势轮询）、main.js 的 require/start/
+  stop 三处接线、index.html 的「桌面手势切壁纸」开关、app.js 的读写 wiring。
+- **更严重的连带发现**：startFullscreenWatch() 在当前工作区**没有任何调用点**
+  （HEAD 有 3 处：boot / applyConfigChange(liveStage key) / 动态桌面开关分支）
+  —— 即 60~72 轮之后**全屏/锁屏暂停系统整个没启动过**，第二轮做的每屏暂停
+  开关也是死代码。日志里 boot 时段的「[pause] 暂停解除」实为旧实例 will-quit
+  时 stopFullscreenWatch 的兜底解冻（时间线吻合）。
+- 启动黑屏：静态分析未能完全定谳（bind 显示有跑、GL 失败会回退 2D），按
+  「bind 显示撞上冻结被打断 + 首帧异常无回退」双重防护处理，并加渲染端
+  错误上报，下次复现看 live-debug.log 直接定位。
+
+### 改动
+
+- **恢复 swipeWatch**（从 HEAD blob 提取，对象幸存）：src/swipeWatch.js 原样恢复；
+  main.js 恢复 require/boot 启动/will-quit 停止 + UI_ONLY_KEYS 加 swipeSwitch；
+  channelAtCursor 拆回 channelAt(pt) + 薄包装；新增 stepWallpaperAt(pt, dir)
+  （桌面菜单用 dir=1 不变）；index.html「动态桌面」块恢复开关与提示；
+  app.js 恢复读写 wiring。
+- **恢复 fullscreenWatch 启动**：boot（liveWallpaper 开时）+ applyConfigChange
+  的 liveStage-key 分支 + 动态桌面开启分支，共 3 处（60~72 轮删掉的
+  setUnifiedSplit 不恢复 —— 该 API 已在此重构中移除）。
+- **stage.js 防护**：glShowFrame 整体 try/catch（任何 GL 异常都回退 2D 不黑屏，
+  原因落日志）；everRendered 标记 + setFrozen(false) 解冻自愈（一帧都没画过
+  就强制重显当前 entry，不等 60s tick）；init 挂 window error /
+  unhandledrejection → live-debug.log。
+
+### 验证
+
+- 全部改动 node --check 通过；mock 回归三条路径全绿（GL 直接管 / 2D 回退 /
+  现场升级，零控制台报错）。
+- 未实测（真机）：手势切图、暂停系统恢复后的全屏暂停、启动黑屏是否消失
+  —— 等用户重启验证；黑屏若复现，live-debug.log 现在会记录渲染端错误与
+  gl 失败原因。
+## 深度视差第四轮：启动黑屏真根因——第 39 轮的 onResize 修复没移植到 live 树（2026-10-09 凌晨）
+
+### 现象
+
+重启后桌面黑一小段时间自己亮回来，且不是到了轮播间隔；用户两次反馈（第三轮的黑屏
+防护只是兜底，没断根）。
+
+### 根因
+
+live 树在主树第 26 轮之前分叉，主树第 39 轮实锤的「启动 resize 作废首帧」修复
+（onResize 手动 `++animToken` 再画进未点亮图层 → 首帧被静默丢弃）**从未移植过来**。
+第三轮加的「解冻自愈」恰好把它兜住了（所以表现为黑一会儿自己好），本轮把主树修复
+原样移植：onResize 改走 `showFrame(currentEntry, 1, false)` 本尊，保留 glActive 早退。
+
+### 另：.git 事件损失盘点（本轮一并固化）
+
+- master 提交历史完整（至第 59 轮追记 + README 7 连），feature/live-desktop ref 已恢复
+  指向 a8e5a3d（与 master 同源）。
+- 60~72 轮重构从未提交过：全部代码改动都在工作区，**0 行代码永久丢失**；丢的是
+  「提交历史 + 60~72 轮的 CHANGELOG 记录」（后者本就未写）。
+- 工作区 CHANGELOG 曾被旧版本覆盖（丢主树 26~59 轮记录 ~1200 行），HEAD 里有完整
+  副本，本轮已合并回来。
+
+### 验证
+
+node --check stage.js 通过；真机重启黑屏窗口应从「10s 自愈」缩到首帧级。

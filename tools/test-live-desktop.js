@@ -10,7 +10,6 @@
  */
 
 const liveDesktop = require('../src/liveDesktop');
-const stagePlan = require('../src/stagePlan');
 
 let pass = 0;
 let fail = 0;
@@ -157,112 +156,6 @@ function main() {
       if (r.write !== want) wrong.push(`${reason} → ${r.write}`);
     }
     check('动态正常态：写与不写恰好等于锚点集合', wrong.length === 0, wrong.join('; ') || '吻合');
-  }
-
-  // -------------------------------------------------------------------------
-  console.log('\n§8 统一频道几何（52 轮：虚拟桌面并集）');
-  // -------------------------------------------------------------------------
-  {
-    // 本机实况：主 3840×2160@150%（DIP 2560×1440）+ 左竖屏 1600×2560@100%（DIP 1600×2560 @x=-1600）
-    const displays = [
-      { id: 1, x: 0, y: 0, width: 2560, height: 1440, scaleFactor: 1.5 },
-      { id: 2, x: -1600, y: 0, width: 1600, height: 2560, scaleFactor: 1.0 },
-    ];
-    const v = stagePlan.virtualBounds(displays);
-    check('DIP 并集：x 取最小（负坐标竖屏）', v.dip.x === -1600 && v.dip.y === 0, JSON.stringify(v.dip));
-    check('DIP 并集：宽 = 右边缘 − 左边缘', v.dip.width === 2560 - (-1600) && v.dip.height === 2560);
-    check('物理并集：150% 屏按 3840 实宽算', v.phys.x === -1600 && v.phys.w === 3840 + 1600 && v.phys.h === 2560,
-      JSON.stringify(v.phys));
-    check('displayIds 保序全收', JSON.stringify(v.displayIds) === '[1,2]');
-
-    const single = stagePlan.virtualBounds([{ id: 9, x: 100, y: 50, width: 800, height: 600, scaleFactor: 2 }]);
-    check('单屏退化：并集 = 自身', single.dip.x === 100 && single.dip.width === 800 && single.phys.w === 1600);
-
-    check('空 / 脏输入返回 null（不抛）',
-      stagePlan.virtualBounds([]) === null && stagePlan.virtualBounds(null) === null
-      && stagePlan.virtualBounds([{ width: 0, height: 0 }]) === null);
-
-    check('负半像素缩放不越界（x*sf 向外取整）',
-      stagePlan.virtualBounds([{ id: 3, x: -1, y: -1, width: 10, height: 10, scaleFactor: 1.25 }]).phys.x === Math.round(-1 * 1.25));
-  }
-
-  // -------------------------------------------------------------------------
-  console.log('\n§9 舞台 ↔ 暂停映射（52 轮：含统一跨屏舞台）');
-  // -------------------------------------------------------------------------
-  {
-    const paused = new Set(['disp-1']);
-    check('每屏舞台：displayId 命中 → 暂停',
-      stagePlan.isStagePaused({ displayId: 'disp-1', displayIds: null }, paused, false) === true);
-    check('每屏舞台：displayId 未命中 → 不暂停',
-      stagePlan.isStagePaused({ displayId: 'disp-2', displayIds: null }, paused, false) === false);
-    check('统一舞台：任一覆盖屏命中即暂停',
-      stagePlan.isStagePaused({ displayIds: ['disp-2', 'disp-1'] }, paused, false) === true);
-    check('统一舞台：覆盖屏全没命中 → 不暂停',
-      stagePlan.isStagePaused({ displayIds: ['disp-3', 'disp-4'] }, paused, false) === false);
-    check('away 优先：任何舞台都暂停',
-      stagePlan.isStagePaused({ displayId: 'disp-9' }, new Set(), true) === true
-      && stagePlan.isStagePaused({ displayIds: ['disp-3'] }, new Set(), true) === true);
-    check('数组入参兼容（不要求 Set）',
-      stagePlan.isStagePaused({ displayId: 'disp-1' }, ['disp-1'], false) === true);
-    check('空记录 / 无归属 → 不暂停（防御）',
-      stagePlan.isStagePaused(null, paused, false) === false
-      && stagePlan.isStagePaused({}, paused, false) === false);
-  }
-
-  { // ── canShowStage：首帧亮窗决策（53 轮防启动黑屏）──
-    const rec = { hiddenForPause: false, displayId: 1 };
-    const away = false;
-    const paused = new Set();          // 空集合 = 无自动暂停
-    check('canShowStage：正常态 → 可亮', stagePlan.canShowStage(rec, paused, away) === true);
-    check('canShowStage：自动暂停 → 不可亮', stagePlan.canShowStage(rec, new Set([1]), away) === false);
-    check('canShowStage：away（锁屏/挂机）→ 不可亮', stagePlan.canShowStage(rec, paused, true) === false);
-    check('canShowStage：hiddenForPause（已藏）→ 不可亮',
-      stagePlan.canShowStage({ hiddenForPause: true, displayId: 1 }, paused, away) === false);
-    check('canShowStage：统一频道（displayIds 任一覆盖屏暂停）→ 不可亮',
-      stagePlan.canShowStage({ hiddenForPause: false, displayIds: [1, 2] }, new Set([2]), away) === false);
-    check('canShowStage：空记录 → 防御性不可亮', stagePlan.canShowStage(null, paused, away) === false);
-  }
-
-  // -------------------------------------------------------------------------
-  console.log('\n§10 统一频道展开（53 轮：span 跨屏一幅 / per-display 每屏同一幅）');
-  // -------------------------------------------------------------------------
-  {
-    const ch = { id: 'uni', kind: 'unified', monitor: null, count: 9, current: 'x.png' };
-    const displays = [
-      { id: 1, x: 0, y: 0, width: 2560, height: 1440, scaleFactor: 1 },
-      { id: 2, x: -1067, y: 0, width: 1067, height: 1707, scaleFactor: 1.5 },
-    ];
-    const span = stagePlan.expandUnifiedChannel(ch, displays, 'span');
-    check('span：原样返回 1 个频道（不展开）',
-      span.length === 1 && span[0] === ch);
-
-    const per = stagePlan.expandUnifiedChannel(ch, displays, 'per-display');
-    check('per-display：每块屏一个伪频道',
-      Array.isArray(per) && per.length === 2
-      && per[0].id === 'uni::d1' && per[1].id === 'uni::d2');
-    check('伪频道保留原 channelId（stage:bind / tick 过滤仍按原频道）',
-      per.every((p) => p.channelId === 'uni'));
-    check('伪频道带 _displayId（stageBounds 直达 Display，防同尺寸屏撞车）',
-      per[0]._displayId === 1 && per[1]._displayId === 2);
-    check('伪频道保留 count / current（syncTo 的空相簿过滤照常工作）',
-      per.every((p) => p.count === 9 && p.current === 'x.png'));
-    check('伪频道 monitor 形状 = 物理像素（DIP×scaleFactor 取整）',
-      per[0].monitor.width === 2560 && per[1].monitor.width === Math.round(1067 * 1.5)
-      && per[1].monitor.height === Math.round(1707 * 1.5));
-
-    check('非统一频道：任何模式都原样透传',
-      (() => {
-        const reg = { id: 'm1', monitor: { width: 2560, height: 1440 } };
-        return stagePlan.expandUnifiedChannel(reg, displays, 'per-display').length === 1
-          && stagePlan.expandUnifiedChannel(reg, displays, 'per-display')[0] === reg;
-      })());
-    check('统一频道但枚举不到显示器 → 原样返回（走旧路径报错，不静默吞）',
-      stagePlan.expandUnifiedChannel(ch, [], 'per-display').length === 1);
-    check('脏输入：null 频道 → 空数组',
-      JSON.stringify(stagePlan.expandUnifiedChannel(null, displays, 'span')) === '[]');
-    check('split 脏值 → 按 span 处理（防御性默认）',
-      stagePlan.expandUnifiedChannel(ch, displays, 'bogus').length === 1
-      && stagePlan.expandUnifiedChannel(ch, displays, undefined)[0] === ch);
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

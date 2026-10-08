@@ -11,8 +11,7 @@
  * ---------------------------------------------------------------------------
  *   频道（perMonitor 模式下每台显示器一路） → 一块 stage 窗口 → 挂到
  *   持有 SHELLDLL_DefView 的窗口（本机 = Progman，见 desktopHost.js 头注释）。
- *   unified 频道（monitorId=null）：span 形态一块跨屏窗口盖并集，或展开成
- *   每屏一块窗口（unifiedSplit='per-display'，53 轮），见 stagePlan.expandUnifiedChannel。
+ *   unified 频道（monitorId=null，要盖整个虚拟桌面）阶段 2 再接，这里跳过。
  *
  * ---------------------------------------------------------------------------
  * 三条实测结论铸成的规矩（任务书 §2.13~§2.16）
@@ -30,7 +29,7 @@
 const { BrowserWindow, screen } = require('electron');
 const path = require('node:path');
 const desktopHost = require('./desktopHost');
-const stagePlan = require('./stagePlan');
+const debugLog = require('./debugLog');
 
 const WATCHDOG_MS = 2000;
 /** 连续重挂失败多少次才算「降级」（交给系统壁纸兜底） */
@@ -80,36 +79,7 @@ function displayForMonitor(m) {
 }
 
 function stageBounds(ch) {
-  /*
-   * 统一频道（kind='unified' / monitor=null）：盖住所有显示器的并集
-   * （52 轮。此前 syncTo 直接跳过 width=0 的统一伪频道，统一模式下
-   * 动态桌面从未生效 —— 用户实报「切统一配置舞台就没了」）。
-   */
-  if (ch && ch.kind === 'unified' && !ch.monitor) {
-    // 53 轮：per-display 形态已在上游展开成带 _displayId 的伪频道，走不到这里；
-    // span 形态照旧盖虚拟桌面并集。
-    // ⚠️ Electron 的 Display 没有顶层 width/height（只有 bounds.width），直接传
-    // 全被 virtualBounds 的脏值过滤砍光 →「枚举不到任何显示器」（探针实锤，
-    // 单测喂扁平假数据掩盖了这个形状差）。这里显式拍平。
-    const v = stagePlan.virtualBounds(screen.getAllDisplays().map((d) => ({
-      id: d.id,
-      x: d.bounds.x, y: d.bounds.y,
-      width: d.bounds.width, height: d.bounds.height,
-      scaleFactor: d.scaleFactor,
-    })));
-    if (!v) throw new Error('统一频道：枚举不到任何显示器');
-    return {
-      dip: { x: v.dip.x, y: v.dip.y, width: v.dip.width, height: v.dip.height },
-      phys: v.phys,
-      displayId: null,
-      displayIds: v.displayIds,
-    };
-  }
-  // 展开后的 per-display 伪频道：直接按 displayId 取 Display（按尺寸匹配会让
-  // 两块同尺寸屏全部落在主屏上互相 z-fight）
-  const disp = ch && ch._displayId !== undefined
-    ? (screen.getAllDisplays().find((d) => d.id === ch._displayId) || displayForMonitor(ch.monitor || ch))
-    : displayForMonitor(ch.monitor || ch);
+  const disp = displayForMonitor(ch.monitor || ch);
   const dip = {
     x: disp.bounds.x,
     y: disp.bounds.y,
@@ -127,9 +97,8 @@ function stageBounds(ch) {
     h: Math.round(dip.height * sf),
   };
   // displayId 也要带出去：全屏暂停按「显示器」算（fullscreenWatch 的判定单位
-  // 是 Electron display），stage 窗口必须知道自己挂在哪块屏才知道听不听暂停。
-  // 统一频道跨屏，没有单一 displayId，返回 displayIds 由 stagePlan 判重叠。
-  return { dip, phys, displayId: disp.id, displayIds: null };
+  // 是 Electron display），stage 窗口必须知道自己挂在哪块屏才知道听不听暂停
+  return { dip, phys, displayId: disp.id };
 }
 
 /* ---------------------------------------------------------------- 暂停状态 */
@@ -142,142 +111,30 @@ function stageBounds(ch) {
  */
 const pauseDisplays = new Set();
 let pauseAway = false;
-/**
- * 手动暂停（工具栏 ‖ / 托盘 / 热键，53 轮）：频道 playing=false 时舞台冻结
- * （粒子也停 —— 用户实报「点了暂停粒子还在飘」）。与自动暂停的区别：
- * **不藏窗口** —— 用户只是想画面停下来，不是要把桌面让给系统壁纸。
- */
-const manualPaused = new Set();
-/**
- * 暂停时把舞台窗口整个藏起来（52 轮新增，默认开）：
- * 深暂停只停 rAF，窗口还攥着 4K flip 交换链 —— 艾尔登法环独占全屏做模式切换时
- * 撞上它会驱动挂死（主屏失信号、副屏冻结、游戏有声）。藏掉 = 交换链离开显示路径。
- * 恢复用 showInactive（与看门狗重挂同一条已验证路径），画面留在原帧不重载。
- */
-let pauseHide = true;
-
-function setPauseHide(value) {
-  pauseHide = value !== false;
-}
-
-/**
- * 首帧等待（53 轮防启动黑屏）：挂载/重载后窗口保持隐藏，等渲染端把第一帧真正
- * 画上屏（stage:first-frame）再亮 —— 「先 show 后画」会把纯黑底色露给桌面。
- *
- * 54 轮修正：53 轮的 3s 超时兜底会**亮出纯黑窗口**（backgroundColor #000000），
- * 冷启动大图解码超过 3s 时黑闪照旧（探针实测打出「首帧超时(3s)兜底显示」）。
- * 改为超时**只告警、保持隐藏** —— 空窗期桌面显示的是系统壁纸（和黑窗相比
- * 永远是更好的兜底），首帧无论多晚到达都由 onFirstFrame 正常亮窗。
- */
-const FIRST_FRAME_WARN_MS = 30000;
-
-function waitForFirstFrame(rec, label) {
-  rec.awaitingFirstFrame = true;
-  if (rec.firstFrameTimer) clearTimeout(rec.firstFrameTimer);
-  rec.firstFrameTimer = setTimeout(() => {
-    if (!rec.awaitingFirstFrame) return;
-    rec.firstFrameTimer = null;
-    console.warn(`[live-stage] ${label} 首帧 ${Math.round(FIRST_FRAME_WARN_MS / 1000)}s 未到，保持隐藏（桌面=系统壁纸）；渲染端出帧后 onFirstFrame 自动亮窗`);
-  }, FIRST_FRAME_WARN_MS);
-}
-
-/** 渲染端首帧画上屏（stage:first-frame）→ 判定无暂停后亮出窗口 */
-function onFirstFrame(sender) {
-  for (const rec of stages.values()) {
-    if (rec.win && !rec.win.isDestroyed() && rec.win.webContents === sender) {
-      if (!rec.awaitingFirstFrame) return;
-      if (rec.firstFrameTimer) { clearTimeout(rec.firstFrameTimer); rec.firstFrameTimer = null; }
-      rec.awaitingFirstFrame = false;
-      if (stagePlan.canShowStage(rec, pauseDisplays, pauseAway)) {
-        try { rec.win.showInactive(); } catch { /* 正在销毁 */ }
-      } else {
-        rec.hiddenForPause = true;     // 自动暂停中：保持隐藏，恢复时亮
-      }
-      return;
-    }
-  }
-}
-
-/** 统一模式动态桌面形态：'span' 跨屏拼一幅（默认）| 'per-display' 每屏同一幅（53 轮） */
-let unifiedSplit = 'span';
-
-function setUnifiedSplit(value) {
-  unifiedSplit = value === 'per-display' ? 'per-display' : 'span';
-}
-
-/** 手动暂停集更新（main 在 scheduler channels 事件里喂），重算每块舞台的冻结态 */
-function applyManualPause(pausedIds) {
-  manualPaused.clear();
-  for (const id of Array.isArray(pausedIds) ? pausedIds : []) {
-    if (id) manualPaused.add(id);
-  }
-  refreshPauseMessages();
-}
-
-/** 舞台当前是否冻结（自动暂停 ∪ 手动暂停）。hide 只认自动暂停（手动暂停不藏窗口）。 */
-function isStageFrozen(rec) {
-  return stagePlan.isStagePaused(rec, pauseDisplays, pauseAway)
-    || manualPaused.has(rec.channelId);
-}
 
 function applyPauseState({ pausedIds, away, reasons } = {}) {
   pauseDisplays.clear();
   for (const id of Array.isArray(pausedIds) ? pausedIds : []) pauseDisplays.add(id);
   pauseAway = Boolean(away);
-  refreshPauseMessages(reasons);
-}
-
-/** 按当前（自动 ∪ 手动）暂停态刷新每块舞台：发 stage:pause，自动暂停的藏窗 */
-function refreshPauseMessages(reasons) {
-  const affected = [];
-  for (const [, rec] of stages) {
-    if (!rec.win || rec.win.isDestroyed()) continue;
-    const paused = isStageFrozen(rec);
-    const autoPaused = stagePlan.isStagePaused(rec, pauseDisplays, pauseAway);
-    if (paused) affected.push(rec.channelId);
-    try {
-      rec.win.webContents.send('stage:pause', { paused });
-      if (pauseHide) {
-        if (autoPaused && rec.win.isVisible()) {
-          rec.win.hide();               // 不销毁：恢复时 showInactive 原帧续播
-          rec.hiddenForPause = true;
-        } else if (!autoPaused && rec.hiddenForPause) {
-          rec.hiddenForPause = false;
-          if (!rec.awaitingFirstFrame) {
-            rec.win.showInactive();     // 不抢焦点（与挂载/重挂同款纪律）
-          }                             // 首帧未到 → 等 onFirstFrame/兜底再亮
-        }
-      }
-    } catch { /* 窗口正在销毁 */ }
+  for (const [id, rec] of stages) {
+    if (rec.win && !rec.win.isDestroyed()) {
+      try {
+        rec.win.webContents.send('stage:pause', { paused: pauseDisplays.has(rec.displayId) });
+      } catch { /* 窗口正在销毁 */ }
+    }
   }
-  if (affected.length || pauseAway) {
-    // 诊断（49 轮排障）：点名哪些频道会被冻结，与调度器停表对账用
-    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway} manual=[${[...manualPaused]}] 受影响频道=[${affected.join(',') || '无'}] hide=${pauseHide}`,
+  if (pauseDisplays.size || pauseAway) {
+    console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway}`,
       Object.keys(reasons || {}).length ? JSON.stringify(reasons) : '');
+    debugLog.dlog('pause', `暂停 display=[${[...pauseDisplays]}] away=${pauseAway} ${JSON.stringify(reasons || {})}`);
   } else {
     console.log('[live-stage] 暂停解除：全部舞台恢复');
+    debugLog.dlog('pause', '暂停解除：全部舞台恢复');
   }
 }
 
 function isPausedForDisplay(displayId) {
   return pauseDisplays.has(displayId);
-}
-
-/**
- * 该频道的舞台是否处于暂停（全屏 / 锁屏 / 电池 / 挂机）——调度器据此「停表不走针」
- * （48 轮）：渲染层停 rAF 之后，这里把调度推进也停掉，取消全屏后 1 秒内恢复。
- * 没有舞台的频道（已降级）不冻结 —— 系统壁纸照常轮播兜底。
- * 统一频道（跨屏舞台）任一覆盖屏被暂停即冻结（stagePlan.isStagePaused 同源判定）。
- */
-function isChannelFrozen(channelId) {
-  if (pauseAway) return true;   // 锁屏 / 息屏：所有频道一律停表（原语义，保持）
-  let found = false;
-  for (const rec of stages.values()) {
-    if (rec.channelId !== channelId) continue;
-    found = true;
-    if (stagePlan.isStagePaused(rec, pauseDisplays, pauseAway)) return true;
-  }
-  return found && manualPaused.has(channelId);
 }
 
 /* ---------------------------------------------------------------- 广播 */
@@ -310,22 +167,10 @@ async function createStage(ch) {
     const b = sb.dip;
     rec.bounds = b;
     rec.boundsPhys = sb.phys;
-    // 49 轮实锤：displayId 此前从未写入 rec —— applyPauseState / isChannelFrozen
-    // 用 rec.displayId 对号入座，拿到的一直是 undefined，pauseDisplays.has(undefined)
-    // 恒 false：全屏/锁屏/电池暂停在舞台层从未生效（stage:pause 永远下发 paused:false）
-    rec.displayId = sb.displayId;
-    rec.displayIds = sb.displayIds || null;   // 统一频道 = 跨屏舞台，按覆盖屏集合判暂停
-    rec.channelId = ch.channelId || ch.id;    // per-display 伪频道的 key 带后缀，tick/bind 仍用原频道 id
     const win = new BrowserWindow({
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
       frame: false,
-      // ⚠️ 54 轮追记三（真机实锤）：这里**绝不能开 transparent**。透明窗口走
-      // DirectComposition 合成路径，挂成 Progman 子窗口后合成面几何与 HWND
-      // 位置脱钩 → 舞台整体错位、盖不满显示器（用户验收 b3f421b 复报）；
-      // 沙箱里透明窗口创建即原生崩溃，连探针都测不了。防黑闪靠首帧门控 +
-      // 缩略图快亮（窗口有内容前不亮、第一帧垫壁纸缩略图），不靠透明。
-      transparent: false,
       backgroundColor: '#000000',
       skipTaskbar: true,
       resizable: false,
@@ -351,15 +196,10 @@ async function createStage(ch) {
     });
     // 渲染进程崩了（GPU 驱动复位之类）→ 重载页面；窗口与挂载都还在
     win.webContents.on('render-process-gone', () => {
-      if (running && rec.win && !rec.win.isDestroyed()) {
-        rec.win.hide();                  // 重载后内容清空（纯黑底）：藏住等新首帧
-        waitForFirstFrame(rec, ch.id);
-        rec.win.webContents.reload();
-      }
+      if (running && rec.win && !rec.win.isDestroyed()) rec.win.webContents.reload();
     });
 
-    await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'),
-      process.env.WP_STAGE_DEBUG === '1' ? { search: 'debug=1' } : undefined);
+    await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
     if (!running) { win.destroy(); return; }
 
     // 找挂载点。每次创建都重新 snapshot：Explorer 可能重启过，Progman 句柄会变
@@ -372,20 +212,16 @@ async function createStage(ch) {
     const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys);
     if (!m.ok) throw new Error(`挂载失败 @${m.step}: ${m.error}`);
 
-    // 53 轮防启动黑屏：先保持隐藏，等渲染端把首帧画上屏（stage:first-frame）
-    // 再亮 —— 54 轮起窗口本体透明（backgroundColor #00000000），就算空窗被
-    // 意外亮出，透出的也是系统壁纸；渲染端另有缩略图快亮（stage.js），
-    // 让「等首帧」的时间本身压到毫秒级。
-    waitForFirstFrame(rec, ch.id);
+    win.showInactive();                // 不抢焦点
     rec.fails = 0;
     rec.degraded = false;
     recreateFails.delete(ch.id);       // 挂载成功 → 重建失败计数清零
     // bind 带上初始暂停态：轮询事件只在「变化」时发，晚创建的窗口若只等
     // 事件会错过当前状态（zm 的 get_wallpaper_media 补拉同款问题）
     win.webContents.send('stage:bind', {
-      channelId: rec.channelId,
+      channelId: ch.id,
       monitorId: ch.monitorId,
-      paused: isPausedForDisplay(sb.displayId) || manualPaused.has(rec.channelId),
+      paused: isPausedForDisplay(sb.displayId),
     });
     console.log(`[live-stage] 频道 ${ch.id} 的舞台已挂载（strategy=${choice.strategy}）`);
   } catch (err) {
@@ -403,7 +239,6 @@ function destroyStage(id) {
   const rec = stages.get(id);
   if (!rec) return;
   stages.delete(id);
-  if (rec.firstFrameTimer) { clearTimeout(rec.firstFrameTimer); rec.firstFrameTimer = null; }
   try {
     if (rec.hwnd) desktopHost.unmount(rec.hwnd);   // 先脱离桌面树，窗口销毁时不留残影
   } catch { /* koffi 不可用时窗口销毁同样会移除窗口本身 */ }
@@ -450,11 +285,9 @@ function watchOnce() {
               x: rec.bounds.x, y: rec.bounds.y, w: rec.bounds.width, h: rec.bounds.height,
             });
             if (m.ok) {
-              // 暂停期间被我们主动藏掉的窗口：重挂完别急着 show，
-              // 保持隐藏态等恢复（否则锁屏/全屏暂停中重挂会突然亮出来）
-              if (!rec.hiddenForPause && !rec.awaitingFirstFrame) rec.win.showInactive();
+              rec.win.showInactive();
               rec.fails = 0;
-              console.log(`[live-stage] ${id} 重挂成功（Explorer 重启后）${rec.hiddenForPause ? '，保持暂停隐藏态' : ''}`);
+              console.log(`[live-stage] ${id} 重挂成功（Explorer 重启后）`);
             }
           }
         }
@@ -483,52 +316,16 @@ function watchOnce() {
 
 /* ---------------------------------------------------------------- 对外接口 */
 
-/* 光标喂送（54 轮追记六：粒子绕开鼠标）——舞台窗口点击穿透收不到 mousemove，
-   由主进程轮询光标换算成各舞台本屏坐标广播。30Hz 足够：粒子 60fps 渲染，
-   光标轨迹 30Hz 插值过来肉眼无阶跃。开销 = 每拍一次原生取点 + 每窗一个小对象。 */
-const CURSOR_FEED_MS = 33;
-let cursorTimer = null;
-
-function feedCursorOnce() {
-  if (!running || stages.size === 0) return;
-  let pt;
-  try { pt = screen.getCursorScreenPoint(); } catch { return; }
-  if (!pt) return;
-  for (const rec of stages.values()) {
-    if (!rec.win || rec.win.isDestroyed()) continue;
-    let b;
-    try { b = rec.win.getContentBounds(); } catch { continue; }
-    const inside = pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
-    // 窗口外（光标在别的屏）：发null让该屏避让失效；Electron 里 1 CSS px = 1 DIP
-    rec.win.webContents.send('stage:cursor', inside
-      ? { x: pt.x - b.x, y: pt.y - b.y }
-      : { x: null, y: null });
-  }
-}
-
-function startCursorFeed() {
-  if (cursorTimer) return;
-  cursorTimer = setInterval(feedCursorOnce, CURSOR_FEED_MS);
-}
-
-function stopCursorFeed() {
-  if (!cursorTimer) return;
-  clearInterval(cursorTimer);
-  cursorTimer = null;
-}
-
 function start() {
   if (running) return;
   running = true;
   if (!watchdogTimer) watchdogTimer = setInterval(watchOnce, WATCHDOG_MS);
-  startCursorFeed();
   console.log('[live-stage] 动态桌面已启动');
 }
 
 function stop() {
   running = false;
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
-  stopCursorFeed();
   expectedChannels.clear();
   recreateFails.clear();
   for (const id of [...stages.keys()]) destroyStage(id);
@@ -537,44 +334,23 @@ function stop() {
 
 /**
  * 频道列表 → stage 窗口增删（channels:changed / 启动时调用）。
- * 52 轮起支持统一频道（kind='unified'，width=0）：一块窗口盖住虚拟桌面并集，
- * 不再跳过 —— 此前统一模式下动态桌面整个不生效（用户实报）。
+ * unified 频道（monitorId=null、width=0）阶段 2 再支持，这里跳过。
  */
 function syncTo(channels) {
   if (!running) return;
   const wanted = new Set();
-  const list = Array.isArray(channels) ? channels : [];
-  // 统一频道按 unifiedSplit 展开：span = 原样一块跨屏窗口；per-display = 每屏一块
-  const expanded = [];
-  for (const ch of list) {
-    if (!ch) continue;
-    if (ch.kind === 'unified' && !ch.monitor) {
-      expanded.push(...stagePlan.expandUnifiedChannel(
-        ch,
-        screen.getAllDisplays().map((d) => ({
-          id: d.id,
-          x: d.bounds.x, y: d.bounds.y,
-          width: d.bounds.width, height: d.bounds.height,
-          scaleFactor: d.scaleFactor,
-        })),
-        unifiedSplit,
-      ));
-    } else {
-      expanded.push(ch);
-    }
-  }
-  for (const ch of expanded) {
+  for (const ch of Array.isArray(channels) ? channels : []) {
     /*
      * 不看 ch.enabled —— resolveProfile 把 applyToSystem 折进了 enabled
      * （store.js：enabled = Boolean(config.applyToSystem)），于是
      * 「动态桌面开 + 不写系统壁纸」（完全替代模式）下所有频道都是
      * enabled=false，若在这里跳过，舞台永远不会出现，模式直接失效。
      * 舞台只由 liveWallpaper 总开关控制（start 只在它为真时被调用）；
-     * count=0（空相簿）照旧跳过。
+     * width=0（unified 伪频道）与 count=0（空相簿）照旧跳过。
      * 每屏单独退出（monitors[id].enabled=false）与动态桌面叠加的
      * 语义留到阶段 2 再定义。
      */
-    if (!ch || ch.count === 0) { expectedChannels.delete(ch ? ch.id : ''); continue; }
+    if (!ch || ch.width === 0 || ch.count === 0) { expectedChannels.delete(ch ? ch.id : ''); continue; }
     wanted.add(ch.id);
     expectedChannels.set(ch.id, ch);
     const existing = stages.get(ch.id);
@@ -621,13 +397,10 @@ function stats() {
     away: pauseAway,
     stages: [...stages.entries()].map(([id, rec]) => ({
       id,
-      channelId: rec.channelId,
       mounted: Boolean(rec.hwnd && rec.anchor),
       degraded: rec.degraded,
       fails: rec.fails,
-      paused: isStageFrozen(rec),
-      hiddenForPause: Boolean(rec.hiddenForPause),
-      unified: Boolean(rec.displayIds && rec.displayIds.length),
+      paused: pauseDisplays.has(rec.displayId),
       bounds: rec.bounds,
     })),
   };
@@ -679,7 +452,6 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
-  isChannelFrozen, setPauseHide, applyManualPause, setUnifiedSplit, onFirstFrame,
   showDesktopContextMenu,
   cancelDesktopMenu,
 };

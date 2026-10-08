@@ -54,7 +54,7 @@ const orphanFields = [...block.matchAll(/^ {2}<div class="field[ "]/gm)];
 check('没有字段块漏在分类页外面', orphanFields.length === 0, `漏了 ${orphanFields.length} 个`);
 
 const fieldCount = (block.match(/^ {6}<div class="field[ "]/gm) || []).length;
-check('27 个字段块都归进了某一页', fieldCount === 27, String(fieldCount));
+check('22 个字段块都归进了某一页', fieldCount === 22, String(fieldCount));
 
 // 每个页至少有一个字段块
 const perPane = {};
@@ -76,16 +76,11 @@ const paneOf = (needle) => {
 };
 check('轮播模式在「轮播」页', paneOf('id="cfg-mode"') === 'play', String(paneOf('id="cfg-mode"')));
 check('显示器卡片在「轮播」页', paneOf('id="monitor-cards"') === 'play', String(paneOf('id="monitor-cards"')));
-check('过渡动画在「轮播」页（47 轮集中）', paneOf('id="cfg-animation"') === 'play', String(paneOf('id="cfg-animation"')));
-check('粒子特效在「轮播」页（47 轮集中）', paneOf('id="cfg-particles"') === 'play', String(paneOf('id="cfg-particles"')));
+check('过渡动画在「外观」页', paneOf('id="cfg-animation"') === 'look', String(paneOf('id="cfg-animation"')));
 check('胶片条在「外观」页', paneOf('id="cfg-filmstrip"') === 'look', String(paneOf('id="cfg-filmstrip"')));
 check('热键在「操作」页', paneOf('id="hotkey-list"') === 'action', String(paneOf('id="hotkey-list"')));
 check('快捷文件夹在「操作」页', paneOf('id="quick-section"') === 'action', String(paneOf('id="quick-section"')));
 check('开机自启在「系统」页', paneOf('id="cfg-launch-at-login"') === 'system', String(paneOf('id="cfg-launch-at-login"')));
-check('视频播放节奏在「轮播」页（53 轮重分类）', paneOf('id="cfg-video-play-full"') === 'play', String(paneOf('id="cfg-video-play-full"')));
-check('视频省电优化在「轮播」页（56 轮）', paneOf('id="cfg-video-optimize"') === 'play', String(paneOf('id="cfg-video-optimize"')));
-check('呼吸缩放在「外观」页（53 轮重分类）', paneOf('id="cfg-breath"') === 'look', String(paneOf('id="cfg-breath"')));
-check('动态桌面开关仍在「系统」页', paneOf('id="cfg-live-wallpaper"') === 'system', String(paneOf('id="cfg-live-wallpaper"')));
 check('缩略图缓存在「系统」页', paneOf('id="thumb-stats"') === 'system', String(paneOf('id="thumb-stats"')));
 
 // ---- 全局项不能被 per-monitor / unified 的显示规则挡住 ----
@@ -127,12 +122,8 @@ check('设置面板本身不再整块滚动', /\.settings \{[\s\S]*?overflow: hi
 
 // ---- 主进程：切页不该重建频道 ----
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'expandedMonitors', 'hintParticlesPerMonitor', 'swipeSwitch'\]/.test(MAIN));
+check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab'\]/.test(MAIN));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
-// 全屏/锁屏/电池暂停轮询必须真的被启动（49 轮修：定义了却漏挂调用，所有 pauseOn* 形同虚设）
-check('全屏暂停轮询已接线（启动 + 开关切换两处调用）',
-  (MAIN.match(/startFullscreenWatch\(\);/g) || []).length >= 2,
-  `调用 ${(MAIN.match(/startFullscreenWatch\(\);/g) || []).length} 处`);
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

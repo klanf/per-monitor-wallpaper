@@ -129,7 +129,7 @@
 
   <div class="settings-body" id="settings-body">
     <div class="settings-pane" data-pane="play">
-      <div class="field" id="mode-field">
+      <div class="field">
         <label class="field-label">轮播模式</label>
         <div class="seg" id="cfg-mode">
           <button data-value="unified" class="seg-item">统一配置</button>
@@ -156,92 +156,6 @@
           <option value="720">每 12 小时</option>
         </select>
         <div class="field-hint" id="cfg-auto-scan-hint"></div>
-      </div>
-
-      <!-- 53 轮重分类：从「系统」页挪来 —— 视频播不播完再切是轮播节奏类行为；
-           注意它只对视频条目生效，且视频只在动态桌面里播放 -->
-      <div class="field">
-        <label class="field-label">视频播放</label>
-        <label class="check"><input type="checkbox" id="cfg-video-play-full"><span>视频播完再切下一个（视频不按间隔时间切）</span></label>
-        <div class="field-hint">只影响视频条目，图片仍按间隔切换。视频只在动态桌面里播放（系统壁纸吃不下视频）——动态桌面关闭时视频条目不显示，壁纸保持上一张图片。</div>
-      </div>
-
-      <!-- 视频省电优化（56 轮）：60fps 视频解码负载约减半；遇到才转、副本缓存，原件一字不动 -->
-      <div class="field">
-        <label class="field-label">视频省电优化</label>
-        <label class="check"><input type="checkbox" id="cfg-video-optimize"><span>高帧率视频自动转低帧率副本（原件不动，副本存独立缓存目录）</span></label>
-        <div class="seg" id="cfg-optimize-fps">
-          <button data-value="30" class="seg-item">降到 30fps（推荐）</button>
-          <button data-value="48" class="seg-item">降到 48fps</button>
-        </div>
-        <div class="field-hint">60fps 视频解码很吃显卡，降到 30fps 解码负载约减半，肉眼几乎看不出差别。第一次播放到某视频时后台转码（当次照常播原件），之后一直播副本；改帧率后旧副本自动作废重转，源文件删了副本也跟着清。</div>
-      </div>
-
-      <!-- 特效与动画（47 轮从「外观/系统」集中到轮播，与显示器卡片控件一一对应）：
-           过渡动画/时长/粒子都是全局默认，只在统一模式显示；
-           每屏独立模式下粒子在各显示器卡片里设置（53 轮互斥，下方卡片旁有指路提示） -->
-      <div class="field unified-only">
-        <label class="field-label">过渡动画</label>
-        <select class="select" id="cfg-animation">
-          <option value="slide">滑动</option>
-          <option value="fade">淡入</option>
-          <option value="zoom">缩放</option>
-          <option value="zoom-in">放大收场</option>
-          <option value="zoom-out">缩小进场</option>
-          <option value="slide-zoom">滑动缩放</option>
-          <option value="wipe">幕布擦除</option>
-          <option value="iris">圆形展开</option>
-          <option value="blur-dissolve">模糊溶解</option>
-          <option value="clock">时钟扫描</option>
-          <option value="blinds">百叶窗</option>
-          <option value="split">上下合拢</option>
-          <option value="random">随机轮换</option>
-        </select>
-        <div class="field-hint">作用于主窗口预览和动态桌面画面。系统壁纸是静态写入、没有动画 —— 关掉动态桌面后这里改了不会有桌面观感变化。</div>
-      </div>
-
-      <div class="field unified-only">
-        <label class="field-label">动画时长</label>
-        <div class="field-row">
-          <input type="range" id="cfg-duration" min="120" max="1500" step="20">
-          <output class="field-value" id="cfg-duration-out">520 ms</output>
-        </div>
-      </div>
-
-      <!-- 53 轮：粒子全局控件只在统一模式显示（与卡片设置互斥，避免「全局关了屏上还在动」的困惑） -->
-      <div class="field unified-only" id="particle-global-field">
-        <label class="field-label">粒子特效</label>
-        <div class="field-row">
-          <span class="field-label" style="flex:0 0 auto">种类</span>
-          <select class="select" id="cfg-particles" style="flex:1">
-            <option value="">关闭</option>
-            <option value="rain">雨落</option>
-            <option value="sakura">樱花落</option>
-            <option value="snow">雪</option>
-            <option value="fireflies">萤火虫</option>
-            <option value="stars">星空流星</option>
-            <option value="bubbles">泡泡</option>
-            <option value="leaves">落叶</option>
-            <option value="confetti">彩带纸屑</option>
-            <option value="fireworks">烟花</option>
-            <option value="embers">火焰灰烬</option>
-            <option value="splash">雨落水花</option>
-            <option value="raindrops">雨滴挂屏</option>
-            <option value="random">随机（每次换图抽一种）</option>
-          </select>
-        </div>
-        <div class="field-row">
-          <span class="field-label" style="flex:0 0 auto">数量</span>
-          <input type="range" id="cfg-particle-count" min="0" max="1000" step="4" style="flex:1">
-          <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
-        </div>
-        <div class="field-hint">全局默认，显示器卡片里可按屏覆盖（「跟随全局」的屏吃这里）；烟花数量内置（最多同时 5 发）。只作用于动态桌面画面，不写入系统壁纸。</div>
-      </div>
-
-      <!-- 53 轮：每屏模式下粒子在卡片里设，这里只留指路牌 -->
-      <div class="field per-monitor-only">
-        <label class="field-label">粒子特效</label>
-        <div class="field-hint">粒子特效按屏独立：在下方各显示器卡片里单独设置种类、数量或关闭（想用全局统一特效，切回「统一配置」）。</div>
       </div>
 
       <!-- 每屏模式：每台显示器一张卡片 -->
@@ -285,45 +199,51 @@
         <label class="check"><input type="checkbox" id="cfg-recursive"><span>包含子文件夹</span></label>
       </div>
 
-      <!-- 53 轮追记：从「系统」页挪进来 —— 画面形态是统一配置自己的事；
-           「写入目标显示器」（config monitor，只管系统壁纸层）按用户拍板撤掉，
-           配置键保留兼容（老配置的值仍生效），以舞台为主。 -->
       <div class="field unified-only">
-        <label class="field-label">动态桌面画面</label>
-        <div class="seg" id="cfg-live-split">
-          <button data-value="span" class="seg-item">跨屏拼一幅</button>
-          <button data-value="per-display" class="seg-item">每屏同一幅</button>
-        </div>
-        <div class="field-hint" style="margin-top:4px">「跨屏拼一幅」= 一块画面横跨所有显示器（一张大图铺满整个桌面）；「每屏同一幅」= 每块显示器各自显示当前这张（各自裁切铺满）。改完即时生效。需先在「系统」页开启动态桌面。</div>
+        <label class="field-label">写入目标显示器</label>
+        <select class="select" id="cfg-monitor">
+          <option value="all">全部显示器</option>
+          <option value="window">程序窗口所在的显示器</option>
+          <option value="primary">主显示器</option>
+        </select>
+        <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。</div>
       </div>
     </div>
 
     <div class="settings-pane" data-pane="look" hidden>
+      <div class="field unified-only">
+        <label class="field-label">过渡动画</label>
+        <select class="select" id="cfg-animation">
+          <option value="slide">滑动</option>
+          <option value="fade">淡入</option>
+          <option value="zoom">缩放</option>
+          <option value="zoom-in">放大收场</option>
+          <option value="zoom-out">缩小进场</option>
+          <option value="slide-zoom">滑动缩放</option>
+          <option value="wipe">幕布擦除</option>
+          <option value="iris">圆形展开</option>
+          <option value="blur-dissolve">模糊溶解</option>
+          <option value="clock">时钟扫描</option>
+          <option value="blinds">百叶窗</option>
+          <option value="split">上下合拢</option>
+          <option value="random">随机轮换</option>
+        </select>
+      </div>
+
+      <div class="field unified-only">
+        <label class="field-label">动画时长</label>
+        <div class="field-row">
+          <input type="range" id="cfg-duration" min="120" max="1500" step="20">
+          <output class="field-value" id="cfg-duration-out">520 ms</output>
+        </div>
+      </div>
+
       <div class="field unified-only">
         <label class="field-label">图片填充方式</label>
         <div class="seg" id="cfg-fit">
           <button data-value="cover" class="seg-item">铺满裁切</button>
           <button data-value="contain" class="seg-item">完整显示</button>
         </div>
-        <div class="field-hint">作用于主窗口预览和动态桌面画面的裁切方式。系统壁纸按原图文件写入，填充由 Windows 自己的壁纸填充设置决定，不受这里影响。</div>
-      </div>
-
-      <!-- 53 轮重分类：从「系统」页挪来 —— 呼吸是画面动效，与动画/粒子同类；
-           无每屏覆盖（卡片里没有这项），所以始终显示 -->
-      <div class="field">
-        <label class="field-label">呼吸缩放</label>
-        <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放（缓慢放大缩小，可与内置微缩放叠加）</span></label>
-        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
-          <span class="field-label" style="flex:0 0 auto">呼吸速度</span>
-          <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
-          <span class="muted" id="cfg-breath-period-out" style="flex:0 0 auto">6 秒/周期</span>
-        </div>
-        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
-          <span class="field-label" style="flex:0 0 auto">呼吸幅度</span>
-          <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
-          <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 auto">±2%</span>
-        </div>
-        <div class="field-hint">只作用于动态桌面画面（主窗口预览不带呼吸）。</div>
       </div>
 
       <!-- ------------------------------------------------ 工具栏自动隐藏 -->
@@ -462,15 +382,25 @@
       </div>
 
       <!-- ---------------------------------------------------------- 动态桌面 -->
-      <!-- 53 轮重分类：本块只留「接合开关」——视频节奏挪「轮播」页、呼吸动效挪「外观」页 -->
       <div class="field">
         <label class="field-label">动态桌面</label>
         <label class="check"><input type="checkbox" id="cfg-live-wallpaper"><span>启用动态桌面（把播放画面挂到桌面，切换实时可见）</span></label>
-        <label class="check"><input type="checkbox" id="cfg-live-hide-paused"><span>全屏 / 锁屏暂停时隐藏桌面画面（默认关；玩<b>独占全屏</b>游戏如艾尔登法环前再勾上，防黑屏死机）</span></label>
-        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。画面形态（跨屏拼一幅/每屏同一幅）在「轮播」页；过渡动画/粒子在「轮播」页、呼吸缩放在「外观」页——特效只作用于动态桌面画面，不写入系统壁纸。</div>
+        <label class="check"><input type="checkbox" id="cfg-video-play-full"><span>视频播完再切下一个（视频不按间隔时间切）</span></label>
+        <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放（缓慢放大缩小，可与内置微缩放叠加）</span></label>
+        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span class="field-label" style="flex:0 0 auto">时段滤镜</span>
+          <select class="select" id="cfg-timeofday" style="flex:1">
+            <option value="">无滤镜</option>
+            <option value="morning">早晨 · 暖金斜阳</option>
+            <option value="noon">中午 · 顶光通透</option>
+            <option value="overcast">阴天 · 灰蓝低饱和</option>
+            <option value="dusk">黄昏 · 落日橙紫</option>
+            <option value="night">夜晚 · 深蓝压暗</option>
+          </select>
+        </div>
+        <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。滤镜只作用于动态桌面画面，不写入系统壁纸。</div>
         <label class="check"><input type="checkbox" id="cfg-swipe-switch"><span>桌面手势切壁纸：按住横向拖拽 / 触摸横扫（往左扫 = 下一张，往右扫 = 上一张）</span></label>
         <div class="field-hint">手势在桌面空白处起手才生效；注意横向橡皮筋框选、横向拖图标同形，也会触发切图，嫌烦就关。</div>
-        <label class="check"><input type="checkbox" id="cfg-particle-cursor"><span>粒子绕开鼠标：粒子会避开以光标为圆心的一片区域（开粒子特效时可见）</span></label>
       </div>
 
       <!-- ---------------------------------------------------------- 后台驻留 -->
@@ -479,15 +409,6 @@
         <label class="check"><input type="checkbox" id="cfg-tray"><span>显示托盘图标</span></label>
         <label class="check"><input type="checkbox" id="cfg-close-to-tray"><span>关闭窗口时隐藏到托盘（不退出）</span></label>
         <label class="check"><input type="checkbox" id="cfg-launch-at-login"><span>开机自动启动</span></label>
-        <label class="check"><input type="checkbox" id="cfg-pause-on-idle"><span>人离开 / 熄屏自动暂停（平板合盖熄屏不睡眠的那种，就靠这条省电）</span></label>
-        <div class="seg" id="cfg-idle-minutes">
-          <button data-value="3" class="seg-item">3 分钟</button>
-          <button data-value="5" class="seg-item">5 分钟</button>
-          <button data-value="10" class="seg-item">10 分钟</button>
-          <button data-value="15" class="seg-item">15 分钟</button>
-        </div>
-        <label class="check" style="margin-top:6px"><input type="checkbox" id="cfg-pause-on-battery"><span>用电池时自动暂停（拔掉电源就冻结，接回恢复；台式机常插电不受影响）</span></label>
-        <div class="field-hint">「人离开」= 键鼠无输入超过上方设定分钟，动一下鼠标立即恢复。「用电池」直接读系统电源状态，拔电 2 秒内就停、插回恢复。自动暂停会同时停住桌面画面和系统壁纸切换；关盖只是熄屏（不锁屏不睡眠）的平板，把这两条都开着就不吃电池。</div>
         <label class="check"><input type="checkbox" id="cfg-start-hidden"><span>启动时不显示窗口</span></label>
         <div class="field-hint">托盘开启后，关掉窗口不影响桌面继续轮播；右键托盘图标可以逐屏控制。</div>
         <div class="field-hint mono" id="login-hint"></div>
@@ -544,22 +465,6 @@
 </aside>
 
 <div id="toast" class="toast"></div>
-
-<!-- 53 轮：切到「每屏独立」时的一次性指路弹窗（勾选后不再弹出） -->
-<div class="modal-overlay" id="pm-hint-overlay" hidden>
-  <div class="modal-card">
-    <div class="modal-title">每屏独立模式已开启</div>
-    <div class="modal-body">
-      <p>轮播的<b>目录、节奏</b>在每台显示器的卡片里设置；</p>
-      <p><b>粒子特效</b>也在卡片里（每屏独立时上方不再显示全局特效开关，两种设置互斥）。</p>
-      <p class="muted">「跟随全局」的屏会用统一配置里保存的特效默认值（切回统一配置可改）。</p>
-      <label class="check"><input type="checkbox" id="pm-hint-dont-show"><span>下次不再提示</span></label>
-    </div>
-    <div class="modal-actions">
-      <button class="btn primary sm" id="pm-hint-ok">知道了</button>
-    </div>
-  </div>
-</div>
 
 <script src="app.js"></script>
 </body>

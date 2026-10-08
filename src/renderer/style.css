@@ -646,15 +646,6 @@ body.mode-per-monitor .unified-only { display: none; }
 .eye:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
 .monitor-card.previewing .eye { color: var(--accent); border-color: rgba(91, 140, 255, 0.45); }
 
-/* ---- 每屏卡片折叠（47 轮）：默认只留头 + 相簿行 + 状态条，展开才出全部控件。
-     折叠状态记在 config.expandedMonitors，预览一块屏会自动展开它 ---- */
-.mc-toggle svg { transition: transform 0.15s ease; }
-.monitor-card.open .mc-toggle svg { transform: rotate(180deg); }
-.monitor-card:not(.open) .mc-row,
-.monitor-card:not(.open) .mc-block,
-.monitor-card:not(.open) .mc-more,
-.monitor-card:not(.open) .check { display: none; }
-
 /* ==========================================================================
    胶片条（缩略图导航）
    替换原来的「播放历史」功能：一条时间线上同时能看到「看过的」「当前」「即将播放的」，
@@ -715,27 +706,6 @@ body.filmstrip-off .filmstrip { display: none; }
   height: 100%;
   object-fit: cover;
   pointer-events: none;
-  /* 54 轮：加载完成前透明，让格子的微光占位露出来，加载完淡入 */
-  opacity: 0;
-  transition: opacity 0.22s var(--ease);
-}
-.film-item img.ready { opacity: 1; }
-
-/* 加载占位：微光缓缓扫过 —— 读作「正在载入」而不是「一块黑坏了」。
-   has-img 加上后 img 淡入盖住占位，动画随类移除自然停掉 */
-.film-item:not(.has-img) {
-  background: linear-gradient(110deg, #101014 30%, #1b1b22 48%, #101014 66%);
-  background-size: 220% 100%;
-  animation: film-shimmer 1.3s linear infinite;
-}
-@keyframes film-shimmer {
-  from { background-position: 130% 0; }
-  to { background-position: -110% 0; }
-}
-/* 404 的破格子：停掉动画，垫一层比纯黑稍亮的底，编号徽章照常显示 */
-.film-item.broken {
-  animation: none;
-  background: #141419;
 }
 
 /* 三种状态：已看过（压暗）/ 即将播放（正常略淡）/ 当前（高亮放大） */
@@ -1089,31 +1059,3 @@ body.filmstrip-off .filmstrip { display: none; }
 .page .album-dirs { padding: 6px 14px 14px; }
 .page .album-dir { padding: 6px 9px; font-size: 12px; }
 .page .album-empty { font-size: 12px; }
-
-/* ==========================================================================
-   一次性指路弹窗（53 轮）：切「每屏独立」时提示粒子/目录去哪设置
-   ========================================================================== */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 40;
-}
-.modal-overlay[hidden] { display: none; }
-.modal-card {
-  width: min(420px, calc(100vw - 48px));
-  background: var(--surface-solid);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px 16px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-}
-.modal-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
-.modal-body { font-size: 12.5px; line-height: 1.7; color: var(--text-dim); }
-.modal-body p { margin: 0 0 6px; }
-.modal-body .muted { color: var(--text-faint); font-size: 12px; }
-.modal-body .check { margin-top: 8px; }
-.modal-actions { display: flex; justify-content: flex-end; margin-top: 12px; }

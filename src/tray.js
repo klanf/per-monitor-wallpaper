@@ -14,7 +14,6 @@
 
 const { app, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
-const { resolvePortableExecutablePath } = require('./portablePath');
 
 let tray = null;
 let actions = null;
@@ -49,18 +48,6 @@ function loginArgs() {
 }
 
 /**
- * 应该写进启动项 / relaunch 的可执行文件路径。
- *
- * portable 坑：`process.execPath` 是解包到 %TEMP% 的临时 exe，退出即被删，
- * 拿它写自启项 = 开机永远起不来。portable 启动器会把原始 exe 位置放进
- * 环境变量（PORTABLE_EXECUTABLE_FILE 等），解析得到就用它。
- * 非 portable（NSIS 安装版 / 开发模式）返回 null，调用方回落到 execPath。
- */
-function launcherPath() {
-  return resolvePortableExecutablePath();
-}
-
-/**
  * 现在到底会不会开机自启？
  *
  * 坑：Windows 上 `getLoginItemSettings()` 返回的 `openAtLogin` **永远是 false**，
@@ -70,7 +57,7 @@ function launcherPath() {
  */
 function getLaunchAtLogin() {
   try {
-    const state = app.getLoginItemSettings({ path: launcherPath() || process.execPath, args: loginArgs() });
+    const state = app.getLoginItemSettings({ path: process.execPath, args: loginArgs() });
     return Boolean(state.executableWillLaunchAtLogin || state.openAtLogin);
   } catch {
     try {
@@ -84,7 +71,7 @@ function setLaunchAtLogin(enabled) {
   try {
     app.setLoginItemSettings({
       openAtLogin: Boolean(enabled),
-      path: launcherPath() || process.execPath,
+      path: process.execPath,
       args: loginArgs(),
       name: app.getName() || 'electron-wallpaper',
     });
@@ -182,25 +169,6 @@ function buildMenuTemplate() {
     click: (item) => {
       const result = setLaunchAtLogin(item.checked);
       if (actions.onLaunchAtLoginChanged) actions.onLaunchAtLoginChanged(result);
-      refresh();
-    },
-  });
-
-  // 接管系统壁纸（57 轮）：关掉 = 让位给 Windows 自带幻灯片，程序其余功能照常跑。
-  // 不让位的话，轮播每个间隔都会用 IDesktopWallpaper 把个性化里刚选的幻灯片
-  // 打回「图片」模式并清空 slideshow.ini —— 表现就是「幻灯片怎么都切不动」。
-  template.push({
-    label: '接管系统壁纸',
-    type: 'checkbox',
-    checked: actions.isApplyToSystem ? actions.isApplyToSystem() : true,
-    click: (item) => {
-      if (actions.setApplyToSystem) actions.setApplyToSystem(item.checked);
-      notify(
-        item.checked ? '已接管系统壁纸' : '已让出系统壁纸',
-        item.checked
-          ? '轮播恢复写入桌面壁纸；Windows 自带幻灯片会被本程序覆盖。'
-          : '本程序不再写入系统壁纸，可以去 Windows 个性化里用幻灯片放映了（动态桌面画面不受影响）。',
-      );
       refresh();
     },
   });
@@ -345,8 +313,6 @@ module.exports = {
   getLaunchAtLogin,
   setLaunchAtLogin,
   loginArgs,
-  /** portable 原始 exe 路径（非 portable 返回 null）；设置面板展示自启命令也用它 */
-  launcherPath,
   /** 给验证脚本用：菜单模板的纯数据形式（不会弹菜单） */
   menuTemplate: () => menuToPlain(buildMenuTemplate()),
 };

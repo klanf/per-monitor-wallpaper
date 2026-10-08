@@ -73,8 +73,6 @@ contextBridge.exposeInMainWorld('wp', {
   stageUrl,
   /** 舞台报告「当前视频播完了 / 加载失败了」（videoPlayFull 时调度器靠这个推进） */
   stageVideoEnded: (channelId) => ipcRenderer.invoke('stage:video-ended', channelId),
-  /** 首帧画上屏了（53 轮防启动黑屏）：主进程收到后才把舞台窗口 show 出来 */
-  stageFirstFrame: () => ipcRenderer.send('stage:first-frame'),
   thumbStats: () => ipcRenderer.invoke('thumbs:stats'),
   thumbPrune: () => ipcRenderer.invoke('thumbs:prune'),
   thumbClear: () => ipcRenderer.invoke('thumbs:clear'),
@@ -171,6 +169,19 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('channel:tick', (_event, payload) => cb(payload));
   },
 
+  /** 深度视差：查某张图的深度 sidecar（命中返回缓存路径，未命中入队后台生成并返回 null） */
+  depthFor: (imagePath) => ipcRenderer.invoke('depth:lookup', String(imagePath || '')),
+
+  /** 深度生成完成广播：{path} = 原图路径（stage 收到后把当前帧升级成视差） */
+  onDepthReady: (cb) => {
+    ipcRenderer.on('depth:ready', (_event, payload) => cb(payload));
+  },
+
+  /** stage 渲染端诊断日志 → 主进程落 live-debug.log（VBS 丢 stdout 的兜底） */
+  stageLog: (msg) => {
+    ipcRenderer.send('stage:log', String(msg).slice(0, 500));
+  },
+
   /** 主进程告诉 stage 窗口「你绑定哪个频道」（动态桌面 stage 页专用） */
   onStageBind: (cb) => {
     ipcRenderer.on('stage:bind', (_event, payload) => cb(payload));
@@ -179,16 +190,6 @@ contextBridge.exposeInMainWorld('wp', {
   /** 主进程告诉 stage 窗口「暂停 / 恢复」（全屏占用 / 锁屏，阶段 3） */
   onStagePause: (cb) => {
     ipcRenderer.on('stage:pause', (_event, payload) => cb(payload));
-  },
-
-  /** 主进程喂光标位置（54 轮追记六：粒子绕开鼠标；本屏 CSS px，窗外为 null） */
-  onStageCursor: (cb) => {
-    ipcRenderer.on('stage:cursor', (_event, payload) => cb(payload));
-  },
-
-  /** 动态桌面自动暂停态变化（53 轮）：主窗口工具栏图标跟手 */
-  onLivePaused: (cb) => {
-    ipcRenderer.on('live:paused', (_event, payload) => cb(payload));
   },
 
   /** 主进程主动弹提示（右键菜单操作、托盘操作的结果） */

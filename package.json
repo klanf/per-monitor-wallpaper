@@ -1,6 +1,6 @@
 {
   "name": "electron-wallpaper",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Windows 多显示器壁纸轮播器 —— 每块屏一套目录和节奏，随机顺序不重复，缩略图胶片条能当播放历史读",
   "main": "src/main.js",
@@ -14,7 +14,6 @@
     "verify:unit": "node tools/test-scheduler.js",
     "verify:desktop": "node tools/test-desktop-host.js",
     "verify:live": "node tools/test-live-desktop.js",
-    "verify:particles": "node tools/test-particles.js",
     "verify:fs-watch": "node tools/test-fullscreen-watch.js",
     "verify:fullscreen-pause": "python tools/run-electron.py tools/verify-fullscreen-pause.js",
     "verify:stage": "python tools/run-electron.py tools/verify-live-stage.js",

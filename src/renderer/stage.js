@@ -41,6 +41,13 @@ const REST = { x: 0, y: 0, s: 1, o: 1 };   // 层的静止状态
  */
 const KEN = { period: 45_000, amplitude: 0.045 };
 
+/**
+ * 呼吸缩放（profile.breath）：比 Ken Burns 快一档的匀称呼吸（6s 一吸一呼，±2%）。
+ * 与 Ken Burns 叠加时是两个振荡相乘，视觉上「大潮」里带「小潮」。
+ * ⚠️ 同样必须连续：用 cos 从 0 相位起步（scale 从 1 平滑出发），永不重置相位。
+ */
+const BREATH = { period: 6_000, amplitude: 0.02 };
+
 /** 时段滤镜：色温罩在 #tod（CSS 渐变 + mix-blend-mode），去饱和/压暗写在 .layer 的 filter */
 const TOD_FILTERS = {
   morning:  'brightness(1.04) saturate(1.05)',
@@ -53,59 +60,6 @@ const TOD_FILTERS = {
 /** resize 后重绘的防抖 */
 const RESIZE_DEBOUNCE = 200;
 
-/* ---------------- 静止态自愈（2026-10-05 黑屏修复的第二道保险） ----------------
- * 不变量：anim=null 时，活动层必须完整盖住屏幕（root transform=REST、op=1、
- * canvas 是全屏尺寸）——健康流程里它刚作为 incoming 被 drawSource 画过。
- * 任何路径若把这个状态弄坏（半截过渡残留 / canvas 被误缩），桌面就会露出
- * body 的纯黑底；调度器可能同时停表，坏状态会一直停在那里。
- * 这里低频巡检（10s 一次，开销可忽略），发现違反就用快照路径重画钉正 ——
- * 冻结态也照常工作（drawSource / 样式写入不依赖 rAF）。
- * 视频壁纸每帧重画、网页壁纸 iframe 自持，都不在本检查范围。 */
-let healBusyUntil = 0;
-setInterval(() => {
-  if (anim || healBusyUntil > Date.now()) return;
-  const entry = currentEntry;
-  if (!entry || kindOf(entry) !== 'image') return;
-  const l = layers[active];
-  if (!l || !l.root || !l.canvas) return;
-  const badTransform = l.root.style.transform !== 'translate3d(0px, 0px, 0px) scale(1)';
-  const badOpacity = l.root.style.opacity !== '1';
-  const badClip = Boolean(l.root.style.clipPath);
-  const badCanvas = l.canvas.width <= 1;
-  if (!badTransform && !badOpacity && !badClip && !badCanvas) return;
-  console.warn(`[stage] 静止态自愈：活动层不完整（tf=${l.root.style.transform} op=${l.root.style.opacity}` +
-    ` clip=${l.root.style.clipPath ? '有' : '无'} canvas=${l.canvas.width}x${l.canvas.height}）→ 重画钉正`);
-  healBusyUntil = Date.now() + 10000;
-  showFrame(entry, 1, false).catch(() => { /* 取图失败等下一拍 */ });
-}, 10000);
-
-/* ---------------- 黑屏诊断埋点（stage.html?debug=1 时启用，2026-10-05） ----------------
- * 现象：主屏 stage 图像层卡在「滑出 99.5%」的位置只剩边缘窄条，渲染循环还活着。
- * 埋点周期性 dump 双图层的真实 DOM 状态（transform/opacity/clip/canvas 尺寸），
- * 配合 PrintWindow 抓帧可把卡死瞬间的渲染端状态完整取证。
- * ⚠️ 渲染层没有 process（nodeIntegration=false）——别在这里读 process.env，
- *    顶层抛错会杀死整个 stage.js（探针第一跑实锤）。开关由 liveStage 加查询参数。 */
-const STAGE_DEBUG = new URLSearchParams(location.search).has('debug');
-if (STAGE_DEBUG) {
-  setInterval(() => {
-    const dump = (tag, l) => {
-      if (!l || !l.root) return `${tag}: <null>`;
-      const c = l.canvas || {};
-      return `${tag}: tf=${JSON.stringify(l.root.style.transform)} op=${l.root.style.opacity}` +
-        ` clip=${JSON.stringify(l.root.style.clipPath || '')} z=${l.root.style.zIndex}` +
-        ` canvas=${c.width}x${c.height} filter=${JSON.stringify(l.root.style.filter || '')}`;
-    };
-    const animInfo = anim
-      ? `p=${Math.round(Math.min(1, (performance.now() - anim.t0) / (anim.duration || 1)) * 1000) / 1000}`
-      : 'null';
-    console.log(`[stage-dbg] t=${Date.now()} active=${active} anim=${animInfo} ` +
-      `frozen=${frozen} token=${animToken} raf=${rafId} innerW=${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio} ` +
-      `entry=${currentEntry ? currentEntry.path.split(/[\\/]/).pop() : 'null'}`);
-    console.log(`[stage-dbg]   ${dump('A', layers.A)}`);
-    console.log(`[stage-dbg]   ${dump('B', layers.B)}`);
-  }, 3000);
-}
-
 /* ------------------------------------------------------------------ 状态 */
 
 let myChannel = null;          // 本窗口绑定的频道 id（stage:bind 指定）
@@ -117,24 +71,21 @@ const cfg = {
   animation: 'slide',
   duration: 900,      // 过渡时长 ms：520/620 用户实测偏快，900 起才有「电影感」
   fit: 'cover',
-  fpsCap: 60,         // 只约束 Ken Burns/呼吸/粒子/视频等长驻动画；过渡动画不吃闸门（追记八）
+  fpsCap: 60,         // 30 在 60Hz 屏上过渡明显掉帧；60 = 跟满垂直同步
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
-  breathPeriod: 6000,          // 呼吸周期 ms（profile.breathPeriod；收紧 2000~15000 在下方 guards）
-  breathAmplitude: 2,          // 呼吸幅度 %（profile.breathAmplitude，±%；收紧 0.5~5）
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
-  particles: '',               // 粒子特效（profile.particles：''/rain/sakura/random）
-  particleCount: 256,          // 粒子数量（profile.particleCount；收紧 0~1000 在 particles.js）
-  particleCursor: true,        // 粒子绕开鼠标（profile.particleCursor；斥力实现在 particles.js）
-  particlesActive: '',         // 实际生效种类：particles='random' 时每次换图重抽（rollParticles）
+  depthEnabled: true,          // 深度视差（profile.depthParallax=false 关；默认开）
+  depthAmp: 0.07,              // 视差幅度（profile.depthAmp）
+  depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
+  depthLight: 0.45,            // 灯光强度（profile.depthLight）
 };
 
 const layers = {
   A: null, B: null,            // { root, canvas, ctx }，init 时填充
 };
 let todEl = null;              // 时段滤镜罩层（#tod，init 时填充）
-let particleFx = null;         // 粒子层句柄（particles.js，init 时绑定 #particles）
 let active = 'B';
 
 let animToken = 0;             // 过渡令牌：新过渡让进行中的旧过渡作废
@@ -146,6 +97,22 @@ let activeVideo = null;        // 当前在播的 <video>（视频壁纸时非�
 
 /** 全屏 / 锁屏暂停（stage:pause）：冻结 = 停 rAF，画面钉在当前帧 */
 let frozen = false;
+
+/** 深度视差层是否在显示（true 时 2D 图层的 Ken Burns / 重画都要让路） */
+let glActive = false;
+
+/** 本次会话是否成功上屏过任何一帧（2D 或 GL）。解冻自愈用：
+ *  启动时若撞上暂停，bind 显示可能被冻结打断成半截 —— 解冻时若一帧都没画过
+ *  就强制重显当前 entry，而不是干等下一个 60s 调度 tick（黑屏到那时）。 */
+let everRendered = false;
+
+/** 渲染端诊断日志 → 主进程落 live-debug.log。必须定义在模块顶层：
+ *  showFrame（顶层函数）和 init 内的升级处理器都要用 —— 上一版定义在 init
+ *  里面，showFrame 一调用就 ReferenceError，壁纸直接卡住不上屏（2026-10-09 实锤）。 */
+function slog(...a) {
+  try { window.wp.stageLog(a.join(' ')); } catch (_) { /* 日志永不影响主流程 */ }
+}
+let t0GL = performance.now();     // GL 时钟起点（漂移/灯光相位）
 
 let resizeTimer = 0;
 
@@ -248,11 +215,9 @@ function variantFor(animation, dir) {
   }
 }
 
-/** random：每轮换图随机挑一种（showFrame 时决定，同一次过渡内不变）。
- * ⚠️ 不含 blur-dissolve：入场从 blur(24px) 渐清晰，4K 图上 GPU 模糊又慢，
- * 随机抽中时整个过渡期桌面都是糊的（与 app.js 预览层同一决定）；显式选仍可用。 */
+/** random：每轮换图随机挑一种（showFrame 时决定，同一次过渡内不变） */
 const RANDOM_POOL = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
-  'wipe', 'iris', 'clock', 'blinds', 'split'];
+  'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
 
 /** 过渡结束/被打断后清掉所有自绘型残留（clip/mask/filter/z 序），回到干净静止态 */
 function clearFx(el) {
@@ -282,15 +247,6 @@ function canvasSize(canvas) {
   return { w, h };
 }
 
-/** 把画布缩到 1×1 释放整屏后台缓冲（48 轮）：只对「即将闲置」的图层用，
- *  下次绘制时 canvasSize 会按屏幕重新分配 */
-function shrinkCanvas(canvas) {
-  if (canvas.width > 1) {
-    canvas.width = 1;
-    canvas.height = 1;
-  }
-}
-
 function coverRect(W, H, bw, bh, scale = 1) {
   const r = Math.max(W / bw, H / bh) * scale;
   const w = bw * r, h = bh * r;
@@ -304,9 +260,16 @@ function containRect(W, H, bw, bh) {
 }
 
 /**
+ * 把解码位图画进 canvas（这一步就是降采样：位图多大都行，落点只有屏幕大小）。
+ * 位图用完必须 close() —— 由调用方负责。
+ */
+function paintLayer(layer, bmp) {
+  drawSource(layer, bmp, bmp.width, bmp.height);
+}
+
+/**
  * 通用绘制：src 可为 ImageBitmap（静态图，画一次就完）或 <video>（视频壁纸，
  * rAF 每帧重画拿最新帧）。sw/sh = 源宽高（videoWidth/videoHeight）。
- * （把解码位图画进 canvas 这一步就是降采样：位图多大都行，落点只有屏幕大小。）
  */
 function drawSource(layer, src, sw, sh) {
   const { w: W, h: H } = canvasSize(layer.canvas);
@@ -419,6 +382,290 @@ function stopLayerVideo(layer) {
   if (layer.video && !layer.video.paused) layer.video.pause();
 }
 
+/* ------------------------------------------------------------------ 深度视差（WebGL） */
+
+/**
+ * 有深度 sidecar 的图片走这层渲染：相机自动漂移 + 两盏巡游彩灯 + 鼠标临时接管。
+ * 没有依赖 Three.js —— 单 quad + 片元着色器，深度图由主进程 depthService 离线
+ * 生成（depth:lookup 命中返回缓存路径）。任何环节失败都退回 2D 路径，绝不黑屏。
+ *
+ * 与 2D 路径的分工：本层盖在 layerA/B 之上（z-index 3，#tod 是 4）。
+ *   - 有深度：2D 图层不上屏，GL 负责（含过渡交叉淡入）
+ *   - 无深度：GL 只负责把旧视差画面淡出（若刚才是视差），2D 动画照常
+ * 过渡说明：视差帧进/出统一用交叉淡入（slide/zoom 等变换型动画只作用于 2D 层，
+ * 对视差帧不复刻 —— 视差本身自带运动，再叠位移会晕）。
+ */
+
+const DEPTH_FS = `
+precision highp float;
+uniform sampler2D uImg;
+uniform sampler2D uDepth;
+uniform vec2  uCanvas;
+uniform float uImgAspect;
+uniform float uTime;
+uniform vec2  uCam;
+uniform float uAmp;
+uniform float uNrm;
+uniform float uLight;
+uniform float uLightsOn;
+uniform float uHasDepth;
+uniform float uAlpha;
+
+void main() {
+  float canvasAspect = uCanvas.x / uCanvas.y;
+  // 纹理不靠 UNPACK_FLIP_Y（ImageBitmap 源在 Chromium 里不认，实测颠倒）：
+  // 统一按「v=0 是图顶」上传，这里把 gl_FragCoord 的 y（底为 0）翻成屏幕坐标
+  vec2 uv01 = gl_FragCoord.xy / uCanvas;
+  uv01.y = 1.0 - uv01.y;
+  vec2 crop = vec2(1.0);
+  if (uImgAspect > canvasAspect) crop.x = canvasAspect / uImgAspect;
+  else                           crop.y = uImgAspect / canvasAspect;
+  float margin = uAmp * 0.55 + 0.015;
+  vec2 zoom = crop * (1.0 - 2.0 * margin);
+  vec2 uv = vec2(0.5) + (uv01 - 0.5) * zoom;
+
+  float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 无深度=平面
+  vec2 par = uCam * (d - 0.5) * uAmp;
+  vec2 uvP = uv - par;
+  vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
+  vec3 col = texture2D(uImg, uvC).rgb;
+
+  if (uHasDepth > 0.5) {
+    vec2 px = 1.5 / vec2(1024.0, 1024.0);
+    float dl = texture2D(uDepth, uvC - vec2(px.x, 0.0)).r;
+    float dr = texture2D(uDepth, uvC + vec2(px.x, 0.0)).r;
+    float db = texture2D(uDepth, uvC - vec2(0.0, px.y)).r;
+    float dt = texture2D(uDepth, uvC + vec2(0.0, px.y)).r;
+    vec3 nrm = normalize(vec3((dl - dr) * uNrm, (db - dt) * uNrm, 1.0));
+
+    if (uLightsOn > 0.5) {
+      vec2 p0 = vec2(0.5 + 0.38 * sin(uTime * 0.11), 0.5 + 0.30 * sin(uTime * 0.07 + 1.7));
+      vec2 p1 = vec2(0.5 + 0.40 * cos(uTime * 0.083 + 4.0), 0.5 + 0.32 * sin(uTime * 0.056 + 0.6));
+      p0 -= uCam * (d - 0.5) * uAmp * 0.8;
+      p1 -= uCam * (d - 0.5) * uAmp * 0.8;
+      vec2 asp = vec2(canvasAspect, 1.0);
+      vec2 frag = uv01 * asp;   // 与采样同坐标系（y 已翻，灯位随屏幕走）
+      vec3 c0 = vec3(1.00, 0.62, 0.35) * uLight;
+      vec3 c1 = vec3(0.35, 0.60, 1.00) * uLight;
+      float a0 = 1.0 + 0.25 * sin(uTime * 0.9);
+      float a1 = 1.0 + 0.22 * sin(uTime * 0.7 + 2.1);
+      vec2 v0 = frag - p0 * asp; vec2 v1 = frag - p1 * asp;
+      float att0 = 1.0 / (1.0 + 6.0 * dot(v0, v0));
+      float att1 = 1.0 / (1.0 + 6.0 * dot(v1, v1));
+      vec3 L0 = normalize(vec3(-v0, 0.9));
+      vec3 L1 = normalize(vec3(-v1, 0.9));
+      float diff0 = max(dot(nrm, L0), 0.0);
+      float diff1 = max(dot(nrm, L1), 0.0);
+      col += c0 * att0 * (0.35 + 0.65 * diff0 * 0.5) * a0 * d;
+      col += c1 * att1 * (0.35 + 0.65 * diff1 * 0.5) * a1 * (1.0 - d * 0.5);
+    }
+  }
+  gl_FragColor = vec4(col, uAlpha);
+}
+`;
+
+const glState = {
+  gl: null, canvas: null, prog: null, U: null, ok: false,
+  cur: null,        // { imgTex, depTex|null, aspect, imgPath }
+  anim: null,       // { t0, duration, out:{imgTex,depTex,aspect}|null, in:{...}|null }
+  mouse: [0, 0], mouseUntil: 0, mouseW: 0,
+};
+
+function glInit() {
+  if (glState.ok || glState.failed) return;
+  try {
+    const canvas = document.getElementById('depthgl');
+    const gl = canvas.getContext('webgl', { antialias: false, alpha: true, premultipliedAlpha: false });
+    if (!gl) throw new Error('webgl 不可用');
+    const mk = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, mk(gl.VERTEX_SHADER, 'attribute vec2 aPos;void main(){gl_Position=vec4(aPos,0.,1.);}'));
+    gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, DEPTH_FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(prog, 'aPos');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    const U = {};
+    for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
+      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha']) U[n] = gl.getUniformLocation(prog, n);
+    gl.uniform1i(U.uImg, 0);
+    gl.uniform1i(U.uDepth, 1);
+    glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
+    glState.ok = true;
+  } catch (err) {
+    glState.failed = true;
+    console.warn('[stage] 深度视差层初始化失败（降级 2D）:', err.message);
+  }
+}
+
+function glMakeTex(unit, src) {
+  const gl = glState.gl;
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);   // 翻转统一在 shader 做（ImageBitmap 不认 flip）
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  return t;
+}
+
+function glFreeLayer(L) {
+  if (!L || !glState.gl) return;
+  for (const t of [L.imgTex, L.depTex]) if (t) glState.gl.deleteTexture(t);
+}
+
+/** 取/建视差图层描述 {imgTex, depTex, aspect}；任何一步失败返回 null（调用方回退 2D） */
+async function glLayerFor(imagePath, depthPath) {
+  try {
+    const [bmp, depBmp] = await Promise.all([
+      fetchBitmap({ path: imagePath }),
+      depthPath ? fetchBitmap({ path: depthPath }).catch(() => null) : Promise.resolve(null),
+    ]);
+    const layer = {
+      imgTex: glMakeTex(0, bmp),
+      depTex: depBmp ? glMakeTex(1, depBmp) : null,
+      aspect: bmp.width / bmp.height,
+    };
+    bmp.close();
+    if (depBmp) depBmp.close();
+    return layer;
+  } catch (err) {
+    console.warn('[stage] 视差纹理加载失败（本帧回退 2D）:', imagePath, err.message);
+    return null;
+  }
+}
+
+/** 相机：自动漂移为主，鼠标动过后 2.5s 内接管（权重快进慢出，平滑淡回） */
+function glCam(tSec, nowMs) {
+  const s = cfg.depthDrift;
+  const ax = Math.sin(tSec * 0.11 * s) * 0.7 + Math.sin(tSec * 0.041 * s + 2.0) * 0.3;
+  const ay = Math.sin(tSec * 0.073 * s + 1.3) * 0.65 + Math.sin(tSec * 0.033 * s + 4.0) * 0.35;
+  const active = nowMs < glState.mouseUntil;
+  glState.mouseW += ((active ? 1 : 0) - glState.mouseW) * (active ? 0.10 : 0.02);
+  return [
+    ax * (1 - glState.mouseW) + glState.mouse[0] * glState.mouseW * 1.2,
+    ay * (1 - glState.mouseW) + glState.mouse[1] * glState.mouseW * 1.2,
+  ];
+}
+
+function glDrawLayer(L, alpha, cam, tSec) {
+  const gl = glState.gl;
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, L.imgTex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, L.depTex || L.imgTex);   // 无深度时占位（uHasDepth 压平）
+  const { w, h } = canvasSize(glState.canvas);
+  gl.viewport(0, 0, w, h);
+  gl.uniform2f(glState.U.uCanvas, w, h);
+  gl.uniform1f(glState.U.uImgAspect, L.aspect);
+  gl.uniform1f(glState.U.uTime, tSec);
+  gl.uniform2f(glState.U.uCam, cam[0], cam[1]);
+  gl.uniform1f(glState.U.uAmp, cfg.depthAmp);
+  gl.uniform1f(glState.U.uNrm, 9.0);
+  gl.uniform1f(glState.U.uLight, cfg.depthLight);
+  gl.uniform1f(glState.U.uLightsOn, 1);
+  gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
+  gl.uniform1f(glState.U.uAlpha, alpha);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/** 每帧调（gate 之后）：有内容就画，没内容就把 canvas 藏起来 */
+function glTick(now) {
+  if (!glState.ok) return;
+  const has = glState.cur || glState.anim;
+  glState.canvas.style.display = has ? 'block' : 'none';
+  if (!has) return;
+  const gl = glState.gl;
+  const tSec = (now - t0GL) / 1000;
+  const cam = glCam(tSec, now);
+  gl.disable(gl.BLEND);
+  if (glState.anim) {
+    const p = Math.min(1, (now - glState.anim.t0) / Math.max(1, glState.anim.duration));
+    const e = easeCubicBezier(p);
+    if (glState.anim.out) glDrawLayer(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
+    if (glState.anim.in) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      glDrawLayer(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
+    }
+    if (p >= 1) {
+      glFreeLayer(glState.anim.out);
+      glState.cur = glState.anim.in;
+      glState.anim = null;
+      if (!glState.cur) { glActive = false; glState.canvas.style.display = 'none'; }
+    }
+  } else if (glState.cur) {
+    glDrawLayer(glState.cur, 1, cam, tSec);
+  }
+}
+
+/** 2D 内容要上屏了：把视差层淡出（或直接取消进行中的 GL 过渡），绝不盖住新内容 */
+function glFadeOutIfAny() {
+  if (!glActive) return;
+  if (glState.anim) {   // 打断进行中的 GL 过渡，纹理全部释放
+    glFreeLayer(glState.anim.out !== glState.cur ? glState.anim.out : null);
+    glFreeLayer(glState.anim.in);
+    glState.anim = null;
+  }
+  if (glState.cur) {
+    glState.anim = { t0: performance.now(), duration: Math.max(0, cfg.duration || 0), out: glState.cur, in: null };
+    glState.cur = null;   // glTick 走完自会 glActive=false 并隐藏画布
+  } else {
+    glActive = false;
+    if (glState.canvas) glState.canvas.style.display = 'none';
+  }
+}
+
+/** 深度帧上屏主入口（showFrame 的 GL 分支）。返回 true=接管成功；false=回退 2D。
+ *  token：showFrame 的过渡令牌 —— 纹理加载期间被更新的 showFrame 抢走就放弃（防旧盖新）。
+ *  ⚠️ 整体 try/catch：这里任何异常都会跳过 showFrame 的 2D 回退 → 桌面黑屏
+ *  （2026-10-09 启动黑屏排查追加，失败原因全部落 live-debug.log）。 */
+async function glShowFrame(entry, outgoingPath, token) {
+  try {
+    glInit();
+    if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return false; }
+    const inLayer = await glLayerFor(entry.path, entry.depth);
+    if (!inLayer) { slog('gl: 纹理加载失败，回退 2D', String(entry.path).split(/[\\/]/).pop()); return false; }
+    if (token !== animToken) { glFreeLayer(inLayer); return false; }   // 等待期间又被切走
+    // 出场快照：刚才就是视差 → 复用它的纹理；否则抓一张平图做底（video/html 不抓）
+    let outLayer = null;
+    if (glState.cur && (!outgoingPath || glState.cur.imgPath === outgoingPath)) {
+      outLayer = glState.cur;
+    } else if (outgoingPath && kindOf({ path: outgoingPath }) === 'image') {
+      outLayer = await glLayerFor(outgoingPath, null);
+      if (token !== animToken) { glFreeLayer(inLayer); glFreeLayer(outLayer); return false; }
+    }
+    if (glState.anim) {   // 打断进行中的升级/过渡：旧的出场层直接释放
+      glFreeLayer(glState.anim.out !== glState.cur ? glState.anim.out : null);
+      glFreeLayer(glState.anim.in);
+      glState.anim = null;
+    }
+    glState.anim = { t0: performance.now(), duration: Math.max(0, cfg.duration || 0), out: outLayer, in: inLayer };
+    inLayer.imgPath = entry.path;   // depth:ready 升级判定 / 出场快照复用判定用
+    glState.cur = null;
+    glActive = true;
+    everRendered = true;
+    return true;
+  } catch (err) {
+    try { slog('gl: 异常，回退 2D ——', err && err.message); } catch (_) { /* 忽略 */ }
+    console.warn('[stage] glShowFrame 异常:', err);
+    return false;
+  }
+}
+
 /* ------------------------------------------------------------------ rAF 循环 */
 
 /** fpsCap 闸门：不到间隔就不写样式（rAF 本身继续跑，恢复时才准点） */
@@ -430,6 +677,7 @@ function gate(now) {
 }
 
 function kenTick(now) {
+  if (glActive) return;   // 视差层自带漂移运动，Ken Burns 不叠加（双重运动会晕）
   const layer = layers[active];
   if (!cfg.kenBurns && !cfg.breath) {
     // 两个缩放特效都关时把画布钉回原位（只写一次，别每帧都碰样式）
@@ -450,9 +698,8 @@ function kenTick(now) {
   }
   if (cfg.breath) {
     // cos 从 0 相位起步：scale 从 1 平滑出发，不重置相位（重置=瞬跳，KEN 的教训）
-    // 47 轮：周期/幅度由 profile.breathPeriod / breathAmplitude 驱动
-    const ph = (now % cfg.breathPeriod) / cfg.breathPeriod;   // 0..1
-    s += (cfg.breathAmplitude / 100) * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
+    const ph = (now % BREATH.period) / BREATH.period;   // 0..1
+    s += BREATH.amplitude * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
   }
   layer.canvas.style.transform = `scale(${s.toFixed(5)})`;
 }
@@ -465,6 +712,8 @@ function applyTod(mode) {
     const layer = layers[key];
     if (layer && layer.root) layer.root.style.filter = m ? TOD_FILTERS[m] : '';
   }
+  // 视差层同样吃色温（GL canvas 上写 filter，与 .layer 同一套字符串）
+  if (glState.canvas) glState.canvas.style.filter = m ? TOD_FILTERS[m] : '';
   if (todEl) todEl.className = m ? `tod-on tod-${m}` : '';
 }
 
@@ -483,7 +732,7 @@ function animTick(now) {
       { x: lerp(0, v.toT.x, e), y: lerp(0, v.toT.y, e), s: lerp(1, v.toT.s, e) },
       lerp(1, v.toO, e), v.u);
   }
-    if (p >= 1) {
+  if (p >= 1) {
     // 两层都钉死在原位：后层透明避免残留位移；前层必须钉回 scale=1 ——
     // zoom 变体的 toT.s=0.985（终态略小一圈），不钉回去的话四边会永久留缝，
     // 露出底下的旧图层（2026-09-25 真机抓屏实测：左右下各 11px 缝，内容缩 1.5%）。
@@ -492,7 +741,6 @@ function animTick(now) {
     clearFx(incoming.root);
     setLayer(outgoing.root, REST, 0, 'px');
     setLayer(incoming.root, REST, 1, 'px');
-    shrinkCanvas(outgoing.canvas);   // 48 轮：后台层退出合成，整屏显存下次过渡再分配
     anim = null;
   }
 }
@@ -501,52 +749,20 @@ function ensureRaf() {
   if (rafId || frozen) return;
   const loop = (now) => {
     rafId = 0;
-    // 过渡动画不吃 fpsCap 闸门：闸门是省电策略（画面静止时 GPU 零占用），但
-    // slide/zoom 这类位移过渡被闸在 30fps 时肉眼可见的生硬（54 轮追记八用户实报），
-    // 而过渡只持续一两秒 —— 短时全帧率可接受。Ken Burns / 呼吸 / 粒子 / 视频
-    // 是长驻动画，继续走闸门省电。
-    if (anim) animTick(now);
     if (gate(now)) {
+      animTick(now);
       kenTick(now);
+      glTick(now);
       // 视频壁纸：每帧把 <video> 的当前画面画进活动层（过渡动画是 root 的
       // CSS 样式，与 canvas 内容正交，两者并行不冲突）
       if (activeVideo && currentEntry && kindOf(currentEntry) === 'video') {
         drawSource(layers[active], activeVideo, activeVideo.videoWidth, activeVideo.videoHeight);
       }
-      // 粒子层与过渡/缓动共享同一个 fpsCap 闸门；stage:pause 停 rAF 即冻结，
-      // 恢复后的时间跳变由 particles.js 的 DT_MAX 钳位兜住
-      if (particleFx) particleFx.frame(now);
     }
     if (frozen) return;                    // 暂停：这一帧画完就停表
-    // 48 轮：静态画面不再空转 —— 只有「真的有东西在动」才续帧：过渡中 / 视频壁纸 /
-    // Ken Burns / 呼吸 / 粒子层。纯静态图 + 全特效关闭时循环死掉（渲染心跳归零），
-    // 下一次 tick / showFrame / applyChannelConfig / 暂停恢复都会 ensureRaf 唤醒。
-    if (anim || activeVideo || cfg.kenBurns || cfg.breath || (particleFx && particleFx.isActive())) {
-      rafId = requestAnimationFrame(loop);
-    }
+    if (anim || currentEntry) rafId = requestAnimationFrame(loop);
   };
   rafId = requestAnimationFrame(loop);
-}
-
-/**
- * 冻结瞬间把进行中的过渡钉到终态（2026-10-05 黑屏修复）。
- *
- * 「暂停 = 画面钉在当前帧」的语义里，"当前帧"必须是**完整帧**——不能是半截过渡。
- * 真机实锤：全屏游戏盖住主屏触发暂停时，slide/wipe 等过渡正跑到 e≈0.995，
- * 画面被永久定格在「旧图滑出 99.5%」= 桌面全黑只剩 12px 窄条；调度器同时停表，
- * 永远等不到下一帧来收尾，这一黑就黑到退出应用。
- * 钉终态后：incoming 画布早已画好（anim 只在 drawSource 之后才启动），
- * 新图完整可见；解冻后一切照常。
- */
-function pinAnimToEnd() {
-  if (!anim) return;
-  const { incoming, outgoing } = anim;
-  anim = null;
-  clearFx(outgoing.root);
-  clearFx(incoming.root);
-  setLayer(outgoing.root, REST, 0, 'px');
-  setLayer(incoming.root, REST, 1, 'px');
-  shrinkCanvas(outgoing.canvas);
 }
 
 function setFrozen(next) {
@@ -555,11 +771,19 @@ function setFrozen(next) {
   if (frozen) {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     if (activeVideo) activeVideo.pause();          // 视频壁纸跟着冻结
-    pinAnimToEnd();                                // 过渡收尾：停在完整帧，不停在半截
   } else {
     if (activeVideo) activeVideo.play().catch(() => {});
     ken.start = performance.now();         // 恢复：Ken Burns 重置起点，避免大跳
     ensureRaf();
+    // 解冻自愈：启动时撞上暂停的话，bind 显示可能被冻结打断（rAF 被 cancel、
+    // 过渡淡入只走到一半）—— 一帧都没画过就强制重显当前 entry，不等下一个
+    // 60s 调度 tick（否则桌面黑到那时为止，用户观感就是「重启黑屏」）。
+    if (!everRendered && currentEntry) {
+      const e = currentEntry;
+      slog('解冻自愈：重启首帧重显', String(e.path).split(/[\\/]/).pop());
+      currentEntry = null;                 // 绕过 applyChannels 的「同帧跳过」守卫
+      showFrame(e, 1, false).catch((err) => slog('解冻自愈失败 ——', err && err.message));
+    }
   }
 }
 
@@ -584,58 +808,34 @@ async function showFrame(entry, dir, animate) {
   let src = null, sw = 0, sh = 0;
 
   if (kind === 'html') {
-    const f = iframeOf(incoming, window.wp.stageUrl(entry.path));
-    // 54 轮：网页壁纸的首帧要等 iframe 真正 load 出来 —— 提前亮窗露的是空白
-    // iframe（黑/白一块）。10s 兜底：一直 load 不出来的坏页面也照常亮窗
-    // （亮出网页自己的样子，好过桌面一直没动静）。
-    if (!showFrame._ffSent) {
-      let ffDone = false;
-      const sendFF = () => {
-        if (ffDone || showFrame._ffSent) return;
-        if (token !== animToken) return;   // 这帧已被切走：留给真正上屏的帧去通知
-        ffDone = true;
-        showFrame._ffSent = true;
-        try { window.wp.stageFirstFrame(); } catch (_) { /* 主进程只告警不亮黑窗 */ }
-      };
-      f.addEventListener('load', sendFF, { once: true });
-      setTimeout(sendFF, 10000);
-    }
+    glFadeOutIfAny();
+    iframeOf(incoming, window.wp.stageUrl(entry.path));
   } else {
     hideIframe(incoming);
   }
 
   if (kind === 'image') {
-    // 54 轮「缩略图快亮」：启动等首帧的黑屏时间大头是**原图取回+解码**（8K 秒级），
-    // 不是频道清单（有启动缓存，毫秒级）。首帧（门未开）先用磁盘缩略图
-    // （wpthumb:// 缓存命中 ~6ms）垫一帧、点亮窗口，原图解码完下面照常重绘——
-    // 用户看到的是「壁纸先略糊一瞬、马上变清晰」，而不是「先黑一下」。
-    // 只在首帧做：正常运行中的过渡有旧图垫底，垫模糊帧反而穿帮。
-    if (!showFrame._ffSent) {
-      const ffT0 = performance.now();
-      try {
-        const tRes = await fetch(window.wp.thumbUrl(entry.path));
-        console.log(`[stage] 缩略图垫帧 fetch ok=${tRes.ok} status=${tRes.status} @${(performance.now() - ffT0).toFixed(0)}ms`);
-        if (tRes.ok && token === animToken) {
-          const tBmp = await createImageBitmap(await tRes.blob());
-          if (token !== animToken) { tBmp.close(); }   // 等待期间被切走：释放垫帧位图
-          else {
-            drawSource(incoming, tBmp, tBmp.width, tBmp.height);
-            tBmp.close();
-            // 快照式钉住：垫帧一亮窗就必须可见（等原图重绘的空窗不能露底）
-            clearFx(incoming.root);
-            clearFx(outgoing.root);
-            setLayer(incoming.root, REST, 1, 'px');
-            setLayer(outgoing.root, REST, 0, 'px');
-            shrinkCanvas(outgoing.canvas);
-            active = incomingKey;
-            showFrame._ffSent = true;
-            try { window.wp.stageFirstFrame(); } catch (_) { /* 主进程只告警 */ }
-          }
+    // ── 深度视差：查 sidecar（命中→GL 路径；未命中→主进程入队后台生成，本帧 2D）──
+    if (cfg.depthEnabled && typeof window.wp.depthFor === 'function') {
+      let depthPath = null;
+      try { depthPath = await window.wp.depthFor(entry.path); } catch (_) { /* 查询失败按无深度 */ }
+      slog(`tick ${depthPath ? 'hit ' : 'miss'} ${String(entry.path).split(/[\\/]/).pop()}`);
+      if (depthPath && entry.depth !== false) {
+        const depthEntry = { ...entry, depth: depthPath };
+        const ok = await glShowFrame(depthEntry, currentEntry && currentEntry !== entry ? currentEntry.path : null, token);
+        if (ok) {
+          hideIframe(incoming);
+          hideIframe(outgoing);
+          // 2D 层钉到终态但内容不上屏（canvas 留空 = 透明），全屏内容由 GL 层负责
+          setLayer(incoming.root, REST, 1, 'px');
+          setLayer(outgoing.root, REST, 0, 'px');
+          active = incomingKey;
+          ensureRaf();
+          return;
         }
-      } catch (err) {
-        console.warn('[stage] 缩略图垫帧失败，等原图:', (err && err.message) || err);
       }
     }
+    glFadeOutIfAny();   // 这张图没深度（或 GL 接管失败）→ 2D 上屏，视差层让路
     let bmp;
     try {
       bmp = await fetchBitmap(entry);
@@ -646,6 +846,7 @@ async function showFrame(entry, dir, animate) {
     if (token !== animToken) { bmp.close(); return; }   // 等待期间又被切走了
     src = bmp; sw = bmp.width; sh = bmp.height;
   } else if (kind === 'video') {
+    glFadeOutIfAny();   // 视频/网页壁纸不吃视差层
     const v = videoOf(incoming);
     const url = window.wp.stageUrl(entry.path);
     if (v.src !== url) v.src = url;                     // 换 src 会自动重载
@@ -676,27 +877,19 @@ async function showFrame(entry, dir, animate) {
   // ── 上屏（网页壁纸没有 canvas 内容，iframe 自己就是内容）──
   if (kind === 'image') {
     drawSource(incoming, src, sw, sh);
+    everRendered = true;                               // 解冻自愈标记：这一路出过画面了
     src.close();                                       // 关键：立即释放解码位图
   } else if (kind === 'video') {
     drawSource(incoming, src, sw, sh);                 // 先画上首帧，之后 rAF 接管
-  }
-
-  // 53 轮防启动黑屏：首帧真正画上屏才通知主进程亮窗口（挂载后窗口一直藏着）。
-  // 54 轮：html 壁纸的 first-frame 由上面 iframe 的 load 回调负责，这里不抢；
-  // 主进程超时也只告警、不亮黑窗。
-  if (!showFrame._ffSent && kind !== 'html') {
-    showFrame._ffSent = true;
-    try { window.wp.stageFirstFrame(); } catch (_) { /* 通知失败：主进程 30s 告警兜底 */ }
+    everRendered = true;
   }
 
   const duration = animate ? Math.max(0, cfg.duration || 0) : 0;
   if (duration === 0) {
-    anim = null;   // 快照式上屏作废进行中的过渡：两层刚被钉回原位，旧过渡的收尾帧不能再写它们
     clearFx(incoming.root);
     clearFx(outgoing.root);
     setLayer(incoming.root, REST, 1, 'px');
     setLayer(outgoing.root, REST, 0, 'px');
-    shrinkCanvas(outgoing.canvas);   // 48 轮：后台层释放显存（同上）
     active = incomingKey;
     ensureRaf();
     return;
@@ -706,7 +899,6 @@ async function showFrame(entry, dir, animate) {
   const animName = cfg.animation === 'random'
     ? RANDOM_POOL[Math.floor(Math.random() * RANDOM_POOL.length)]
     : cfg.animation;
-  if (STAGE_DEBUG) console.log(`[stage-dbg] showFrame anim=${animName} dir=${currentDir} duration=${duration} incoming=${incomingKey} entry=${entry.path.split(/[\\/]/).pop()}`);
   const v = variantFor(animName, currentDir);
   // 清掉上一次过渡可能残留的自绘样式（快速连切时上一次可能没走到收尾分支）
   clearFx(incoming.root);
@@ -746,36 +938,17 @@ function applyChannelConfig() {
   if (Number.isFinite(p.fpsCap)) cfg.fpsCap = p.fpsCap;
   // Ken Burns 开关（profile 不写 = 默认开）
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
+  // 深度视差（profile 不写 = 默认开 —— 用户要求「所有壁纸自动有视差」）
+  if (p.depthParallax !== undefined) cfg.depthEnabled = Boolean(p.depthParallax);
+  if (Number.isFinite(p.depthAmp)) cfg.depthAmp = p.depthAmp;
+  if (Number.isFinite(p.depthDrift)) cfg.depthDrift = p.depthDrift;
+  if (Number.isFinite(p.depthLight)) cfg.depthLight = p.depthLight;
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
   if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
-  // 呼吸节奏（47 轮：周期/幅度可配；profile 不写 = 6000ms / ±2%）
-  if (Number.isFinite(Number(p.breathPeriod))) {
-    cfg.breathPeriod = Math.min(Math.max(Math.round(Number(p.breathPeriod)), 2000), 15000);
-  }
-  if (Number.isFinite(Number(p.breathAmplitude))) {
-    cfg.breathAmplitude = Math.min(Math.max(Number(p.breathAmplitude), 0.5), 5);
-  }
   // 时段滤镜（profile 不写 = 无）
   if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
-  // 粒子特效：种类白名单与数量收紧都在 particles.js 里做，这里透传。
-  // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
-  if (p.particles !== undefined) cfg.particles = String(p.particles || '');
-  if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
-  // 粒子绕开鼠标（54 轮追记六，profile 不写 = 默认开）：关了就不把光标喂给粒子层
-  if (p.particleCursor !== undefined) cfg.particleCursor = Boolean(p.particleCursor);
-  rollParticles();
-  if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
-  // 特效从关到开会把「静态停表」的循环唤醒（48 轮配套；已在跑/冻结时 ensureRaf 自己会挡）
-  ensureRaf();
-}
-
-/** random：每次换图从全部种类里抽一种。非 random 的值原样生效（含 '' = 关） */
-function rollParticles() {
-  if (cfg.particles !== 'random') { cfg.particlesActive = cfg.particles; return; }
-  const pool = (window.WPParticles && window.WPParticles.PARTICLE_TYPES) || ['rain', 'sakura'];
-  cfg.particlesActive = pool[(Math.random() * pool.length) | 0] || 'rain';
 }
 
 async function applyChannels(list) {
@@ -814,16 +987,17 @@ async function applyChannels(list) {
 function onResize() {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(async () => {
-    if (particleFx) particleFx.resize();   // 粒子画布跟屏幕走，与当前帧类型无关
     if (!currentEntry) return;
     // 视频：下一 rAF 自动按新画布尺寸重画；网页：iframe 100% 自适应 —— 都不用管
     if (kindOf(currentEntry) !== 'image') return;
+    if (glActive) return;   // 视差层 shader 按 canvas 尺寸重算 cover，无需重取图
     // resize 后重画当前帧。⚠️ 必须走 showFrame 本尊，不能自己 ++animToken 再手动画：
     // 手动画会 (a) 把取图途中的首帧 showFrame 整个作废 —— token 作废分支把它**静默**
     // 丢掉；而 (b) 自己画进的是还没点亮（opacity=0）的图层 —— 两件事叠加就是
-    // 「启动后黑屏，必须等下一个 tick」（第 39 轮实锤：mount 物理取整差 / DPI 收敛的
-    // 一次 resize 正好撞上首帧取图，探针 tools/tmp/probe-startup-frame.js 复现）。
-    // showFrame 自己管理 token 互斥，且画完的图层一定是被点亮的那块。
+    // 「启动后黑屏，必须等下一个 tick」（主树第 39 轮实锤，live 树分叉早一直没移植，
+    // 2026-10-09 用户重启黑屏复现后才补上；之前靠「解冻自愈」兜底，所以表现为
+    // 「黑一小段时间自己好」）。showFrame 自己管理 token 互斥，画完的图层一定是
+    // 被点亮的那块。
     try {
       await showFrame(currentEntry, 1, false);
     } catch { /* 下一帧 tick 会带新图来 */ }
@@ -843,11 +1017,6 @@ async function init() {
   layers.A.ctx = layers.A.canvas.getContext('2d');
   layers.B.ctx = layers.B.canvas.getContext('2d');
   todEl = document.getElementById('tod');
-  // 粒子层（particles.js 先于本文件加载）。缺了不致命：粒子开关静默失效，其余照常
-  if (window.WPParticles && document.getElementById('particles')) {
-    particleFx = window.WPParticles.createParticles(document.getElementById('particles'));
-    particleFx.resize();
-  }
 
   window.addEventListener('resize', onResize);
   // 舞台盖在图标层之上必然吃掉鼠标（LAYERED 穿透会让 Chromium 白屏，见 desktopHost）。
@@ -872,14 +1041,60 @@ async function init() {
     applyChannelConfig();
     wp.listChannels().then(applyChannels);
   });
-  // 光标喂送（54 轮追记六）：主进程 30Hz 广播本屏光标，粒子层用它做斥力避让；
-  // 开关关着就不喂（粒子层拿到 null 也不碍事，但省一层白工）
-  window.wp.onStageCursor(({ x, y } = {}) => {
-    if (particleFx && cfg.particleCursor) particleFx.setCursor(x, y);
+  // 渲染端未捕获异常 → live-debug.log（「功能死了但没有报错」场景的唯一取证线索）
+  window.addEventListener('error', (e) => {
+    slog('渲染端错误 ——', e.message, '@', String(e.filename || '').split('/').pop(), e.lineno);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    slog('未处理 Promise 拒绝 ——', r && (r.stack || r.message) || String(r));
   });
   window.wp.onStagePause((payload) => {
     setFrozen(Boolean(payload && payload.paused));
   });
+  // 深度视差：鼠标临时接管视角（不动就走自动漂移；坐标是 CSS 的，归一化即可）
+  window.addEventListener('mousemove', (e) => {
+    glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
+    glState.mouseUntil = performance.now() + 2500;
+  }, { passive: true });
+  // 深度生成完成 → 正在显示这张图的话，现场从 2D 升级成视差（短交叉淡入）。
+  // ⚠️ 不能因 glState.anim 直接放弃：上一张视差的退场淡出（~900ms）和本张的
+  // depth:ready（~1s）几乎同时到期，抢先把升级 return 掉这张图就永远停在 2D
+  // —— 真机表现恰好是「隔一张才有视差」。改为等退场走完再重试（2026-10-09）。
+  async function tryDepthUpgrade(payload, attempt = 0) {
+    if (!payload || !currentEntry || payload.path !== currentEntry.path) return;
+    if (frozen) return;
+    if (!cfg.depthEnabled || kindOf(currentEntry) !== 'image') return;
+    // 已是「这张图自己」的稳态视差：不用升。（⚠️ 不能笼统判 glActive ——
+    // 新图上屏时旧视差层要退场淡出 ~900ms，期间 glActive 仍为 true，
+    // ready 在这个窗口到达就被丢 → 上一张视差则本张必丢 → 严格隔一张。
+    // 2026-10-09 真机日志实锤。）
+    if (glActive && glState.cur && glState.cur.imgPath === payload.path) return;
+    if (glState.anim && glState.anim.in) return;       // GL 过渡/升级淡入进行中：不抢
+    if (glActive || (glState.anim && !glState.anim.in)) {
+      // 旧视差层退场淡出未完：等它走完再试，别放弃（放弃这张就永远停在 2D）
+      if (attempt < 40) {
+        slog('upgrade: 等视差层退场', attempt);
+        setTimeout(() => tryDepthUpgrade(payload, attempt + 1), 250);
+      }
+      return;
+    }
+    glInit();
+    if (!glState.ok) { slog('upgrade: GL 不可用', payload.path.split(/[\\/]/).pop()); return; }
+    let dp = null;
+    try { dp = await window.wp.depthFor(currentEntry.path); } catch (_) { return; }
+    if (!dp || payload.path !== (currentEntry && currentEntry.path)) return;
+    if (glState.anim && glState.anim.in) return;       // await 期间起了 GL 过渡/升级
+    const inLayer = await glLayerFor(currentEntry.path, dp);
+    if (!inLayer || payload.path !== (currentEntry && currentEntry.path)) { glFreeLayer(inLayer); return; }
+    if (glState.anim && glState.anim.in) { glFreeLayer(inLayer); return; }   // 纹理等待期间被抢
+    glState.anim = { t0: performance.now(), duration: 800, out: null, in: inLayer };
+    inLayer.imgPath = currentEntry.path;
+    glActive = true;   // out=null：GL 层直接淡入盖在 2D 画面上，无跳变
+    ensureRaf();
+    slog('upgrade: 升级完成', payload.path.split(/[\\/]/).pop());
+  }
+  window.wp.onDepthReady(tryDepthUpgrade);
   window.wp.onChannelsChanged(async (payload) => {
     await applyChannels(payload && payload.channels);
   });
@@ -898,10 +1113,6 @@ async function init() {
     if (!payload || payload.id !== myChannel) return;   // 每块 stage 只听自己频道
     if (frozen) return;   // 暂停：留在当前帧，新图等恢复后下一拍再上
     if (payload.entry) {
-      if (cfg.particles === 'random') {   // 随机粒子：每次换图重抽一种（手动翻页也走 tick）
-        rollParticles();
-        if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
-      }
       showFrame(payload.entry, payload.dir, true);
     } else {
       currentEntry = null;   // 频道空了（相簿被清空）→ 黑屏

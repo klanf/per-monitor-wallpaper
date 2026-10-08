@@ -10,10 +10,7 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  /* 用不透明的黑，不用 rgba：这块窗口就是桌面本身，透出什么都是错。
-     ⚠️ 54 轮追记三：曾改 transparent 配合窗口透明化，真机舞台错位盖不满屏
-     （DirectComposition × 挂载子窗口），已随 transparent:false 一起回退。
-     防黑闪靠首帧门控 + 缩略图快亮，不靠透明底。 */
+  /* 用不透明的黑，不用 rgba：这块窗口就是桌面本身，透出什么都是错 */
   background: #000;
 }
 
@@ -33,20 +30,6 @@ html, body {
   backface-visibility: hidden;
 }
 
-/* ---------------------------------------------------------------- 粒子特效 */
-
-/* 独立 canvas：盖在两个 .layer 之上 —— 过渡期间图层会被内联提到 z-index:2，
-   粒子 3 起始终在其上；#tod 提到 4，时段滤镜连粒子一起调色。
-   pointer-events:none；display 由 stage.js 按是否开粒子切换（关 = 零合成开销）。 */
-#particles {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 3;
-}
-
 /* ---------------------------------------------------------------- 时段滤镜 */
 
 /* 盖在图层之上的调色层：渐变 + mix-blend-mode 出色温，去饱和/压暗由 stage.js
@@ -55,10 +38,10 @@ html, body {
 #tod {
   position: absolute;
   inset: 0;
+  z-index: 4;                 /* 压在 #depthgl(3) 之上：时段滤镜要罩住视差层 */
   pointer-events: none;
   display: none;              /* JS 按配置切 display，无滤镜时零合成开销 */
   will-change: opacity;
-  z-index: 4;                 /* 压住 #particles：滤镜罩整个画面（含粒子） */
 }
 
 #tod.tod-on { display: block; }
