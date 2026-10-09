@@ -83,6 +83,7 @@ const cfg = {
   depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
   depthLight: 0.45,            // 灯光强度（profile.depthLight）
   // ---- DepthFlow 流模式参数（Circle 预设默认值；profile 同名键）----
+  flowStyle: 'circle',         // 动效轨迹：circle 环绕 / orbital 摆动环绕 / dolly 推拉变焦
   flowIntensity: 0.5,          // 轨迹幅度（0.5 = Circle 预设；鼠标接管幅度同源）
   flowIso: 0.6,                // 斜视角（越大立体越强、越歪）
   flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
@@ -441,6 +442,8 @@ uniform float uFlowIso;     // 斜视角（cfg.flowIso，Circle 预设 0.6）
 uniform float uFlowSteady;  // 背景稳定点（cfg.flowSteady，预设 0.3）
 uniform float uFlowHeight;  // 视差强度主旋钮（cfg.flowHeight，DepthState 默认 0.2）
 uniform float uFlowQ;       // POM 步进质量 0.15~1（cfg.flowQuality，0.5=CLI 默认；低=省 GPU）
+uniform float uFlowFocus;   // 对焦点（focus：0=视差绕 z=1 面，Orbital 0.30/Dolly 0.35）
+uniform float uFlowZoom;    // 图像缩放（zoom：1=满幅，Orbital 0.98/Dolly 0.95 留露边余量）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -456,10 +459,11 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
   float height = uFlowHeight;   // 视差强度主旋钮（cfg.flowHeight，默认 0.20=DepthState）
   float steady = uFlowSteady;   // Circle 预设默认 0.30：固定点绕 depth=steady 转动
   float isom   = uFlowIso;      // Circle 预设默认 0.60：视线平行分量
-  float focal  = 1.0;    // focus=0 → focal_length = 1 - focus*height
-  // camera.glsl CameraProject（透视投影）：origin/target 各在 z=0 / z=focal 平面
-  vec3 origin = vec3(off + g0 * (isom), 0.0);
-  vec3 target = vec3(off + g0, focal);
+  float focal  = 1.0 - uFlowFocus * uFlowHeight;   // focus=0 → 1.0（Circle）；Orbital/Dolly 缩短焦距
+  // camera.glsl CameraProject（透视投影）：origin/target 各在 z=0 / z=focal 平面，
+  // 射线矩形按 zoom 缩放（zoom<1 = 镜头后撤留露边，Dolly 变焦的物理来源）
+  vec3 origin = vec3(off + g0 * (uFlowZoom * isom), 0.0);
+  vec3 target = vec3(off + g0 * uFlowZoom, focal);
   // CameraRay2D：与 z=1 平面求交（plane_normal=+z），t = (1-0)/focal
   vec2 camGluv = origin.xy + (target.xy - origin.xy) * (1.0 / focal);
   // DepthMake：sticky=true（背景钉住），center=0，origin 附加位移=0
@@ -589,7 +593,7 @@ function glInit() {
     const U = {};
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
-      'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ']) U[n] = gl.getUniformLocation(prog, n);
+      'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
@@ -663,25 +667,54 @@ function glCam(tSec, nowMs) {
 }
 
 /**
- * 流模式（DepthFlow Circle 移植）相机位移：8s 一圈的圆轨迹（与样片同款），
- * 周期 = 2π 保证首尾无缝；鼠标接管时同一平滑权重淡入。
- * 幅度 0.5 = DepthFlow Circle 预设 intensity；depthDrift 只调速不破坏连续性。
+ * 流模式相机位移公共语义：8s 一圈的周期（cycle=2π）保证首尾无缝；
+ * depthDrift 只调速不破坏连续性。
  * ⚠️ y 轴符号：shader 内 uv01 已翻成「y 向下」屏幕系（与 clientY 同向），而
  * DepthFlow 的 offset 是 y 向上 —— 离线逐帧对比实锤（negoff_y 变体把帧差从
  * ~21 打到 ~2.5 噪声级），所以自动漂移的 y 取反进 uniform；鼠标 clientY 本就
  * y 向下，天然同轴，不再翻。
  */
+/**
+ * 各轨迹的 focus/zoom（shader 常量，无滑杆）：与 DepthFlow 官方预设 1:1。
+ * steady/height 走用户滑杆（切风格时 app.js 会写入该风格的预设默认值）。
+ */
+const FLOW_STYLE_PARAMS = {
+  circle:  { focus: 0.0,  zoom: 1.0 },
+  orbital: { focus: 0.30, zoom: 0.98 },
+  dolly:   { focus: 0.35, zoom: 0.95 },
+};
+/**
+ * 流模式（DepthFlow 预设移植）相机：返回 { off:[x,y], iso }。
+ * off = 屏幕位移（y 向下；DepthFlow offset 是 y 向上，自动项已取反），
+ * iso = 斜视角（Orbital/Dolly 动态、Circle 用用户滑杆）。
+ * 三种轨迹与 DepthFlow 官方预设公式 1:1，cycle=(t/8)*2π 无缝循环：
+ *   circle  —— offset=(cos,-sin)*amp，iso 恒定（滑杆）
+ *   orbital —— offset=(sin,0)*amp，iso=0.5·cos+0.75 摆动环绕（focus 0.30/zoom 0.98）
+ *   dolly   —— offset=0，iso=0.5·(1-cos) 推拉变焦（height 0.30/steady 0.35/focus 0.35/zoom 0.95）
+ * 鼠标接管：位移平滑淡入（iso 不受鼠标影响）。
+ */
 function glCamFlow(tSec, nowMs) {
-  const amp = cfg.flowIntensity;   // Circle 预设 0.5；鼠标接管幅度同源
+  const amp = cfg.flowIntensity;   // 预设 0.5；鼠标接管幅度同源
   const cycle = (tSec / 8.0) * Math.PI * 2 * cfg.depthDrift;
-  const ax = Math.cos(cycle) * amp;
-  const ay = -Math.sin(cycle) * amp;   // DepthFlow offset 是 y 向上，这里 y 向下
+  const style = FLOW_STYLE_PARAMS[cfg.flowStyle] ? cfg.flowStyle : 'circle';
+  let ax = 0, ay = 0, iso = cfg.flowIso;
+  if (style === 'circle') {
+    ax = Math.cos(cycle) * amp;
+    ay = -Math.sin(cycle) * amp;
+  } else if (style === 'orbital') {
+    ax = Math.sin(cycle) * amp;
+    iso = 0.5 * Math.cos(cycle) + 0.75;      // Orbital：isometric 动态摆动
+  } else {                                   // dolly
+    iso = 0.5 * (1.0 - Math.cos(cycle));     // Dolly：无位移，纯推拉变焦
+  }
   const active = nowMs < glState.mouseUntil;
   glState.mouseW += ((active ? 1 : 0) - glState.mouseW) * (active ? 0.10 : 0.02);
-  return [
-    ax * (1 - glState.mouseW) + glState.mouse[0] * amp * glState.mouseW,
-    ay * (1 - glState.mouseW) - glState.mouse[1] * amp * glState.mouseW,
-  ];
+  const w = glState.mouseW;
+  return {
+    off: [ax * (1 - w) + glState.mouse[0] * amp * w,
+          ay * (1 - w) - glState.mouse[1] * amp * w],
+    iso,
+  };
 }
 
 function glDrawLayer(L, alpha, cam, tSec) {
@@ -695,18 +728,24 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform2f(glState.U.uCanvas, w, h);
   gl.uniform1f(glState.U.uImgAspect, L.aspect);
   gl.uniform1f(glState.U.uTime, tSec);
-  gl.uniform2f(glState.U.uCam, cam[0], cam[1]);
+  gl.uniform1f(glState.U.uFlow, cfg.depthFlow ? 1 : 0);
+  // cam 两形态：glCam（旧路径）返回数组；glCamFlow 返回 { off, iso }
+  const flowOff = Array.isArray(cam) ? cam : cam.off;
+  const flowIso = (!Array.isArray(cam) && Number.isFinite(cam.iso)) ? cam.iso : cfg.flowIso;
+  gl.uniform2f(glState.U.uCam, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uAmp, cfg.depthAmp);
   gl.uniform1f(glState.U.uNrm, 9.0);
   gl.uniform1f(glState.U.uLight, cfg.depthLight);
   gl.uniform1f(glState.U.uLightsOn, 1);
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
   gl.uniform1f(glState.U.uAlpha, alpha);
-  gl.uniform1f(glState.U.uFlow, cfg.depthFlow ? 1 : 0);
-  gl.uniform2f(glState.U.uFlowOff, cam[0], cam[1]);
-  gl.uniform1f(glState.U.uFlowIso, cfg.flowIso);
+  gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
+  gl.uniform1f(glState.U.uFlowIso, flowIso);
   gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
   gl.uniform1f(glState.U.uFlowHeight, cfg.flowHeight);
+  const flowP = FLOW_STYLE_PARAMS[cfg.flowStyle] || FLOW_STYLE_PARAMS.circle;
+  gl.uniform1f(glState.U.uFlowFocus, flowP.focus);
+  gl.uniform1f(glState.U.uFlowZoom, flowP.zoom);
   gl.uniform1f(glState.U.uFlowQ, Math.min(1, Math.max(0.15, cfg.flowQuality || 0.5)));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
@@ -1102,6 +1141,7 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowIso)) cfg.flowIso = p.flowIso;
   if (Number.isFinite(p.flowSteady)) cfg.flowSteady = p.flowSteady;
   if (Number.isFinite(p.flowHeight)) cfg.flowHeight = p.flowHeight;
+  if (typeof p.flowStyle === 'string' && FLOW_STYLE_PARAMS[p.flowStyle]) cfg.flowStyle = p.flowStyle;
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);

@@ -2084,6 +2084,7 @@ function applyConfigToUI() {
     $(outId).textContent = fmt(v);
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
+  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly'].includes(c.flowStyle) ? c.flowStyle : 'circle';
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2322,6 +2323,30 @@ function bindSettings() {
     const v = Number(e.target.value);
     await save({ fpsCap: v });
     toast(`帧率上限：${v} 帧${v <= 30 ? '（省电档，慢速镜头无感）' : ''}`);
+  });
+
+  // 动效风格（第十四轮）：切换时把该风格的预设默认写回 steady/height 滑杆
+  // （iso 在 orbital/dolly 下由 shader 动态驱动，滑杆仅 circle 生效）
+  const FLOW_PRESET_DEFAULTS = {
+    circle:  { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
+    orbital: { flowSteady: 0.30, flowHeight: 0.20 },
+    dolly:   { flowSteady: 0.35, flowHeight: 0.30 },
+  };
+  const FLOW_STYLE_LABEL = { circle: '环绕 · Circle', orbital: '摆动环绕 · Orbital', dolly: '推拉变焦 · Dolly' };
+  $('cfg-flow-style').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    const defaults = FLOW_PRESET_DEFAULTS[v] || {};
+    await save({ flowStyle: v, ...defaults });
+    // 把写回的预设值刷进滑杆 UI（iso 滑杆在 orbital/dolly 下无效，一并提示）
+    for (const [key, val] of Object.entries(defaults)) {
+      const input = $(`cfg-${key.replace(/^flow/, 'flow-').toLowerCase()}`);
+      const out = $(`cfg-${key.replace(/^flow/, 'flow-').toLowerCase()}-out`);
+      if (input && out) {
+        input.value = val;
+        out.textContent = Number(val).toFixed(2);
+      }
+    }
+    toast(`动效风格：${FLOW_STYLE_LABEL[v] || v}`);
   });
 
   const TOD_LABEL = {

@@ -3768,3 +3768,43 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
 - node --check 四文件通过；
 - 真机验收项：最大化 WorkBuddy 越过一次切换间隔 → 还原 → 桌面应仍显示
   冻结前那张（不再跳新图），右键删除删的就是看见的那张。
+
+## 深度视差第十五轮：动效轨迹（Orbital/Dolly）+ 桌面右键「暂停/继续」（2026-10-09 19:4x）
+
+### 改动一：动效轨迹（用户拍板「更多动效轨迹」）
+
+- **shader（stage.js DEPTH_FS）**：补齐 DepthFlow 相机的 focus/zoom 两参数
+  （新 uniform uFlowFocus/uFlowZoom）——focal = 1 - focus*height、射线矩形按
+  zoom 缩放。Circle 参数（focus 0/zoom 1）下数学与旧版完全一致。
+- **glCamFlow 重写**：返回 { off, iso }，三轨迹公式与 DepthFlow 官方预设 1:1
+  （cycle=(t/8)*2π 无缝循环不变）：
+  - circle —— offset=(cos,-sin)*amp，iso=滑杆（原样）；
+  - orbital —— offset=(sin,0)*amp，iso=0.5·cos+0.75 动态摆动，focus 0.30/zoom 0.98；
+  - dolly —— offset=0 纯推拉，iso=0.5·(1-cos)，height 0.30/steady 0.35/focus 0.35/zoom 0.95。
+  鼠标接管逻辑不变（iso 不受鼠标影响）。cfg.flowStyle + profile.flowStyle +
+  store PROFILE_KEYS + 设置面板「动效风格」下拉（class=select 暗色同款）；
+  切风格时 app.js 自动把该风格的 steady/height 预设值写回滑杆。
+- **离线对比验收（flowtest_styles.py，新 harness 支持 ?style=）**：
+  Orbital 4 相位帧差 2.41~2.48、Dolly 2.46~2.59 —— 全部噪声级
+  （v-flip 对照 94+）；Circle 回归 2.44~2.51 基线不变。
+  （途中旧 compare harness 没设 uFlowZoom 默认 0 导致黑屏，补 uniform 后恢复——
+  真机 stage.js 恒设 1，不受影响。）
+
+### 改动二：桌面右键「暂停 / 继续壁纸」（用户要求，方便测试）
+
+- **shellMenu.js**：新菜单项 key=pause（WallpaperSwitcherDesktopPause，
+  arg=--toggle-pause-wallpaper，sortOrder 15）；已用 node 直接调 installItem
+  装进注册表（命令指向 live 树 exe，与已装的「删除」同款；无需等设置面板手动装）。
+- **main.js**：manualPausedDisplays 手动暂停集 + broadcastPauseState 统一广播
+  （fullscreenWatch 每 2s 的自动暂停快照在合并并集，手动暂停不会被覆盖）；
+  runDesktopMenuAction 加 case 'pause' → togglePauseAtCursor()：切光标所在屏，
+  立即重广播 + notice 气泡。暂停语义与自动暂停完全一致：渲染冻结（GPU 归零）
+  + 第十四轮的调度器不推进（isPaused 感知 liveStage.isPausedForDisplay，
+  手动集自然并入）。stopFullscreenWatch 兜底解冻保留手动集。
+
+### 验证
+
+- node --check 五文件通过；离线三风格逐帧对比全绿（见上）；
+- 真机验收项：①动效风格下拉三个选项实际观感（切风格即生效，滑杆值自动重置）；
+  ②桌面右键「暂停 / 继续壁纸」：暂停后 GPU 占用归零、轮播停走，再点恢复；
+  ③暂停状态下右键删除删的就是看见的那张（index 与显示一致的直接验证）。

@@ -512,6 +512,40 @@ async function stepWallpaperAtCursor() {
   return stepWallpaperAt(pt, 1);
 }
 
+/* 手动暂停集（桌面右键「暂停/继续壁纸」）：与 fullscreenWatch 的自动暂停并集生效 */
+const manualPausedDisplays = new Set();
+
+/** 把自动暂停与手动暂停合并后广播（fullscreenWatch 每拍 / 手动切换后都走这里） */
+function broadcastPauseState(pausedIds, away, reasons) {
+  const merged = new Set(pausedIds);
+  const rs = { ...(reasons || {}) };
+  for (const id of manualPausedDisplays) {
+    merged.add(id);
+    rs[id] = 'manual';
+  }
+  liveStage.applyPauseState({ pausedIds: [...merged], away, reasons: rs });
+}
+
+/**
+ * 桌面右键「暂停 / 继续壁纸」：切换光标所在那块屏的手动暂停。
+ * 暂停 = 渲染冻结（rAF 停、GPU 归零）+ 调度器该屏不推进（isPaused 感知）。
+ */
+async function togglePauseAtCursor() {
+  const at = await channelAtCursor();
+  if (!at.ok) {
+    send('notice', { text: `${at.text}，暂停不了`, error: true });
+    return { ok: false, error: at.text };
+  }
+  const { id, label } = at;
+  const paused = !manualPausedDisplays.has(id);
+  if (paused) manualPausedDisplays.add(id);
+  else manualPausedDisplays.delete(id);
+  broadcastPauseState([], false, {});   // 手动切换立即生效（不等 fullscreenWatch 下拍）
+  console.log(`[desktop-menu] ${paused ? '暂停' : '继续'} ${label}（手动）`);
+  send('notice', { text: `${label} 壁纸已${paused ? '暂停' : '恢复'}` });
+  return { ok: true, channelId: id, label, paused };
+}
+
 /**
  * 删掉「光标所在那块屏」正在轮播的那张 —— 桌面右键菜单「删除当前显示器的壁纸」。
  */
@@ -549,6 +583,7 @@ function runDesktopMenuAction(item) {
   switch (item.key) {
     case 'next': return stepWallpaperAtCursor();
     case 'delete': return deleteWallpaperAtCursor();
+    case 'pause': return togglePauseAtCursor();
     default:
       console.warn('[desktop-menu] 不认识的菜单项:', item.key);
       return Promise.resolve({ ok: false, error: `不认识的菜单项：${item.key}` });
@@ -1169,14 +1204,16 @@ function startFullscreenWatch() {
       };
     },
     onTick: ({ pausedIds, away, reasons }) => {
-      liveStage.applyPauseState({ pausedIds, away, reasons });
+      // 手动暂停（桌面右键「暂停/继续壁纸」）在 broadcastPauseState 里并集：
+      // fullscreenWatch 每 2s 重发全量状态，必须在这里合并才不会被覆盖掉。
+      broadcastPauseState(pausedIds, away, reasons);
     },
   });
 }
 
 function stopFullscreenWatch() {
   fullscreenWatch.stop();
-  liveStage.applyPauseState({ pausedIds: [], away: false });   // 兜底解冻
+  broadcastPauseState([], false, {});   // 兜底解冻（手动暂停集保留，继续生效）
 }
 
 /* ---------------------------------------------------------------- 深度预取 */

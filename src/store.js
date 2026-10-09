@@ -262,6 +262,7 @@ const PROFILE_KEYS = [
   'flowIso',                   // 流模式斜视角（0.6）
   'flowSteady',                // 流模式背景稳定点（0.3）
   'flowHeight',                // 流模式视差强度主旋钮（0.2）
+  'flowStyle',                 // 流模式动效轨迹：circle/orbital/dolly（不写 = circle）
   'flowQuality',               // 流模式 POM 步进质量 0.15~1（0.5=CLI 默认，低=省 GPU）
 ];
 

@@ -63,6 +63,13 @@ const ITEMS = [
     arg: '--delete-wallpaper-at-cursor',
     sortOrder: 20,
   },
+  {
+    key: 'pause',
+    keyName: 'WallpaperSwitcherDesktopPause',
+    label: '暂停 / 继续壁纸',
+    arg: '--toggle-pause-wallpaper',
+    sortOrder: 15,
+  },
 ];
 
 /** 图标：开发态直接用仓库里的 .ico（比 electron.exe 的图标好看），打包态用 exe 自带 */
