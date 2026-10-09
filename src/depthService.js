@@ -234,12 +234,9 @@ function lookup(entryPath) {
   if (!trio) return null;
   if (fs.existsSync(trio.depth)) {
     state.stats.hits += 1;
-    // 图层分割回填：老缓存只有 depth —— 缺 mask/bg 就补（worker 走 depth_in
-    // 复用现有深度图，不重跑模型，秒级）。素材只积累，不影响本次返回值。
-    if (!fs.existsSync(trio.mask) || !fs.existsSync(trio.bg)) {
-      enqueue({ path: entryPath, out: trio.depth, out_mask: trio.mask, out_bg: trio.bg,
-        depth_in: trio.depth });
-    }
+    // 第九轮：图层分割方向已放弃（第六/八轮两连败，贴纸感无法接受），
+    // 停掉老缓存的 mask/bg 回填 —— 别让它空烧 GPU。新图生成仍顺带产出
+    // 三件套（worker 侧 additive，成本可忽略），素材留档不删。
     // ⚠️ 返回契约=深度图路径字符串（渲染端第五轮版本按字符串用；
     // 第七轮曾误返 {depth,mask,bg} 对象导致 GL 深度路径整体失效、视差全没）
     return trio.depth;
