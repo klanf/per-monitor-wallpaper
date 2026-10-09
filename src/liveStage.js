@@ -123,13 +123,19 @@ function applyPauseState({ pausedIds, away, reasons } = {}) {
       } catch { /* 窗口正在销毁 */ }
     }
   }
+  // 诊断：暂停集 vs 每块舞台实际挂的 displayId —— 两者对不上就是「点了暂停
+  // 舞台照转」的实锤（2026-10-09 用户报暂停无效，日志里暂停集正常但看不到
+  // 舞台侧是否命中，把这层照亮）。
+  const stageIds = [...new Set([...stages.values()].map((r) => r.displayId).filter((id) => id != null))];
   if (pauseDisplays.size || pauseAway) {
     console.log(`[live-stage] 暂停：display=[${[...pauseDisplays]}] away=${pauseAway}`,
       Object.keys(reasons || {}).length ? JSON.stringify(reasons) : '');
-    debugLog.dlog('pause', `暂停 display=[${[...pauseDisplays]}] away=${pauseAway} ${JSON.stringify(reasons || {})}`);
+    debugLog.dlog('pause', `暂停 display=[${[...pauseDisplays]}] away=${pauseAway} ` +
+      `stages=[${stageIds.join(',')}] 命中=[${[...stages.values()].map((r) => pauseDisplays.has(r.displayId)).join(',')}] ` +
+      `${JSON.stringify(reasons || {})}`);
   } else {
     console.log('[live-stage] 暂停解除：全部舞台恢复');
-    debugLog.dlog('pause', '暂停解除：全部舞台恢复');
+    debugLog.dlog('pause', `暂停解除：全部舞台恢复 stages=[${stageIds.join(',')}]`);
   }
 }
 
@@ -190,6 +196,12 @@ async function createStage(ch) {
     const b = sb.dip;
     rec.bounds = b;
     rec.boundsPhys = sb.phys;
+    // ⚠️ displayId 必须写入 rec —— applyPauseState / isChannelFrozen 都用
+    // rec.displayId 对号入座，漏写的话拿到的是 undefined，pauseDisplays.has
+    // (undefined) 恒 false：**任何暂停（全屏/挂机/手动）在舞台层都永不生效**。
+    // 这正是 49 轮实锤修过的断点（0f4e8ba），10-09 重建 live 树时弄丢了，
+    // 2026-10-09 用户再报「桌面暂停没用」才重新抓到（诊断日志 stages=[] 命中=[false,false]）。
+    rec.displayId = sb.displayId;
     const win = new BrowserWindow({
       x: b.x, y: b.y, width: b.width, height: b.height,
       show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）

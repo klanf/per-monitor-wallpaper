@@ -3863,3 +3863,47 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
   结论要以日志条目为准，不能只看最终状态。
 - 本轮死过一次实例，复现排查确认是测试工具误伤（幽灵执行 + timeout 击杀），
   重启后纯观察 55 秒稳定运行，非应用缺陷。
+
+## 深度视差第十七轮：暂停真凶 = rec.displayId 丢失（历史修复被重建弄丢）+ 设置页补「暂停/继续」开关（2026-10-09 21:2x）
+
+### 现象（用户复报）
+
+1. 桌面右键「暂停 / 继续壁纸」还是没用；
+2. 设置里没有控制「桌面右键暂停/继续」的开关吗？
+
+### 根因
+
+- **暂停无效真凶**：`createStage` 建的舞台记录 `{ win, hwnd, anchor, bounds, boundsPhys, degraded, fails, creating }`
+  **从来没有 displayId 字段** —— `applyPauseState` 用 `rec.displayId` 对号入座拿到的是
+  undefined，`pauseDisplays.has(undefined)` 恒 false，**任何暂停（全屏/挂机/手动）在舞台层
+  从未生效过**。这正是 49 轮实锤修过的断点（0f4e8ba「修暂停体系第二个断点」），
+  10-09 重建 live 树时该修复丢失，第十六轮修好路由+id 口径后才暴露出这第三层。
+- 诊断盲区：切换动作只 console.log（GUI 子系统 stdout 接不住，dev.log 0 字节），
+  live-debug.log 里看不到「一次点击翻两次」还是「舞台对不上」。
+- 问题 2：第十五轮给 shellMenu 加 pause 菜单项时，设置页只补了 UI 的一半——
+  `cfg-desktop-menu-next/delete` 有开关，pause 没补（shellMenu/statusAll/IPC 全都支持）。
+
+### 改动
+
+- **liveStage.js**：①恢复历史修复 `rec.displayId = sb.displayId`（0f4e8ba 同款）；②
+  applyPauseState 诊断日志带 `stages=[displayId...] 命中=[true/false...]`——暂停集与
+  舞台是否对上从此一眼可见；
+- **main.js**：①togglePauseAtCursor/runDesktopMenuAction 动作落盘 dlog（入口 key、
+  pausedId、手动集变化）；②uncaughtException/unhandledRejection 补 dlog 落盘
+  （stdout 接不住，异常现场全丢的教训）；③before-quit 记退出原因（分辨托盘退出 /
+  window-all-closed / 异常）；
+- **stage.js**：setFrozen 实际变化时 slog「冻结（rAF 停）/恢复（rAF 续）」→ 经
+  console-message 转发可见，渲染端是否收到 stage:pause 从此有据可查；
+- **index.html / app.js**：桌面右键菜单设置补第三个开关 `cfg-desktop-menu-pause`
+  （暂停 / 继续壁纸，图标两竖线），三处接线（事件绑定 / 状态回填 / 提示文案改三项）。
+
+### 验证
+
+- node --check 五文件通过；
+- 端到端：注册表同款命令触发 → `[pause] 暂停 display=[1998535732] stages=[1998535732,532850581]
+  命中=[true,false]` + `[stage] stage:pause → 冻结（rAF 停）` —— 舞台层冻结首次真机实锤；
+- 诊断日志同时抓到测试命令幽灵双执行（20.8s 后多翻一次），状态以日志为准；
+- 实例三连「安静消失」复盘：纯观察 3 分钟稳定存活（tick 正常），非应用缺陷，
+  系测试命令抢锁/timeout 击杀连锁；另实锤 20:43:34 用户会话「动态桌面已停止」
+  （用户在设置里找暂停开关时疑似关掉了动态桌面 → app 正常退出）；
+- 注意：launch-dev.py 启动的实例 cmdline 是 `electron.exe .`，psutil 判定要认这个形态。

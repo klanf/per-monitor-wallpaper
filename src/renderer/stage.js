@@ -938,6 +938,7 @@ function ensureRaf() {
 function setFrozen(next) {
   if (frozen === Boolean(next)) return;
   frozen = Boolean(next);
+  slog('stage:pause →', frozen ? '冻结（rAF 停）' : '恢复（rAF 续）');
   if (frozen) {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     if (activeVideo) activeVideo.pause();          // 视频壁纸跟着冻结

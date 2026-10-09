@@ -2396,9 +2396,13 @@ function bindSettings() {
   $('btn-del-current').addEventListener('click', deleteCurrentImage);
 
   // ---- 桌面右键菜单 ----
-  // 两项（切下一张 / 删除）各自一个开关，各自读写自己那条注册表项。
+  // 三项（切下一张 / 暂停继续 / 删除）各自一个开关，各自读写自己那条注册表项。
   // 不是所有人都想要「删除」摆在桌面右键上——误点的代价比多点一下大得多。
-  for (const [key, el] of [['next', $('cfg-desktop-menu-next')], ['delete', $('cfg-desktop-menu-delete')]]) {
+  for (const [key, el] of [
+    ['next', $('cfg-desktop-menu-next')],
+    ['pause', $('cfg-desktop-menu-pause')],
+    ['delete', $('cfg-desktop-menu-delete')],
+  ]) {
     el.addEventListener('change', async (e) => {
       const on = e.target.checked;
       e.target.disabled = true;
@@ -2696,7 +2700,11 @@ async function refreshDesktopMenu() {
 }
 
 function applyDesktopMenuStatus(status) {
-  const boxes = { next: $('cfg-desktop-menu-next'), delete: $('cfg-desktop-menu-delete') };
+  const boxes = {
+    next: $('cfg-desktop-menu-next'),
+    pause: $('cfg-desktop-menu-pause'),
+    delete: $('cfg-desktop-menu-delete'),
+  };
   const hint = $('desktop-menu-hint');
   const list = Object.values(boxes).filter(Boolean);
   if (!list.length) return;
@@ -2721,7 +2729,7 @@ function applyDesktopMenuStatus(status) {
     hint.textContent = status.stale
       ? '注册的命令行和当前程序位置对不上（多半是挪过目录）——'
         + '关掉再打开一次这个开关就会重写。'
-        + 'Windows 11 里这两项在桌面右键的「显示更多选项」下面。'
+        + 'Windows 11 里这几项在桌面右键的「显示更多选项」下面。'
       : hint.dataset.defaultText;
   }
 }

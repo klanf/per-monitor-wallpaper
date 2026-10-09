@@ -316,6 +316,20 @@
             <span class="rich-hint">桌面右键——把光标那块屏的壁纸往后拨一张</span>
           </span>
         </label>
+        <label class="check rich" for="cfg-desktop-menu-pause">
+          <input type="checkbox" id="cfg-desktop-menu-pause">
+          <span class="rich-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 5v14"></path>
+              <path d="M15 5v14"></path>
+            </svg>
+          </span>
+          <span class="rich-text">
+            <span class="rich-title">暂停 / 继续壁纸</span>
+            <span class="rich-hint">桌面右键——冻结光标那块屏的动态壁纸（视差/视频停帧），再点一次恢复</span>
+          </span>
+        </label>
         <label class="check rich" for="cfg-desktop-menu-delete">
           <input type="checkbox" id="cfg-desktop-menu-delete">
           <span class="rich-icon" aria-hidden="true">
@@ -333,8 +347,8 @@
           </span>
         </label>
         <div class="field-hint" id="desktop-menu-hint">
-          两项都按光标所在的那块屏生效：光标停在哪块屏，就动哪块屏的壁纸，别的屏不碰。
-          写的是当前用户（HKCU），不需要管理员权限。Windows 11 里这两项在桌面右键的「显示更多选项」下面。
+          三项都按光标所在的那块屏生效：光标停在哪块屏，就动哪块屏的壁纸，别的屏不碰。
+          写的是当前用户（HKCU），不需要管理员权限。Windows 11 里这三项在桌面右键的「显示更多选项」下面。
         </div>
       </div>
 

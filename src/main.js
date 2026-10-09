@@ -54,6 +54,7 @@ const CACHE_DIR = path.join(os.tmpdir(), 'electron-wallpaper-cache');
 // 但启动流程断在半路，表象就是「功能没起来又没有报错」，极难排查。
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandled-rejection]', reason && reason.stack ? reason.stack : reason);
+  try { require('./debugLog').dlog('crash', 'unhandledRejection: ' + (reason && reason.stack ? reason.stack : String(reason))); } catch (_) {}
 });
 
 /*
@@ -64,9 +65,13 @@ process.on('unhandledRejection', (reason) => {
  * 壁纸应用的「模态框」弹在用户桌面上就是画面静止，比异常本身严重。
  * 这类异常多半是单次竞态，主进程的事件循环和定时器都还活着，记下现场
  * 继续跑是正确的降级（根因照样在 stageProtocol 里修）。
+ *
+ * ⚠️ 必须 dlog 落盘而不只 console.error：GUI 子系统 stdout 接不住
+ * （dev.log 恒 0 字节），2026-10-09 晚实例三连消失、现场全丢的教训。
  */
 process.on('uncaughtException', (err) => {
   console.error('[uncaught-exception] 继续运行:', err && err.stack ? err.stack : err);
+  try { require('./debugLog').dlog('crash', 'uncaughtException(继续运行): ' + (err && err.stack ? err.stack : String(err))); } catch (_) {}
 });
 
 /*
@@ -592,6 +597,10 @@ async function togglePauseAtCursor() {
   const paused = !manualPausedDisplays.has(pausedId);
   if (paused) manualPausedDisplays.add(pausedId);
   else manualPausedDisplays.delete(pausedId);
+  // 切换动作落盘：console.log 只进 stdout（GUI 子系统接不住），这里必须
+  // dlog 才能进 live-debug.log —— 没有它就无法区分「一次点击翻两次」和
+  // 「暂停集与舞台对不上」（2026-10-09 用户报暂停无效时的诊断盲区）。
+  debugLog.dlog('desktop-menu', `${paused ? '暂停' : '继续'} pausedId=${pausedId} label=${label} 手动集=[${[...manualPausedDisplays]}]`);
   broadcastPauseState([], false, {});   // 手动切换立即生效（不等 fullscreenWatch 下拍）
   console.log(`[desktop-menu] ${paused ? '暂停' : '继续'} ${label}（手动，pausedId=${pausedId}）`);
   send('notice', { text: `${label} 壁纸已${paused ? '暂停' : '恢复'}` });
@@ -632,6 +641,7 @@ async function deleteWallpaperAtCursor() {
  * 免得两条路径各写一份 switch、加菜单项时漏改一处。
  */
 function runDesktopMenuAction(item) {
+  debugLog.dlog('desktop-menu', `入口 key=${item && item.key}（second-instance 转发或启动补办）`);
   switch (item.key) {
     case 'next': return stepWallpaperAtCursor();
     case 'delete': return deleteWallpaperAtCursor();
@@ -2054,6 +2064,11 @@ if (!gotLock) {
    */
   let anchorFlushed = false;
   app.on('before-quit', (event) => {
+    // 退出原因落盘：实例「安静消失」时分辨托盘退出 / window-all-closed / 异常
+    // （2026-10-09 晚实例三连消失、事件日志无崩溃记录、dev.log 0 字节的排查盲区）
+    try {
+      debugLog.dlog('lifecycle', `before-quit quitting=${quitting} live=${store && store.get().liveWallpaper} running=${liveStage.stats().running}`);
+    } catch (_) {}
     quitting = true;
     // 只在「动态桌面开且舞台正在跑」时才需要补写：没开过、或刚关掉
     // （applyConfigChange 已补写过）、或舞台降级中（每轮都在写，桌面已是最新）都放行
