@@ -11,7 +11,8 @@
  * ---------------------------------------------------------------------------
  *   频道（perMonitor 模式下每台显示器一路） → 一块 stage 窗口 → 挂到
  *   持有 SHELLDLL_DefView 的窗口（本机 = Progman，见 desktopHost.js 头注释）。
- *   unified 频道（monitorId=null，要盖整个虚拟桌面）阶段 2 再接，这里跳过。
+ *   unified 频道（monitorId=null）展开成每块显示器一块伪舞台，同步播同一张
+ *   （r23 起；此前「阶段 2 再接」实际从未接 → 切统一配置舞台全灭）。
  *
  * ---------------------------------------------------------------------------
  * 三条实测结论铸成的规矩（任务书 §2.13~§2.16）
@@ -98,6 +99,23 @@ function stageBounds(ch) {
   };
   // displayId 也要带出去：全屏暂停按「显示器」算（fullscreenWatch 的判定单位
   // 是 Electron display），stage 窗口必须知道自己挂在哪块屏才知道听不听暂停
+  return { dip, phys, displayId: disp.id };
+}
+
+/**
+ * 直接从 Electron Display 算舞台 bounds（统一频道的每屏伪舞台用）：
+ * 统一频道没有 monitor 几何（width=0），走不了 displayForMonitor 的尺寸匹配，
+ * 但我们手里本来就攥着 Electron Display，直接用，连匹配都省了。
+ */
+function stageBoundsFromDisplay(disp) {
+  const dip = { x: disp.bounds.x, y: disp.bounds.y, width: disp.bounds.width, height: disp.bounds.height };
+  const sf = disp.scaleFactor || 1;
+  const phys = {
+    x: Math.round(dip.x * sf),
+    y: Math.round(dip.y * sf),
+    w: Math.round(dip.width * sf),
+    h: Math.round(dip.height * sf),
+  };
   return { dip, phys, displayId: disp.id };
 }
 
@@ -214,7 +232,8 @@ async function createStage(ch) {
   const rec = { win: null, hwnd: 0, anchor: null, bounds: null, boundsPhys: null, degraded: false, fails: 0, creating: true };
   stages.set(ch.id, rec);
   try {
-    const sb = stageBounds(ch);
+    // 统一频道的每屏伪舞台直接带 Electron Display（ch._display），不用再几何匹配
+    const sb = ch._display ? stageBoundsFromDisplay(ch._display) : stageBounds(ch);
     const b = sb.dip;
     rec.bounds = b;
     rec.boundsPhys = sb.phys;
@@ -276,7 +295,9 @@ async function createStage(ch) {
     // bind 带上初始暂停态：轮询事件只在「变化」时发，晚创建的窗口若只等
     // 事件会错过当前状态（zm 的 get_wallpaper_media 补拉同款问题）
     win.webContents.send('stage:bind', {
-      channelId: ch.id,
+      // 统一频道的每屏伪舞台（id=`__unified__#displayId`）必须认领**逻辑频道 id**
+      // —— 渲染端按 payload.id !== myChannel 过滤 tick，认领了伪 id 就一口都吃不到
+      channelId: ch.channelId || ch.id,
       monitorId: ch.monitorId,
       paused: isPausedForDisplay(sb.displayId),
     });
@@ -391,7 +412,9 @@ function stop() {
 
 /**
  * 频道列表 → stage 窗口增删（channels:changed / 启动时调用）。
- * unified 频道（monitorId=null、width=0）阶段 2 再支持，这里跳过。
+ * 统一频道（monitorId=null、width=0 的伪频道）展开成**每块显示器一块舞台**，
+ * 全部认领同一条 channel:tick（r23 之前直接跳过 → 切回统一配置所有舞台被
+ * 销毁又不建新的，用户实锤「轮播切统一模式，舞台就关闭了」）。
  */
 function syncTo(channels) {
   if (!running) return;
@@ -403,11 +426,25 @@ function syncTo(channels) {
      * 「动态桌面开 + 不写系统壁纸」（完全替代模式）下所有频道都是
      * enabled=false，若在这里跳过，舞台永远不会出现，模式直接失效。
      * 舞台只由 liveWallpaper 总开关控制（start 只在它为真时被调用）；
-     * width=0（unified 伪频道）与 count=0（空相簿）照旧跳过。
-     * 每屏单独退出（monitors[id].enabled=false）与动态桌面叠加的
-     * 语义留到阶段 2 再定义。
+     * count=0（空相簿）照旧跳过。
      */
-    if (!ch || ch.width === 0 || ch.count === 0) { expectedChannels.delete(ch ? ch.id : ''); continue; }
+    if (!ch || ch.count === 0) { expectedChannels.delete(ch ? ch.id : ''); continue; }
+    if (ch.width === 0) {
+      /*
+       * 统一频道 → 每块显示器一块伪舞台（key=`${频道id}#${displayId}`）。
+       * 伪频道对象带 channelId（逻辑 id，bind 用）与 _display（Electron
+       * Display，bounds/displayId 直接取，不走几何匹配）。tick 广播本来就
+       * 发给所有舞台，渲染端按 channelId 认领 —— 多块屏同步播同一张，天然成立。
+       */
+      for (const disp of screen.getAllDisplays()) {
+        const key = `${ch.id}#${disp.id}`;
+        const pseudo = { ...ch, id: key, channelId: ch.id, _display: disp };
+        wanted.add(key);
+        expectedChannels.set(key, pseudo);
+        if (!stages.has(key)) createStage(pseudo);   // 异步；creating 标记防重复
+      }
+      continue;
+    }
     wanted.add(ch.id);
     expectedChannels.set(ch.id, ch);
     const existing = stages.get(ch.id);

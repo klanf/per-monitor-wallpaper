@@ -268,7 +268,9 @@ const PROFILE_KEYS = [
   'todPool',                   // 时段滤镜随机池（r21）：空数组 = 全部参与
   // ---- 深度视差（第十一轮起进设置面板；不写 = stage.js 内置默认）----
   'depthParallax',             // 深度视差总开关
-  'depthFlow',                 // DepthFlow POM 流模式开关
+  // depthFlow 键已退役（r23）：流动模式恒开（用户实测关掉效果非常差）。
+  // 从 PROFILE_KEYS 移除 = resolveProfile 不再透传 → applyProfile 收不到
+  // → stage 恒走内置默认 true（POM 流模式）；旧配置里的残留值无人读取，无害。
   'depthAmp',                  // 单平面视差幅度
   'depthDrift',                // 自动漂移速度倍率
   'depthLight',                // 灯光强度
@@ -406,7 +408,6 @@ const BOOL_KEYS = new Set([
   'videoPlayFull',
   'videoOptimize',
   'depthParallax',             // 深度视差总开关（不写 = 默认开）
-  'depthFlow',                 // DepthFlow 流模式开关（不写 = 默认开）
   'todRandom',                 // 时段滤镜随机开关（r21）
 ]);
 

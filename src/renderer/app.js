@@ -1324,6 +1324,22 @@ function flowStyleOptions(value) {
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
 }
 
+/** 每屏卡片深度视差三态下拉（r23）：''=跟随全局 / true=开启 / false=关闭（多屏全开 GPU 吃不消，按屏关） */
+function depthOptions(value) {
+  const sel = (v) => (value === v ? ' selected' : '');
+  return `<option value=""${sel('')}>跟随全局</option>`
+    + `<option value="on"${sel('on')}>开启</option>`
+    + `<option value="off"${sel('off')}>关闭</option>`;
+}
+
+/** 这块屏深度视差的生效值（覆盖优先；true/false/null） */
+function resolvedDepth(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (ov.depthParallax === true || ov.depthParallax === false) return ov.depthParallax;
+  return cfg.depthParallax !== false;
+}
+
 function albumOf(id) {
   return state.albums.find((a) => a.id === id) || null;
 }
@@ -1486,8 +1502,9 @@ function cardHtml(ch) {
         <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；烟花数量内置（最多同时 5 发）。</div>
       </div>
       <div class="mc-block">
-        <label class="field-label">深度视差风格</label>
-        <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹（有深度图的壁纸生效）；跟随全局 = 用「外观」页里的全局设置">${flowStyleOptions(ov.flowStyle)}</select>
+        <label class="field-label">深度视差</label>
+        <select class="select sm" data-field="depthParallax" title="这块屏要不要开深度视差（有深度图的壁纸生效）；跟随全局 = 用「外观」页里的总开关。多屏全开 GPU 消耗大，可以只给主力屏开">${depthOptions(ov.depthParallax === true ? 'on' : ov.depthParallax === false ? 'off' : '')}</select>
+        <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹"${resolvedDepth(id) ? '' : ' style="display:none"'}>${flowStyleOptions(ov.flowStyle)}</select>
       </div>
     </div>
   </div>`;
@@ -1549,6 +1566,7 @@ async function copyMonitorProfile() {
     particles: ov.particles !== undefined ? ov.particles : null,
     particleCount: ov.particleCount !== undefined ? ov.particleCount : null,
     flowStyle: ov.flowStyle !== undefined ? ov.flowStyle : null,
+    depthParallax: ov.depthParallax !== undefined ? ov.depthParallax : null,
   };
   const others = state.channels.filter((c) => c.id !== src.id);
   for (const ch of others) await pushProfile(ch.id, patch);
@@ -2183,7 +2201,6 @@ function applyConfigToUI() {
 
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
   $('cfg-depth-parallax').checked = c.depthParallax !== false;
-  $('cfg-depth-flow').checked = c.depthFlow !== false;
   const flowKeys = [
     ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', 0.5, (v) => v.toFixed(2)],
     ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', 1.0, (v) => `${v.toFixed(1)}×`],
@@ -2579,11 +2596,8 @@ function bindSettings() {
     await save({ depthParallax: e.target.checked });
     toast(e.target.checked ? '深度视差已开启' : '深度视差已关闭（回退普通平移缩放）');
   });
-  $('cfg-depth-flow').addEventListener('change', async (e) => {
-    updateDepthDisabled();
-    await save({ depthFlow: e.target.checked });
-    toast(e.target.checked ? 'DepthFlow 流动模式已开启' : '已回退单平面左右平移视差');
-  });
+  // （DepthFlow 流动模式开关已移除（r23）：恒开 —— 用户实测关掉效果非常差，
+  //   没有存在的价值；store 层也不再读写 depthFlow 键）
   const FLOW_SLIDERS = [
     ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', '流动幅度', (v) => v.toFixed(2)],
     ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', '漂移速度', (v) => `${v.toFixed(1)}×`],
@@ -2914,6 +2928,13 @@ function bindSettings() {
         // 深度视差风格覆盖（r22）：'' = 跟随全局（null 删除覆盖回落顶层）
         const v = e.target.value;
         await pushProfile(id, { flowStyle: v === '' ? null : v });
+        state.config = await window.wp.getConfig();
+        renderCards();
+      } else if (field === 'depthParallax') {
+        // 深度视差每屏开关（r23）：''=跟随全局（null 删覆盖）/ on=true / off=false；
+        // 选「开启」时风格下拉才出现（renderCards 重画后按 resolvedDepth 决定）
+        const v = e.target.value;
+        await pushProfile(id, { depthParallax: v === 'on' ? true : v === 'off' ? false : null });
         state.config = await window.wp.getConfig();
         renderCards();
       }
