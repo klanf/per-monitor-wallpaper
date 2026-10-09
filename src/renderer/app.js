@@ -2067,6 +2067,22 @@ function applyConfigToUI() {
   $('cfg-breath').checked = c.breath === true;
   $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
 
+  // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
+  $('cfg-depth-parallax').checked = c.depthParallax !== false;
+  $('cfg-depth-flow').checked = c.depthFlow !== false;
+  const flowKeys = [
+    ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', 0.5, (v) => v.toFixed(2)],
+    ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', 1.0, (v) => `${v.toFixed(1)}×`],
+    ['cfg-flow-iso', 'cfg-flow-iso-out', 'flowIso', 0.6, (v) => v.toFixed(2)],
+    ['cfg-flow-steady', 'cfg-flow-steady-out', 'flowSteady', 0.3, (v) => v.toFixed(2)],
+    ['cfg-flow-height', 'cfg-flow-height-out', 'flowHeight', 0.2, (v) => v.toFixed(2)],
+  ];
+  for (const [inId, outId, key, dflt, fmt] of flowKeys) {
+    const v = Number.isFinite(c[key]) ? c[key] : dflt;
+    $(inId).value = v;
+    $(outId).textContent = fmt(v);
+  }
+
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
   $('cfg-close-to-tray').checked = c.closeToTray !== false;
@@ -2271,6 +2287,33 @@ function bindSettings() {
     await save({ breath: e.target.checked });
     toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
   });
+
+  // ---- 深度视差（第十一轮）----
+  $('cfg-depth-parallax').addEventListener('change', async (e) => {
+    await save({ depthParallax: e.target.checked });
+    toast(e.target.checked ? '深度视差已开启' : '深度视差已关闭（回退普通平移缩放）');
+  });
+  $('cfg-depth-flow').addEventListener('change', async (e) => {
+    await save({ depthFlow: e.target.checked });
+    toast(e.target.checked ? 'DepthFlow 流动模式已开启' : '已回退单平面左右平移视差');
+  });
+  const FLOW_SLIDERS = [
+    ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', '流动幅度', (v) => v.toFixed(2)],
+    ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', '漂移速度', (v) => `${v.toFixed(1)}×`],
+    ['cfg-flow-iso', 'cfg-flow-iso-out', 'flowIso', '斜视角', (v) => v.toFixed(2)],
+    ['cfg-flow-steady', 'cfg-flow-steady-out', 'flowSteady', '背景稳定', (v) => v.toFixed(2)],
+    ['cfg-flow-height', 'cfg-flow-height-out', 'flowHeight', '视差强度', (v) => v.toFixed(2)],
+  ];
+  for (const [inId, outId, key, label, fmt] of FLOW_SLIDERS) {
+    const input = $(inId);
+    input.addEventListener('input', () => {
+      $(outId).textContent = fmt(Number(input.value));
+    });
+    input.addEventListener('change', async () => {
+      await save({ [key]: Number(input.value) });
+      toast(`${label}：${fmt(Number(input.value))}`);
+    });
+  }
 
   const TOD_LABEL = {
     morning: '早晨 · 暖金斜阳', noon: '中午 · 顶光通透', overcast: '阴天 · 灰蓝低饱和',

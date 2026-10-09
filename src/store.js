@@ -252,6 +252,16 @@ const PROFILE_KEYS = [
   'videoPlayFull',             // 视频播完再切下一张（不写 = 默认关，按 interval 定时切）
   'breath',                    // 呼吸缩放特效（不写 = 默认关；与 Ken Burns 叠加）
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
+  // ---- 深度视差（第十一轮起进设置面板；不写 = stage.js 内置默认）----
+  'depthParallax',             // 深度视差总开关
+  'depthFlow',                 // DepthFlow POM 流模式开关
+  'depthAmp',                  // 单平面视差幅度
+  'depthDrift',                // 自动漂移速度倍率
+  'depthLight',                // 灯光强度
+  'flowIntensity',             // 流模式轨迹幅度（Circle 预设 0.5）
+  'flowIso',                   // 流模式斜视角（0.6）
+  'flowSteady',                // 流模式背景稳定点（0.3）
+  'flowHeight',                // 流模式视差强度主旋钮（0.2）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */
@@ -379,6 +389,8 @@ const BOOL_KEYS = new Set([
   'liveWallpaper',
   'videoPlayFull',
   'videoOptimize',
+  'depthParallax',             // 深度视差总开关（不写 = 默认开）
+  'depthFlow',                 // DepthFlow 流模式开关（不写 = 默认开）
 ]);
 
 /** 热键字段：值必须是非空字符串或空串，别让 undefined / 数字混进来 */

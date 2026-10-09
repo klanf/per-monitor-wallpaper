@@ -403,6 +403,42 @@
         <div class="field-hint">手势在桌面空白处起手才生效；注意横向橡皮筋框选、横向拖图标同形，也会触发切图，嫌烦就关。</div>
       </div>
 
+      <!-- ---------------------------------------------------------- 深度视差 -->
+      <div class="field">
+        <label class="field-label">深度视差（动态桌面 · 有深度图的壁纸生效）</label>
+        <label class="check"><input type="checkbox" id="cfg-depth-parallax"><span>深度视差总开关（关掉后全部回退普通平移缩放）</span></label>
+        <label class="check"><input type="checkbox" id="cfg-depth-flow"><span>DepthFlow 流动模式（电影感镜头环绕，替代左右平移）</span></label>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 84px">流动幅度</span>
+          <input type="range" id="cfg-flow-intensity" min="0.1" max="1" step="0.05">
+          <output class="field-value" id="cfg-flow-intensity-out">0.5</output>
+        </div>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 84px">漂移速度</span>
+          <input type="range" id="cfg-depth-drift" min="0.2" max="3" step="0.1">
+          <output class="field-value" id="cfg-depth-drift-out">1.0×</output>
+        </div>
+        <details>
+          <summary class="field-label">进阶参数（默认 = DepthFlow Circle 预设，一般不用动）</summary>
+          <div class="field-row" style="margin-top:6px">
+            <span class="field-label" style="flex:0 0 84px">斜视角</span>
+            <input type="range" id="cfg-flow-iso" min="0" max="1" step="0.05">
+            <output class="field-value" id="cfg-flow-iso-out">0.6</output>
+          </div>
+          <div class="field-row">
+            <span class="field-label" style="flex:0 0 84px">背景稳定</span>
+            <input type="range" id="cfg-flow-steady" min="0" max="1" step="0.05">
+            <output class="field-value" id="cfg-flow-steady-out">0.3</output>
+          </div>
+          <div class="field-row">
+            <span class="field-label" style="flex:0 0 84px">视差强度</span>
+            <input type="range" id="cfg-flow-height" min="0.05" max="0.5" step="0.05">
+            <output class="field-value" id="cfg-flow-height-out">0.2</output>
+          </div>
+        </details>
+        <div class="field-hint">没有深度图的壁纸自动走普通模式；鼠标在桌面移动会临时接管镜头。改「进阶参数」后若画面怪异，把三个值调回 0.6 / 0.3 / 0.2 即可。</div>
+      </div>
+
       <!-- ---------------------------------------------------------- 后台驻留 -->
       <div class="field">
         <label class="field-label">后台驻留</label>

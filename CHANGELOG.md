@@ -3635,3 +3635,41 @@ Circle 预设出片通过。给用户对比 A（离线视频壁纸：实测 1440
 - node --check 通过；5 相位离线帧差 ≈2.5（噪声级）；
 - 并排对比视频 compare_loop.mp4（左原版/右移植，16 相位循环）用户已认可；
 - 真机重启验收通过（用户 12:2x 反馈「效果很不错的」）。
+
+## 深度视差第十一轮：流模式参数化 + 设置面板入口 + 深度派工瘦身（2026-10-09 17:4x）
+
+### 背景
+
+第十轮落库推送后收尾三件事：①depthFlow 只能靠 profile 手改，进设置面板；
+②Circle 参数（intensity/iso/steady/height）写死在代码里，做成可调；③发现
+depthService 仍在给每张新图派工 mask+bg（ISNet+LaMa 约 6s/张），而渲染端
+（第五轮单平面 / 第十轮 POM flow）零消费 —— 纯浪费。
+
+### 改动
+
+- **stage.js**：`flowSample` 的三个魔法数（0.20/0.30/0.60）提升为 uniform
+  （uFlowHeight/uFlowSteady/uFlowIso）；`glCamFlow` 幅度接 `cfg.flowIntensity`
+  （鼠标接管幅度同源）；cfg 新增四个 flow 键 + applyProfile 接同名 profile 键。
+- **store.js**：`PROFILE_KEYS` 补 depthParallax/depthFlow/depthAmp/depthDrift/
+  depthLight/flowIntensity/flowIso/flowSteady/flowHeight —— 此前视差键在
+  config 层写了也到不了 stage 的 profile（resolveProfile 只拷 PROFILE_KEYS），
+  属潜在断链，本轮一并修通；BOOL_KEYS 补 depthParallax/depthFlow。
+- **设置面板（index.html + app.js）**：新增「深度视差」区块 —— 总开关、
+  DepthFlow 流动模式开关、流动幅度/漂移速度滑杆、进阶折叠区（斜视角/背景
+  稳定/视差强度），改动即存即生效（config:set → rebuild → applyChannels）。
+- **depthService.js**：新图派工只带 `out`（深度），不再派 out_mask/out_bg；
+  worker 的三件套能力保留，复活分层只改 lookup 一处。
+
+### 离线回归抓到一个真 bug
+
+参数化首次跑对比即黑屏（diff≈100）—— shader 里用了 uFlowIso/uFlowSteady/
+uFlowHeight 却没写 uniform 声明，GLSL 编译失败。**真机表现会是静默回退 2D**
+（glInit catch 降级），用户根本看不出坏 —— 离线对比 harness（READBACK +
+dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5（噪声级），
+与第十轮基线一致，参数化未破坏数学。
+
+### 验证
+
+- node --check 四文件通过；
+- 离线逐帧回归 5 相位 ≈2.5（噪声级）；
+- 设置 UI 为真机验收项（面板开关/滑杆 → 桌面实时生效）。

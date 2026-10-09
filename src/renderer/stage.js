@@ -82,6 +82,11 @@ const cfg = {
   depthAmp: 0.07,              // 视差幅度（profile.depthAmp）
   depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
   depthLight: 0.45,            // 灯光强度（profile.depthLight）
+  // ---- DepthFlow 流模式参数（Circle 预设默认值；profile 同名键）----
+  flowIntensity: 0.5,          // 轨迹幅度（0.5 = Circle 预设；鼠标接管幅度同源）
+  flowIso: 0.6,                // 斜视角（越大立体越强、越歪）
+  flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
+  flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
 };
 
 const layers = {
@@ -431,6 +436,9 @@ uniform float uHasDepth;
 uniform float uAlpha;
 uniform float uFlow;       // 1 = DepthFlow POM 模式（C 路线移植）
 uniform vec2  uFlowOff;    // 流模式相机位移（屏幕 gluv 单位，y 向上）
+uniform float uFlowIso;     // 斜视角（cfg.flowIso，Circle 预设 0.6）
+uniform float uFlowSteady;  // 背景稳定点（cfg.flowSteady，预设 0.3）
+uniform float uFlowHeight;  // 视差强度主旋钮（cfg.flowHeight，DepthState 默认 0.2）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -443,9 +451,9 @@ vec4 texMirror(sampler2D tex, vec2 stuv) {
 // 相机：origin 在 z=0 平面按 zoom*isometric 缩放，target 在 z=focal 平面按 zoom 缩放，
 // 与 z=1 深度面求交后，两阶段步进（粗探 overshoot + 细步回退）找视线与深度面的交点。
 vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
-  float height = 0.20;   // DepthState.height 默认（视差强度主旋钮）
-  float steady = 0.30;   // Circle 预设：固定点绕 depth=steady 转动
-  float isom   = 0.60;   // Circle 预设：视线平行分量
+  float height = uFlowHeight;   // 视差强度主旋钮（cfg.flowHeight，默认 0.20=DepthState）
+  float steady = uFlowSteady;   // Circle 预设默认 0.30：固定点绕 depth=steady 转动
+  float isom   = uFlowIso;      // Circle 预设默认 0.60：视线平行分量
   float focal  = 1.0;    // focus=0 → focal_length = 1 - focus*height
   // camera.glsl CameraProject（透视投影）：origin/target 各在 z=0 / z=focal 平面
   vec3 origin = vec3(off + g0 * (isom), 0.0);
@@ -576,7 +584,8 @@ function glInit() {
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
     const U = {};
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
-      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff']) U[n] = gl.getUniformLocation(prog, n);
+      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
+      'uFlowIso', 'uFlowSteady', 'uFlowHeight']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
@@ -659,14 +668,15 @@ function glCam(tSec, nowMs) {
  * y 向下，天然同轴，不再翻。
  */
 function glCamFlow(tSec, nowMs) {
+  const amp = cfg.flowIntensity;   // Circle 预设 0.5；鼠标接管幅度同源
   const cycle = (tSec / 8.0) * Math.PI * 2 * cfg.depthDrift;
-  const ax = Math.cos(cycle) * 0.5;
-  const ay = -Math.sin(cycle) * 0.5;   // DepthFlow offset 是 y 向上，这里 y 向下
+  const ax = Math.cos(cycle) * amp;
+  const ay = -Math.sin(cycle) * amp;   // DepthFlow offset 是 y 向上，这里 y 向下
   const active = nowMs < glState.mouseUntil;
   glState.mouseW += ((active ? 1 : 0) - glState.mouseW) * (active ? 0.10 : 0.02);
   return [
-    ax * (1 - glState.mouseW) + glState.mouse[0] * 0.5 * glState.mouseW,
-    ay * (1 - glState.mouseW) - glState.mouse[1] * 0.5 * glState.mouseW,
+    ax * (1 - glState.mouseW) + glState.mouse[0] * amp * glState.mouseW,
+    ay * (1 - glState.mouseW) - glState.mouse[1] * amp * glState.mouseW,
   ];
 }
 
@@ -690,6 +700,9 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.uniform1f(glState.U.uFlow, cfg.depthFlow ? 1 : 0);
   gl.uniform2f(glState.U.uFlowOff, cam[0], cam[1]);
+  gl.uniform1f(glState.U.uFlowIso, cfg.flowIso);
+  gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
+  gl.uniform1f(glState.U.uFlowHeight, cfg.flowHeight);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -1069,6 +1082,11 @@ function applyChannelConfig() {
   if (Number.isFinite(p.depthAmp)) cfg.depthAmp = p.depthAmp;
   if (Number.isFinite(p.depthDrift)) cfg.depthDrift = p.depthDrift;
   if (Number.isFinite(p.depthLight)) cfg.depthLight = p.depthLight;
+  // DepthFlow 流模式参数（不写 = Circle 预设默认）
+  if (Number.isFinite(p.flowIntensity)) cfg.flowIntensity = p.flowIntensity;
+  if (Number.isFinite(p.flowIso)) cfg.flowIso = p.flowIso;
+  if (Number.isFinite(p.flowSteady)) cfg.flowSteady = p.flowSteady;
+  if (Number.isFinite(p.flowHeight)) cfg.flowHeight = p.flowHeight;
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
