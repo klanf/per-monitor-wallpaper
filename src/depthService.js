@@ -30,12 +30,22 @@ const IDLE_KILL_MS = 10 * 60 * 1000;
 const JOB_TIMEOUT_MS = 90 * 1000; // 8K 图 + 冷启动也要不了这么久；超时按坏 worker 处理
 const SPAWN_FAIL_LIMIT = 3;
 
+/* ---- 缓存 LRU 上限（第十九轮）----
+ * 实测 2026-10-09：2016 张深度图 ≈ 204MB（约 104KB/张），全图库 ~2.5 万张
+ * 全部生成也就 ~2.6GB。定 2GB 上限 = 覆盖全库绰绰有余，又保证极端情况
+ * （图库无限增长/换库）不会无限吃盘。命中时 touch mtime，超限删最久未用。
+ */
+const CACHE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;   // 2GB
+const EVICT_SWEEP_MIN_MS = 5 * 60 * 1000;           // 扫描节流：至多 5 分钟一次
+const EVICT_TARGET = 0.9;                           // 超限后清到 90%，避免临界抖动
+
 const state = {
   enabled: true,
   python: 'F:\\miniconda3\\python.exe',
   workerScript: path.join(__dirname, '..', 'tools', 'depth_worker.py'),
   modelDir: 'D:\\workbuddy\\tools\\MoyuFloat\\wallpaper\\model',
   cacheDir: null,
+  cacheLimitBytes: CACHE_LIMIT_BYTES,
   onReady: null,
   // 运行态
   worker: null,
@@ -47,6 +57,7 @@ const state = {
   idleTimer: null,
   jobTimer: null,
   currentJob: null,
+  lastEvictSweep: 0,
   disabledReason: '',
   stats: { hits: 0, misses: 0, generated: 0, failed: 0, dropped: 0 },
 };
@@ -90,6 +101,7 @@ function handleWorkerLine(line) {
     state.stats.generated += 1;
     if (fs.existsSync(job.out)) {
       log('生成完成:', path.basename(job.path));
+      scheduleEvictSweep();   // 缓存总量又涨了，安排一次超限检查（内部节流）
       try { if (state.onReady) state.onReady(job.path); } catch (_) { /* 回调异常不传播 */ }
     } else {
       state.stats.failed += 1;
@@ -105,6 +117,55 @@ function handleWorkerLine(line) {
     return;
   }
   pump();   // 下一单
+}
+
+/* ---- 缓存 LRU（第十九轮）---- */
+
+/** 命中即 touch mtime（LRU 的「使用」信号；mtime 在 Windows 上可靠且 stat 免费顺带） */
+function touchCacheFile(file) {
+  try {
+    const now = new Date();
+    fs.utimesSync(file, now, now);
+  } catch (_) { /* 文件刚被清掉/占用：无所谓，下次 miss 会重新生成 */ }
+}
+
+/** 生成成功后排一次清理检查（节流：5 分钟内只排一次，错峰 30s 执行） */
+function scheduleEvictSweep() {
+  const now = Date.now();
+  if (now - state.lastEvictSweep < EVICT_SWEEP_MIN_MS) return;
+  state.lastEvictSweep = now;
+  const t = setTimeout(evictSweep, 30 * 1000);
+  if (t.unref) t.unref();
+}
+
+/** 全量扫缓存目录，超限就按 mtime 从旧到新删到 90% */
+function evictSweep() {
+  if (!state.cacheDir) return;
+  let names;
+  try { names = fs.readdirSync(state.cacheDir); } catch { return; }
+  let total = 0;
+  const items = [];
+  for (const name of names) {
+    try {
+      const st = fs.statSync(path.join(state.cacheDir, name));
+      if (!st.isFile()) continue;
+      total += st.size;
+      items.push({ name, size: st.size, mtime: st.mtimeMs });
+    } catch (_) { /* 竞态消失：当没这文件 */ }
+  }
+  if (total <= state.cacheLimitBytes) return;
+  const target = state.cacheLimitBytes * EVICT_TARGET;
+  items.sort((a, b) => a.mtime - b.mtime);   // 最久未用在前
+  let freed = 0, removed = 0;
+  for (const it of items) {
+    if (total - freed <= target) break;
+    try {
+      fs.unlinkSync(path.join(state.cacheDir, it.name));
+      freed += it.size; removed += 1;
+    } catch (_) { /* 占用中/已消失：跳过，下一轮再收 */ }
+  }
+  log(`缓存清理：超限删 ${removed} 个文件释放 ${(freed / 1048576).toFixed(0)}MB`
+    + `（${(total / 1048576).toFixed(0)}MB → 限 ${(state.cacheLimitBytes / 1048576).toFixed(0)}MB）`);
 }
 
 function spawnWorker() {
@@ -248,6 +309,7 @@ function lookup(entryPath) {
   if (!trio) return null;
   if (fs.existsSync(trio.depth)) {
     state.stats.hits += 1;
+    touchCacheFile(trio.depth);   // LRU 使用信号（第十九轮）
     // 第九轮：图层分割方向已放弃（第六/八轮两连败，贴纸感无法接受），
     // 停掉老缓存的 mask/bg 回填 —— 别让它空烧 GPU。
     // ⚠️ 返回契约=深度图路径字符串（渲染端第五轮版本按字符串用；
@@ -263,7 +325,7 @@ function lookup(entryPath) {
 }
 
 function configure(patch) {
-  for (const k of ['python', 'workerScript', 'modelDir', 'cacheDir', 'onReady']) {
+  for (const k of ['python', 'workerScript', 'modelDir', 'cacheDir', 'cacheLimitBytes', 'onReady']) {
     if (patch && patch[k] !== undefined) state[k] = patch[k];
   }
   if (state.cacheDir) {
@@ -272,12 +334,14 @@ function configure(patch) {
       state.disabledReason = `缓存目录建不了: ${err.message}`;
       log(state.disabledReason);
     }
+    scheduleEvictSweep();   // 启动时也查一次存量（上次退出前超了的话在这收尾）
   }
 }
 
 function stats() {
   return { ...state.stats, queue: state.queue.length, workerAlive: Boolean(state.worker),
-    enabled: state.enabled, disabledReason: state.disabledReason };
+    enabled: state.enabled, disabledReason: state.disabledReason,
+    cacheLimitMB: Math.round(state.cacheLimitBytes / 1048576) };
 }
 
 module.exports = { lookup, prefetch, configure, stats };

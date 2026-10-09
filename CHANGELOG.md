@@ -3939,3 +3939,29 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
 
 - node --check 两文件通过；重启实例后双屏轮播正常（playback.json 主屏=
   Anima-Random、副屏=涩不了一点）；切相簿跳变语义待用户真机验收。
+
+## 深度视差第十九轮：深度缓存 LRU 上限 2GB + live 线转正（2026-10-09 深夜）
+
+### 改动
+
+- **depthService.js（LRU）**：缓存上限 2GB（实测 104KB/张，全库 ~2.5 万张 ~2.6GB，
+  2GB 足够覆盖且防无限增长）；lookup 命中 touch mtime（LRU 使用信号）；生成成功后
+  排一次超限检查（5 分钟节流 + 30s 错峰），超限按 mtime 从旧到新删到 90%；
+  configure 支持覆盖 cacheLimitBytes，stats 带 cacheLimitMB。
+- **live 转正**：①桌面 VBS（D:/Backup/桌面/壁纸切换器.vbs）改指 live 树 +
+  `--wp-user-data=`（原版备份 _archive/壁纸切换器.vbs.bak-20261009）；②HKCU Run
+  自启键 electron-wallpaper（主树，--hidden）→ electron-wallpaper-live（live 树 +
+  wp-user-data + --hidden，原值备份 _archive/run-key-electron-wallpaper.bak-20261009.txt）。
+  ⚠️ 再踩回传污染：heredoc 里写注册表回读显示成正斜杠，改用脚本文件
+  tools/set-run-key-live.py（chr(92) 拼路径）写入并 EXACT_MATCH 核验通过。
+- **第54轮结论**：主树「3s 兜底亮黑窗」是 53 轮首帧门控自留的回归；live 树无
+  首帧门控（挂载成功才 showInactive），不存在该路径，不需移植。透明舞台
+  （transparent）属增强非缺陷，暂不动。
+- 遗留观察：今夜实例多次「无日志安静消失」（无崩溃转储/无事件/无 lifecycle 日志
+  =外部硬杀或瞬时退出），与我的工具链启动方式的相关性未定罪；用户拍板不追。
+  桌面 VBS 为最终入口，经验上该路径稳定。
+
+### 验证
+
+- node --check depthService 通过；重启后双屏 tick 正常、深度生成正常（缓存
+  204MB 远低于上限，清理路径未触发——首次触发时会打「缓存清理」日志）。
