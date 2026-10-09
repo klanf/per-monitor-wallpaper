@@ -1179,6 +1179,36 @@ function stopFullscreenWatch() {
   liveStage.applyPauseState({ pausedIds: [], away: false });   // 兜底解冻
 }
 
+/* ---------------------------------------------------------------- 深度预取 */
+
+/** 深度预取只认图片（视频/网页没有深度一说） */
+const DEPTH_IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp']);
+const DEPTH_PREFETCH_AHEAD = 2;
+
+/**
+ * 空闲预取（第十一轮）：每次切图后，把每个频道接下来要显示的前两张的深度
+ * 提前喂给 depthService。队列空了才派活（不跟「正在看的那张」抢优先级），
+ * 已缓存/非图片自动跳过 —— 具体纪律都在 depthService.prefetch 里。
+ */
+function prefetchUpcomingDepths() {
+  try {
+    if (!scheduler) return;
+    for (const ch of scheduler.list()) {
+      if (!ch.count) continue;
+      const files = scheduler.files(ch.id);
+      if (!files.length) continue;
+      for (let k = 1; k <= DEPTH_PREFETCH_AHEAD; k++) {
+        const ent = files[(ch.index + k) % files.length];
+        const p = ent && ent.path;
+        if (!p || !DEPTH_IMAGE_EXTS.has(path.extname(p).toLowerCase())) continue;
+        depthService.prefetch(p);
+      }
+    }
+  } catch (err) {
+    console.warn('[depth-prefetch]', err.message);
+  }
+}
+
 async function applyConfigChange(patch) {
   const keys = Object.keys(patch || {});
   const uiOnly = keys.length > 0 && keys.every((key) => UI_ONLY_KEYS.includes(key));
@@ -1814,6 +1844,7 @@ if (!gotLock) {
           // stage 窗口也收全量 tick，各自按频道 id 过滤（每块屏只听自己的频道）
           liveStage.broadcast('channel:tick', payload);
           tray.refresh(scheduler.list());
+          prefetchUpcomingDepths();
         } else {
           console.log(`[tick-bus] ${type} reason=${payload.reason} channels=${(payload.channels || []).length}`);
           const broadcast = channelBroadcast(payload);

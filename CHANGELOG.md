@@ -3673,3 +3673,30 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
 - node --check 四文件通过；
 - 离线逐帧回归 5 相位 ≈2.5（噪声级）；
 - 设置 UI 为真机验收项（面板开关/滑杆 → 桌面实时生效）。
+
+## 深度视差第十二轮：深度空闲预取（2026-10-09 18:1x）
+
+### 背景
+
+深度是按需生成的（首次显示某图时后台生成约 3s，期间 2D 垫底）。用户反馈
+希望把「第一次显示是平的」这几秒也吃掉 —— 调度器知道队列顺序，预取顺理成章。
+
+### 改动
+
+- **depthService.prefetch(entryPath)**：空闲预取入口。纪律三条：
+  ①队列非空或 worker 忙 → 直接放弃（正事优先，下次 tick 再试）；
+  ②已缓存 → 跳过；③入队走 enqueue（queuedSet 去重）。
+  顺手补一道护栏：`currentJob.path === job.path` 时不再入队 —— 生成中的图
+  被 lookup/prefetch 重复请求会排两次队（生成完覆盖写，纯浪费）。
+- **main.js prefetchUpcomingDepths()**：挂在调度器 `tick` 事件（每次切图后
+  触发），给每个频道取 `index+1..+2` 的条目，只认图片扩展名
+  （jpg/jpeg/png/webp/bmp），喂给 prefetch。预取失败只 warn，不影响播放。
+
+### 验证
+
+- node --check 两文件通过；
+- 离线纪律模拟：首次 prefetch 入队即被 pump 取走（busy）、busy 期间第二次
+  prefetch 让路不入队、currentJob 护栏生效 —— 与设计一致
+  （测试用的假 python ENOENT 崩溃是测试自身问题，非代码缺陷）。
+- 真机验收项：切换若干张后，切到「之前预取过的图」应直接出视差（不再有
+  2D 垫底的几秒）。

@@ -221,12 +221,26 @@ function pump() {
 function enqueue(job) {
   if (state.queue.length >= QUEUE_MAX) { state.stats.dropped += 1; return; }
   if (state.queuedSet.has(job.path)) return;
+  if (state.currentJob && state.currentJob.path === job.path) return;   // 正在生成中，别排两次
   state.queuedSet.add(job.path);
   state.queue.push(job);
   pump();
 }
 
 /* ---------------------------------------------------------------- 对外 */
+
+/**
+ * 空闲预取（第十一轮）：把「接下来要显示的图」的深度提前生成。
+ * 纪律：队列非空或 worker 正忙时直接放弃（正事的优先级永远更高，
+ * 下次 tick 会再试）；已缓存的直接跳过。不统计 hits/misses。
+ */
+function prefetch(entryPath) {
+  if (!state.enabled || !entryPath || !state.cacheDir) return;
+  if (state.queue.length > 0 || state.busy) return;
+  const trio = trioFor(entryPath);
+  if (!trio || fs.existsSync(trio.depth)) return;
+  enqueue({ path: entryPath, out: trio.depth });
+}
 
 function lookup(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return null;
@@ -266,4 +280,4 @@ function stats() {
     enabled: state.enabled, disabledReason: state.disabledReason };
 }
 
-module.exports = { lookup, configure, stats };
+module.exports = { lookup, prefetch, configure, stats };
