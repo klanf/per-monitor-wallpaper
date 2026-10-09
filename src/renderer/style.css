@@ -372,16 +372,19 @@ body.idle { cursor: none; }
   flex: 1 1 auto;
   min-height: 0;            /* 没有这条，flex 子项不会缩到容器高度以内，滚动条出不来 */
   overflow-y: auto;
+  overflow-x: hidden;       /* r22：个别行超宽会顶出横向滚动条，直接裁掉（内容已做 min-width 收敛） */
   /* 滚动条贴着右边缘会压到字，留一点内边距给它 */
   padding-right: 4px;
 }
 
-.settings-pane { display: flex; flex-direction: column; gap: 18px; }
+.settings-pane { display: flex; flex-direction: column; gap: 18px; padding-bottom: 24px; }
 .settings-pane[hidden] { display: none; }
 
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field-label { font-size: 12px; color: var(--text-dim); }
 .field-row { display: flex; align-items: center; gap: 10px; }
+.field-row input[type="range"] { min-width: 0; }  /* r22：滑条默认固有宽度会顶爆窄容器出横向滚动 */
+.field-row .select { min-width: 0; }
 .field-value { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
 .field-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
 
@@ -1064,7 +1067,8 @@ body.filmstrip-off .filmstrip { display: none; }
    r21 设置面板重组：ⓘ气泡 / 联动显隐 / 显示器胶囊 / 随机池
    ========================================================================== */
 
-/* ---- ⓘ 气泡：标题行右侧的小圆钮，hover / 键盘聚焦弹出说明 ---- */
+/* ---- ⓘ 气泡：标题行右侧的小圆钮；气泡本体是 body 下的 #tip-box（JS 定位，
+        absolute 气泡会被 settings-body 滚动边缘裁掉，r22 改浮层方案） ---- */
 .info-dot {
   position: relative;
   display: inline-flex;
@@ -1089,13 +1093,10 @@ body.filmstrip-off .filmstrip { display: none; }
   border-color: var(--accent);
   outline: none;
 }
-.info-dot::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: 0;
-  top: calc(100% + 7px);
-  z-index: 30;
-  width: max-content;
+
+#tip-box {
+  position: fixed;
+  z-index: 100;
   max-width: 300px;
   padding: 8px 11px;
   border: 1px solid var(--border);
@@ -1107,17 +1108,9 @@ body.filmstrip-off .filmstrip { display: none; }
   line-height: 1.6;
   white-space: normal;
   text-align: left;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-3px);
-  transition: opacity 0.12s var(--ease), transform 0.12s var(--ease), visibility 0.12s;
   pointer-events: none;
 }
-.info-dot:hover::after, .info-dot:focus-visible::after {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-}
+#tip-box[hidden] { display: none; }
 
 /* ---- 联动显隐：cond 容器由 app.js 的 syncConditionalUI 控制 hidden ---- */
 .cond[hidden] { display: none !important; }

@@ -44,7 +44,6 @@ const els = {
   monitorCards: $('monitor-cards'),
   monitorChips: $('monitor-chips'),
   monitorHint: $('monitor-hint'),
-  modeHint: $('mode-hint'),
 
   filmTrack: $('film-track'),
   filmPrev: $('film-prev'),
@@ -1211,9 +1210,6 @@ function applyChannelInfo(info) {
 
   document.body.classList.toggle('mode-per-monitor', state.perMonitor);
   setSegment('cfg-mode', state.perMonitor ? 'per-monitor' : 'unified');
-  els.modeHint.textContent = state.perMonitor
-    ? '每屏独立：每台显示器各用一套目录与节奏，互不影响。'
-    : '统一配置：所有显示器共用一套目录与节奏。';
 
   // 预览目标失效（换模式 / 显示器被拔掉）时自动落一个有效的
   const ids = state.channels.map((c) => c.id);
@@ -1320,6 +1316,14 @@ function animationOptions(value) {
     `<option value="${val}"${val === value ? ' selected' : ''}>${text}</option>`  )).join('');
 }
 
+/** 每屏卡片深度视差风格下拉（r22）：''=跟随全局 / 三种 DepthFlow 轨迹 */
+function flowStyleOptions(value) {
+  const opts = [
+    ['', '跟随全局'], ['circle', '环绕 · Circle'], ['orbital', '摆动环绕 · Orbital'], ['dolly', '推拉变焦 · Dolly'],
+  ];
+  return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
+}
+
 function albumOf(id) {
   return state.albums.find((a) => a.id === id) || null;
 }
@@ -1409,9 +1413,6 @@ function cardHtml(ch) {
   else if (p.enabled && ch.count) status.push(`<span class="ok">已接管</span>`);
   else if (!p.enabled) status.push('<span>未接管</span>');
   if (ch.scanMs) status.push(`<span>扫描 ${ch.scanMs} ms</span>`);
-  // 「第几张」—— 随机模式是「列表洗过牌」，播放就顺着列表走，
-  // 所以 index+1 在这里和顺序模式一样有意义：它就是胶片条上的位置
-  if (ch.count) status.push(`<span>第 ${ch.index + 1} / ${ch.count} 张</span>`);
 
   return `
   <div class="${classes.join(' ')}" data-id="${escapeHtml(ch.id)}">
@@ -1484,6 +1485,10 @@ function cardHtml(ch) {
         </div>
         <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；烟花数量内置（最多同时 5 发）。</div>
       </div>
+      <div class="mc-block">
+        <label class="field-label">深度视差风格</label>
+        <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹（有深度图的壁纸生效）；跟随全局 = 用「外观」页里的全局设置">${flowStyleOptions(ov.flowStyle)}</select>
+      </div>
     </div>
   </div>`;
 }
@@ -1543,6 +1548,7 @@ async function copyMonitorProfile() {
     fit: src.profile.fit,
     particles: ov.particles !== undefined ? ov.particles : null,
     particleCount: ov.particleCount !== undefined ? ov.particleCount : null,
+    flowStyle: ov.flowStyle !== undefined ? ov.flowStyle : null,
   };
   const others = state.channels.filter((c) => c.id !== src.id);
   for (const ch of others) await pushProfile(ch.id, patch);
@@ -2101,20 +2107,13 @@ function describeScanMinutes(min) {
   return min % 60 === 0 ? `每 ${min / 60} 小时` : `每 ${min} 分钟`;
 }
 
-/** 设置里「自动扫描相簿」的说明行 —— 关着和开着、扫过和没扫过，说法都不一样 */
+/** 设置里「自动扫描相簿」的说明行 —— r22 长文案挪进 ⓘ，这里只留动态的扫描时刻 */
 function renderAutoScanHint() {
   const el = $('cfg-auto-scan-hint');
   if (!el) return;
-  const min = Number(state.config && state.config.autoScanMinutes) || 0;
-  if (!min) {
-    el.textContent = '关闭后，只有手动「重新扫描」或重启程序才会更新图片列表。';
-    return;
-  }
-  const stamp = state.lastAutoScanAt
+  el.textContent = state.lastAutoScanAt
     ? `上次扫描 ${new Date(state.lastAutoScanAt).toLocaleTimeString('zh-CN', { hour12: false })}`
-    : '本次启动后还没扫过';
-  el.textContent = `${describeScanMinutes(min)}重新扫描一次相簿目录：新图接在列表末尾、`
-    + `已删的图自动清掉，当前正在显示的那张和播放顺序都不动。${stamp}。`;
+    : '';
 }
 
 /**
@@ -2277,9 +2276,8 @@ function refreshMonitorTargets() {
 
   const hint = $('monitor-target-hint');
   const err = (state.backendInfo && state.backendInfo.monitorsError) || null;
-  if (err) hint.textContent = `每屏壁纸接口不可用：${err}`;
-  else if (monitors.length <= 1) hint.textContent = '当前只检测到 1 台显示器；接入第二台后这里会自动出现独立选项。';
-  else hint.textContent = `已检测到 ${monitors.length} 台显示器。仅修改所选屏幕，其他屏幕保持原样。`;
+  // r22：常态说明挪进 ⓘ，这里只留报错
+  hint.textContent = err ? `每屏壁纸接口不可用：${err}` : '';
 }
 
 /**
@@ -2316,6 +2314,37 @@ function bindSettings() {
     if (!btn) return;
     selectSettingsTab(btn.dataset.tab, { save: true, scrollTop: true });
   });
+
+  // ---- ⓘ 气泡（r22）：纯 CSS 的 absolute 气泡会被 settings-body 滚动边缘裁掉
+  // （贴右/贴底时只剩一条），改成全局唯一浮层 + JS 按 getBoundingClientRect 定位，
+  // 挂在 body 下不吃任何 overflow 裁切；贴底放不下自动翻到按钮上方。
+  const tipBox = document.getElementById('tip-box');
+  let tipOwner = null;
+  const showTip = (dot) => {
+    tipOwner = dot;
+    tipBox.textContent = dot.dataset.tip || '';
+    tipBox.hidden = false;
+    const r = dot.getBoundingClientRect();
+    const tw = tipBox.offsetWidth;
+    const th = tipBox.offsetHeight;
+    const x = Math.min(Math.max(8, r.left), window.innerWidth - tw - 8);
+    let y = r.bottom + 7;
+    if (y + th > window.innerHeight - 8) y = Math.max(8, r.top - th - 7);
+    tipBox.style.left = `${x}px`;
+    tipBox.style.top = `${y}px`;
+  };
+  const hideTip = () => { tipOwner = null; tipBox.hidden = true; };
+  document.addEventListener('mouseover', (e) => {
+    const dot = e.target.closest && e.target.closest('.info-dot');
+    if (dot) showTip(dot);
+    else if (tipOwner) hideTip();
+  });
+  document.addEventListener('focusin', (e) => {
+    const dot = e.target.closest && e.target.closest('.info-dot');
+    if (dot) showTip(dot);
+  });
+  document.addEventListener('focusout', hideTip);
+  window.addEventListener('blur', hideTip);
 
   // ---- 相簿 ----
   $('album-list').addEventListener('click', onAlbumListClick);
@@ -2879,6 +2908,12 @@ function bindSettings() {
         const v = e.target.value;
         await pushProfile(id, { particles: v === '' ? null : (v === 'off' ? '' : v) });
         // 卡片的「跟随全局」态读的是 monitors 原始覆盖，重拉 config 重画
+        state.config = await window.wp.getConfig();
+        renderCards();
+      } else if (field === 'flowStyle') {
+        // 深度视差风格覆盖（r22）：'' = 跟随全局（null 删除覆盖回落顶层）
+        const v = e.target.value;
+        await pushProfile(id, { flowStyle: v === '' ? null : v });
         state.config = await window.wp.getConfig();
         renderCards();
       }

@@ -130,22 +130,15 @@
   <div class="settings-body" id="settings-body">
     <div class="settings-pane" data-pane="play">
       <div class="field">
-        <label class="field-label">轮播模式</label>
+        <label class="field-label">轮播模式 <span class="info-dot" tabindex="0" data-tip="统一配置：所有显示器共用一套目录与节奏。每屏独立：每台显示器各用一套目录与节奏（在下方「显示器」的卡片上选相簿），互不影响。"></span></label>
         <div class="seg" id="cfg-mode">
           <button data-value="unified" class="seg-item">统一配置</button>
           <button data-value="per-monitor" class="seg-item">每屏独立</button>
         </div>
-        <div class="field-hint" id="mode-hint">统一配置：所有显示器共用一套目录与节奏。</div>
       </div>
 
       <div class="field">
-        <label class="field-label">相簿</label>
-        <div class="field-hint" id="album-bind-hint">每块屏轮播哪个相簿，在下面「显示器」的卡片上选；管理相簿请点顶栏的「相簿」。</div>
-      </div>
-
-      <!-- 全局设置放在每屏卡片之前：卡片很长，压在它下面的全局项会被整个挡住 -->
-      <div class="field">
-        <label class="field-label">自动扫描相簿</label>
+        <label class="field-label">自动扫描相簿 <span class="info-dot" tabindex="0" data-tip="定时重新扫描相簿目录：新图接在列表末尾、已删的图自动清掉，当前正在显示的那张和播放顺序都不动。关闭后只有手动「重新扫描」或重启程序才会更新图片列表。"></span></label>
         <select class="select" id="cfg-auto-scan">
           <option value="0">关闭</option>
           <option value="5">每 5 分钟</option>
@@ -174,9 +167,8 @@
 
       <!-- 统一模式的字段 -->
       <div class="field unified-only">
-        <label class="field-label">相簿</label>
+        <label class="field-label">相簿 <span class="info-dot" tabindex="0" data-tip="选中的相簿决定统一模式播哪些图；每块屏轮播哪个相簿（每屏独立模式），在「显示器」卡片上选。新建相簿、加减目录请点顶栏的「相簿」。"></span></label>
         <select class="select" id="cfg-album"></select>
-        <div class="field-hint" id="cfg-album-hint">选中的相簿决定统一模式播哪些图；新建相簿、加减目录请点顶栏的「相簿」。</div>
       </div>
 
       <div class="field unified-only">
@@ -207,13 +199,13 @@
       </div>
 
       <div class="field unified-only">
-        <label class="field-label">写入目标显示器</label>
+        <label class="field-label">写入目标显示器 <span class="info-dot" tabindex="0" data-tip="「设为壁纸」只修改所选目标，其他屏幕保持原样。每屏壁纸接口不可用时这里会给出原因。"></span></label>
         <select class="select" id="cfg-monitor">
           <option value="all">全部显示器</option>
           <option value="window">程序窗口所在的显示器</option>
           <option value="primary">主显示器</option>
         </select>
-        <div class="field-hint" id="monitor-target-hint">仅修改所选显示器，其他屏幕保持原样。</div>
+        <div class="field-hint" id="monitor-target-hint"></div>
       </div>
     </div>
 
@@ -255,18 +247,21 @@
 
       <!-- 画面动效（r21 新组：呼吸缩放 + 时段滤镜从「系统·动态桌面」搬来，都是视觉参数） -->
       <div class="field" id="field-motion">
-        <label class="field-label">画面动效 <span class="info-dot" tabindex="0" data-tip="只作用于动态桌面画面，不写入系统壁纸（主窗口预览不带）。呼吸 = 缓慢放大缩小，可与内置微缩放叠加；时段滤镜 = 色温罩（早晨暖金 / 中午通透 / 阴天灰蓝 / 黄昏橙紫 / 夜晚压暗）。"></span></label>
-        <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放</span></label>
-        <div class="cond" data-cond="cfg-breath">
-          <div class="field-row sub">
-            <span class="field-label" style="flex:0 0 56px">速度</span>
-            <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
-            <span class="muted" id="cfg-breath-period-out" style="flex:0 0 72px;text-align:right">6 秒/周期</span>
-          </div>
-          <div class="field-row sub">
-            <span class="field-label" style="flex:0 0 56px">幅度</span>
-            <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
-            <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 72px;text-align:right">±2%</span>
+        <label class="field-label">画面动效 <span class="info-dot" tabindex="0" data-tip="只作用于动态桌面画面，不写入系统壁纸（主窗口预览不带）。呼吸 = 缓慢放大缩小；时段滤镜 = 色温罩（早晨暖金 / 中午通透 / 阴天灰蓝 / 黄昏橙紫 / 夜晚压暗）。注意：深度视差开启时画面由视差层驱动，呼吸缩放不生效，本组的呼吸项会自动收起。"></span></label>
+        <!-- 呼吸缩放与深度视差互斥（r22）：视差层自带漂移运动，呼吸点了两层一起晕 —— 视差开着就整组收起 -->
+        <div class="cond" data-cond="cfg-depth-parallax" data-cond-invert="1">
+          <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放</span></label>
+          <div class="cond" data-cond="cfg-breath">
+            <div class="field-row sub">
+              <span class="field-label" style="flex:0 0 56px">速度</span>
+              <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
+              <span class="muted" id="cfg-breath-period-out" style="flex:0 0 72px;text-align:right">6 秒/周期</span>
+            </div>
+            <div class="field-row sub">
+              <span class="field-label" style="flex:0 0 56px">幅度</span>
+              <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
+              <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 72px;text-align:right">±2%</span>
+            </div>
           </div>
         </div>
         <div class="field-row" style="margin-top:8px">
@@ -617,6 +612,7 @@
 </aside>
 
 <div id="toast" class="toast"></div>
+<div id="tip-box" hidden></div>
 
 <script src="app.js"></script>
 </body>
