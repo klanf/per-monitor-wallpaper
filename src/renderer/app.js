@@ -2076,12 +2076,14 @@ function applyConfigToUI() {
     ['cfg-flow-iso', 'cfg-flow-iso-out', 'flowIso', 0.6, (v) => v.toFixed(2)],
     ['cfg-flow-steady', 'cfg-flow-steady-out', 'flowSteady', 0.3, (v) => v.toFixed(2)],
     ['cfg-flow-height', 'cfg-flow-height-out', 'flowHeight', 0.2, (v) => v.toFixed(2)],
+    ['cfg-flow-quality', 'cfg-flow-quality-out', 'flowQuality', 0.5, (v) => v.toFixed(2)],
   ];
   for (const [inId, outId, key, dflt, fmt] of flowKeys) {
     const v = Number.isFinite(c[key]) ? c[key] : dflt;
     $(inId).value = v;
     $(outId).textContent = fmt(v);
   }
+  $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2303,6 +2305,7 @@ function bindSettings() {
     ['cfg-flow-iso', 'cfg-flow-iso-out', 'flowIso', '斜视角', (v) => v.toFixed(2)],
     ['cfg-flow-steady', 'cfg-flow-steady-out', 'flowSteady', '背景稳定', (v) => v.toFixed(2)],
     ['cfg-flow-height', 'cfg-flow-height-out', 'flowHeight', '视差强度', (v) => v.toFixed(2)],
+    ['cfg-flow-quality', 'cfg-flow-quality-out', 'flowQuality', '流动质量', (v) => v.toFixed(2)],
   ];
   for (const [inId, outId, key, label, fmt] of FLOW_SLIDERS) {
     const input = $(inId);
@@ -2314,6 +2317,12 @@ function bindSettings() {
       toast(`${label}：${fmt(Number(input.value))}`);
     });
   }
+
+  $('cfg-fps-cap').addEventListener('change', async (e) => {
+    const v = Number(e.target.value);
+    await save({ fpsCap: v });
+    toast(`帧率上限：${v} 帧${v <= 30 ? '（省电档，慢速镜头无感）' : ''}`);
+  });
 
   const TOD_LABEL = {
     morning: '早晨 · 暖金斜阳', noon: '中午 · 顶光通透', overcast: '阴天 · 灰蓝低饱和',

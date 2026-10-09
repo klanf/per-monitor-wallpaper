@@ -87,6 +87,7 @@ const cfg = {
   flowIso: 0.6,                // 斜视角（越大立体越强、越歪）
   flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
+  flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
 };
 
 const layers = {
@@ -439,6 +440,7 @@ uniform vec2  uFlowOff;    // 流模式相机位移（屏幕 gluv 单位，y 向
 uniform float uFlowIso;     // 斜视角（cfg.flowIso，Circle 预设 0.6）
 uniform float uFlowSteady;  // 背景稳定点（cfg.flowSteady，预设 0.3）
 uniform float uFlowHeight;  // 视差强度主旋钮（cfg.flowHeight，DepthState 默认 0.2）
+uniform float uFlowQ;       // POM 步进质量 0.15~1（cfg.flowQuality，0.5=CLI 默认；低=省 GPU）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -463,9 +465,11 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
   // DepthMake：sticky=true（背景钉住），center=0，origin 附加位移=0
   float relSteady = steady * height;
   vec3 intersect = vec3(camGluv - off / (1.0 - relSteady), 1.0);
-  // 步长取 CLI 默认 quality=50：细步 1/mix(200,2000,0.5)、粗探 1/mix(50,120,0.5)
-  float quality = 1.0 / 1100.0;
-  float probe   = 1.0 / 85.0;
+  // 步长随 cfg.flowQuality 伸缩（DepthFlow 原式）：q=0.5 = CLI 默认 quality 50
+  // （细步 1/mix(200,2000,q)、粗探 1/mix(50,120,q)；q 越低步数越少越省 GPU）
+  float q = clamp(uFlowQ, 0.15, 1.0);
+  float quality = 1.0 / mix(200.0, 2000.0, q);
+  float probe   = 1.0 / mix(50.0, 120.0, q);
   float safe = 1.0 - height;
   float value = 0.0;
   float walk = 0.0;
@@ -585,7 +589,7 @@ function glInit() {
     const U = {};
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
-      'uFlowIso', 'uFlowSteady', 'uFlowHeight']) U[n] = gl.getUniformLocation(prog, n);
+      'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
@@ -703,6 +707,7 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uFlowIso, cfg.flowIso);
   gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
   gl.uniform1f(glState.U.uFlowHeight, cfg.flowHeight);
+  gl.uniform1f(glState.U.uFlowQ, Math.min(1, Math.max(0.15, cfg.flowQuality || 0.5)));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -1087,6 +1092,7 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowIso)) cfg.flowIso = p.flowIso;
   if (Number.isFinite(p.flowSteady)) cfg.flowSteady = p.flowSteady;
   if (Number.isFinite(p.flowHeight)) cfg.flowHeight = p.flowHeight;
+  if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
