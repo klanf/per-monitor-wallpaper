@@ -255,7 +255,10 @@ def expand_depth(d_img):
         a = (a - a.min()) / span
         a = cv2.dilate(a, np.ones((3, 3), np.float32), iterations=2)
     from PIL import Image
-    return Image.fromarray(a)
+    # ⚠️ 必须转 8-bit 'L' 再交出去：float32 的 fromarray 是 mode 'F'，
+    # PIL 的 PNG 编码器不认（cannot write mode F as PNG，2026-10-09 实锤，
+    # 曾让全部深度生成失败 → 渲染端全程 tick miss → 视差消失）
+    return Image.fromarray((a * 255.0).round().astype(np.uint8), mode='L')
 
 
 def main():
