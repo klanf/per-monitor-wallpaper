@@ -246,6 +246,36 @@
         </div>
       </div>
 
+      <!-- 粒子特效（主树 52 轮，live r20 移植）：全局控件只在统一模式显示 -->
+      <div class="field unified-only" id="particle-global-field">
+        <label class="field-label">粒子特效</label>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 auto">种类</span>
+          <select class="select" id="cfg-particles" style="flex:1">
+            <option value="">关闭</option>
+            <option value="rain">雨落</option>
+            <option value="sakura">樱花落</option>
+            <option value="snow">雪</option>
+            <option value="fireflies">萤火虫</option>
+            <option value="stars">星空流星</option>
+            <option value="bubbles">泡泡</option>
+            <option value="leaves">落叶</option>
+            <option value="confetti">彩带纸屑</option>
+            <option value="fireworks">烟花</option>
+            <option value="embers">火焰灰烬</option>
+            <option value="splash">雨落水花</option>
+            <option value="raindrops">雨滴挂屏</option>
+            <option value="random">随机（每次换图抽一种）</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span class="field-label" style="flex:0 0 auto">数量</span>
+          <input type="range" id="cfg-particle-count" min="0" max="1000" step="4" style="flex:1">
+          <span class="muted" id="cfg-particle-count-out" style="flex:0 0 auto"></span>
+        </div>
+        <div class="field-hint">只作用于动态桌面画面，不写入系统壁纸。烟花数量内置（最多同时 5 发）。「粒子绕开鼠标」开关在「系统」页的动态桌面区块。</div>
+      </div>
+
       <!-- ------------------------------------------------ 工具栏自动隐藏 -->
       <div class="field">
         <label class="field-label">工具栏自动隐藏</label>
@@ -402,6 +432,17 @@
         <label class="check"><input type="checkbox" id="cfg-video-play-full"><span>视频播完再切下一个（视频不按间隔时间切）</span></label>
         <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放（缓慢放大缩小，可与内置微缩放叠加）</span></label>
         <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span class="field-label" style="flex:0 0 auto">呼吸速度</span>
+          <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
+          <span class="muted" id="cfg-breath-period-out" style="flex:0 0 auto">6 秒/周期</span>
+        </div>
+        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
+          <span class="field-label" style="flex:0 0 auto">呼吸幅度</span>
+          <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
+          <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 auto">±2%</span>
+        </div>
+        <div class="field-hint">只作用于动态桌面画面（主窗口预览不带呼吸）。速度 = 一个呼吸周期时长，幅度 = 缩放振幅（±%）。</div>
+        <div class="row" style="display:flex;align-items:center;gap:10px;margin-top:6px">
           <span class="field-label" style="flex:0 0 auto">时段滤镜</span>
           <select class="select" id="cfg-timeofday" style="flex:1">
             <option value="">无滤镜</option>
@@ -415,6 +456,8 @@
         <div class="field-hint">动态桌面需要桌面壁纸环境支持；关掉后桌面回到普通静态壁纸。视频播完再切只影响视频条目，图片仍按间隔切换。滤镜只作用于动态桌面画面，不写入系统壁纸。</div>
         <label class="check"><input type="checkbox" id="cfg-swipe-switch"><span>桌面手势切壁纸：按住横向拖拽 / 触摸横扫（往左扫 = 下一张，往右扫 = 上一张）</span></label>
         <div class="field-hint">手势在桌面空白处起手才生效；注意横向橡皮筋框选、横向拖图标同形，也会触发切图，嫌烦就关。</div>
+        <label class="check"><input type="checkbox" id="cfg-live-hide-paused"><span>全屏 / 锁屏暂停时隐藏桌面画面（默认关；玩<b>独占全屏</b>游戏如艾尔登法环前再勾上，防黑屏死机）</span></label>
+        <label class="check"><input type="checkbox" id="cfg-particle-cursor"><span>粒子绕开鼠标：粒子会避开以光标为圆心的一片区域（开粒子特效时可见）</span></label>
       </div>
 
       <!-- ---------------------------------------------------------- 深度视差 -->
@@ -422,7 +465,7 @@
         <label class="field-label">深度视差（动态桌面 · 有深度图的壁纸生效）</label>
         <label class="check"><input type="checkbox" id="cfg-depth-parallax"><span>深度视差总开关（关掉后全部回退普通平移缩放）</span></label>
         <label class="check"><input type="checkbox" id="cfg-depth-flow"><span>DepthFlow 流动模式（电影感镜头运动，替代左右平移）</span></label>
-        <div class="field-row">
+        <div class="field-row depth-flow-only">
           <span class="field-label" style="flex:0 0 84px">动效风格</span>
           <select class="select" id="cfg-flow-style" style="flex:1">
             <option value="circle">环绕 · Circle（镜头绕圈，样片同款）</option>
@@ -430,7 +473,7 @@
             <option value="dolly">推拉变焦 · Dolly（不位移，镜头呼吸纵深感）</option>
           </select>
         </div>
-        <div class="field-row">
+        <div class="field-row depth-flow-only">
           <span class="field-label" style="flex:0 0 84px">流动幅度</span>
           <input type="range" id="cfg-flow-intensity" min="0.1" max="1" step="0.05">
           <output class="field-value" id="cfg-flow-intensity-out">0.5</output>
@@ -440,7 +483,7 @@
           <input type="range" id="cfg-depth-drift" min="0.2" max="3" step="0.1">
           <output class="field-value" id="cfg-depth-drift-out">1.0×</output>
         </div>
-        <div class="field-row">
+        <div class="field-row depth-flow-only">
           <span class="field-label" style="flex:0 0 84px">流动质量</span>
           <input type="range" id="cfg-flow-quality" min="0.2" max="1" step="0.05">
           <output class="field-value" id="cfg-flow-quality-out">0.50</output>
@@ -454,7 +497,7 @@
             <option value="60">60 帧 · 跟满刷新率</option>
           </select>
         </div>
-        <details>
+        <details class="depth-flow-only">
           <summary class="field-label">进阶参数（默认 = DepthFlow Circle 预设，一般不用动）</summary>
           <div class="field-row" style="margin-top:6px">
             <span class="field-label" style="flex:0 0 84px">斜视角</span>
@@ -481,6 +524,15 @@
         <label class="check"><input type="checkbox" id="cfg-tray"><span>显示托盘图标</span></label>
         <label class="check"><input type="checkbox" id="cfg-close-to-tray"><span>关闭窗口时隐藏到托盘（不退出）</span></label>
         <label class="check"><input type="checkbox" id="cfg-launch-at-login"><span>开机自动启动</span></label>
+        <label class="check"><input type="checkbox" id="cfg-pause-on-idle"><span>人离开 / 熄屏自动暂停（平板合盖熄屏不睡眠的那种，就靠这条省电）</span></label>
+        <div class="seg" id="cfg-idle-minutes">
+          <button data-value="3" class="seg-item">3 分钟</button>
+          <button data-value="5" class="seg-item">5 分钟</button>
+          <button data-value="10" class="seg-item">10 分钟</button>
+          <button data-value="15" class="seg-item">15 分钟</button>
+        </div>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="cfg-pause-on-battery"><span>用电池时自动暂停（拔掉电源就冻结，接回恢复；台式机常插电不受影响）</span></label>
+        <div class="field-hint">「人离开」= 键鼠无输入超过上方设定分钟，动一下鼠标立即恢复。「用电池」直接读系统电源状态，拔电 2 秒内就停、插回恢复。自动暂停会同时停住桌面画面和系统壁纸切换。</div>
         <label class="check"><input type="checkbox" id="cfg-start-hidden"><span>启动时不显示窗口</span></label>
         <div class="field-hint">托盘开启后，关掉窗口不影响桌面继续轮播；右键托盘图标可以逐屏控制。</div>
         <div class="field-hint mono" id="login-hint"></div>

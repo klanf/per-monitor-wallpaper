@@ -1253,6 +1253,8 @@ const UI_ONLY_KEYS = ['settingsTab', 'swipeSwitch'];
  * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
  */
 function startFullscreenWatch() {
+  // hideOnPaused：暂停藏窗开关（52 轮，默认关；独占全屏游戏防驱动挂死）
+  liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused === true);
   fullscreenWatch.start({
     getFlags: () => {
       const st = (store && store.get()) || {};
@@ -1268,6 +1270,18 @@ function startFullscreenWatch() {
         pauseOnFullscreen: ls.pauseOnFullscreen !== false,
         pauseOnAway: ls.pauseOnLock !== false,
         perDisplay,
+        // 电池暂停（主树 48/58 轮）：kernel32 GetSystemPowerStatus 直查 ACLineStatus，
+        // 查不到（无电池/异常）退回 Electron 缓存值
+        battery: (() => {
+          const b = fullscreenWatch.isOnBattery();
+          if (b != null) return b;
+          try { return powerMonitor.isOnBatteryPower(); } catch { return false; }
+        })(),
+        pauseOnBattery: ls.pauseOnBattery === true,
+        // 挂机/熄屏暂停（主树 57 轮）：纯熄屏不触发 QUNS，靠无输入超时兜底
+        pauseOnIdle: ls.pauseOnIdle !== false,
+        idlePauseSeconds: Math.max(0, Number(ls.idlePauseMinutes) || 0) * 60,
+        idleSec: (() => { try { return powerMonitor.getSystemIdleTime(); } catch { return 0; } })(),
       };
     },
     onTick: ({ pausedIds, away, reasons }) => {
@@ -1327,6 +1341,8 @@ async function applyConfigChange(patch) {
   // hideOnPaused / pauseOn* 改动实时生效（轮询还开着时也要立刻跟上新设置）
   // （60~72 轮重构丢了这整块 → 全屏/锁屏暂停监控从未启动，2026-10-09 恢复）
   if (keys.includes('liveStage')) {
+    // hideOnPaused 改动实时生效（藏窗与否读的是这里的运行态）
+    liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused === true);
     if (store.get().liveWallpaper) {
       startFullscreenWatch();
       liveStage.syncTo(scheduler.list());

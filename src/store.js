@@ -110,6 +110,9 @@ const DEFAULTS = {
     pauseOnFullscreen: true, // 某块屏被全屏应用占满时，只暂停那一块
     pauseOnBattery: true,    // 电池供电时暂停
     pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
+    pauseOnIdle: true,       // 无输入超时也算「人离开」（主树 57 轮：纯熄屏不锁屏的平板合盖就靠它）
+    idlePauseMinutes: 5,     // 无输入判定阈值（分钟，0~120；0 = 关闭该判定）
+    hideOnPaused: false,     // 暂停时把舞台窗口整个藏起来（默认关；独占全屏游戏前手动开）
   },
 
 
@@ -136,6 +139,9 @@ const DEFAULTS = {
     pauseOnFullscreen: true, // 某块屏被全屏应用占满时只暂停那块屏，其它屏照常
     pauseOnBattery: true,    // 电池供电时暂停
     pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
+    pauseOnIdle: true,       // 无输入超时也算「人离开」
+    idlePauseMinutes: 5,     // 无输入判定阈值（分钟，0~120；0 = 关闭该判定）
+    hideOnPaused: false,     // 暂停时把舞台窗口整个藏起来（默认关）
   },
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
   fit: 'cover',            // cover | contain
@@ -251,6 +257,11 @@ const PROFILE_KEYS = [
   'fpsCap',                    // 动态桌面舞台过渡帧率上限（不写 = 默认 60）
   'videoPlayFull',             // 视频播完再切下一张（不写 = 默认关，按 interval 定时切）
   'breath',                    // 呼吸缩放特效（不写 = 默认关；与 Ken Burns 叠加）
+  'breathPeriod',              // 呼吸缩放周期 ms（不写 = 渲染端默认 6000；收紧 2000~15000）
+  'breathAmplitude',           // 呼吸缩放幅度 %（不写 = 渲染端默认 2，即 ±2%；收紧 0.5~5）
+  'particles',                 // 舞台粒子特效：rain/sakura/...（不写 = 关；白名单收紧在渲染端 particles.js）
+  'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
+  'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
   // ---- 深度视差（第十一轮起进设置面板；不写 = stage.js 内置默认）----
   'depthParallax',             // 深度视差总开关
@@ -533,11 +544,17 @@ function clampLiveFps(value) {
 function clampLiveStage(value) {
   const src = isPlainObject(value) ? value : {};
   const d = DEFAULTS.liveStage;
+  const idleMinRaw = Math.round(Number(src.idlePauseMinutes));
   return {
     fpsCap: clampLiveFps(src.fpsCap),
     pauseOnFullscreen: 'pauseOnFullscreen' in src ? toBool(src.pauseOnFullscreen) : d.pauseOnFullscreen,
     pauseOnBattery: 'pauseOnBattery' in src ? toBool(src.pauseOnBattery) : d.pauseOnBattery,
     pauseOnLock: 'pauseOnLock' in src ? toBool(src.pauseOnLock) : d.pauseOnLock,
+    pauseOnIdle: 'pauseOnIdle' in src ? toBool(src.pauseOnIdle) : d.pauseOnIdle,
+    idlePauseMinutes: Number.isFinite(idleMinRaw)
+      ? Math.min(Math.max(idleMinRaw, 0), 120)
+      : d.idlePauseMinutes,
+    hideOnPaused: 'hideOnPaused' in src ? toBool(src.hideOnPaused) : d.hideOnPaused,
   };
 }
 

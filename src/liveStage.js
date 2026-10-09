@@ -112,6 +112,18 @@ function stageBounds(ch) {
 const pauseDisplays = new Set();
 let pauseAway = false;
 
+/**
+ * 暂停时把舞台窗口整个藏起来（主树 52 轮，live r20 移植；默认关）：
+ * 深暂停只停 rAF，窗口还攥着 4K flip 交换链 —— 独占全屏游戏做模式切换时
+ * 撞上它会驱动挂死（艾尔登法环实锤）。藏掉 = 交换链离开显示路径。
+ * 恢复用 showInactive（与挂载同一条已验证路径），画面留在原帧不重载。
+ */
+let pauseHide = false;
+
+function setPauseHide(value) {
+  pauseHide = value === true;
+}
+
 function applyPauseState({ pausedIds, away, reasons } = {}) {
   pauseDisplays.clear();
   for (const id of Array.isArray(pausedIds) ? pausedIds : []) pauseDisplays.add(id);
@@ -119,7 +131,17 @@ function applyPauseState({ pausedIds, away, reasons } = {}) {
   for (const [id, rec] of stages) {
     if (rec.win && !rec.win.isDestroyed()) {
       try {
-        rec.win.webContents.send('stage:pause', { paused: pauseDisplays.has(rec.displayId) });
+        const paused = pauseDisplays.has(rec.displayId);
+        rec.win.webContents.send('stage:pause', { paused });
+        // hideOnPaused：暂停藏窗（交换链离开显示路径），恢复原帧续播不重载
+        if (pauseHide) {
+          if (paused) {
+            if (rec.win.isVisible()) { rec.win.hide(); rec.hiddenForPause = true; }
+          } else if (rec.hiddenForPause) {
+            rec.hiddenForPause = false;
+            rec.win.showInactive();   // 不抢焦点（与挂载同款纪律）
+          }
+        }
       } catch { /* 窗口正在销毁 */ }
     }
   }
@@ -491,6 +513,7 @@ module.exports = {
   displayIdForMonitor,  // 设备路径 → Electron displayId（手动暂停换算用）
   allDisplayIds,        // 当前舞台的 displayId 集合（PAUSE_ALL 展开用）
   anyDisplayPaused,     // unified 频道的暂停感知
+  setPauseHide,         // hideOnPaused：暂停时藏舞台窗口（独占全屏游戏防驱动挂死）
   showDesktopContextMenu,
   cancelDesktopMenu,
 };

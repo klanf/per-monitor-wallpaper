@@ -3965,3 +3965,44 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
 
 - node --check depthService 通过；重启后双屏 tick 正常、深度生成正常（缓存
   204MB 远低于上限，清理路径未触发——首次触发时会打「缓存清理」日志）。
+
+## 深度视差第二十轮：主树 26~58 轮设置功能补全移植（呼吸参数化/粒子/暂停扩展/联动禁用）（2026-10-10 00:5x）
+
+### 背景（用户复报）
+
+live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页缺一大片：呼吸速度/幅度
+滑杆、粒子特效全家（种类/数量/绕开鼠标/每屏覆盖）、全屏暂停时隐藏桌面画面、
+人离开/熄屏自动暂停、电池暂停。用户点名要回来。
+
+### 移植内容
+
+- **呼吸参数化（主树 47 轮）**：stage.js cfg.breathPeriod(2000~15000)/breathAmplitude
+  (0.5~5) + kenTick 用 cfg（原 BREATH 常量弃用）+ store PROFILE_KEYS + 设置页两条滑杆。
+- **粒子特效（主树 52/54 轮）**：particles.js 整文件（939 行，13 种粒子 + random）+
+  stage.html #particles canvas（z-index:4，盖视差层、被时段滤镜罩住）+ stage.js 全套
+  集成（cfg 六键/rollParticles/applyProfile 透传/rAF gate 内 frame/静态续帧条件/
+  onResize/换图重抽/鼠标斥力）——鼠标斥力不走主树的主进程 30Hz 广播（live 舞台
+  本就吃得到真实 mousemove，视差接管同源，本地直喂更简单）+ store PROFILE_KEYS
+  （particles/particleCount/particleCursor）+ 设置页全局区块 + 每屏卡片
+  种类/数量覆盖（null 删覆盖回落全局，'off' 显式关闭）。
+- **暂停扩展（主树 48/57/58 轮）**：fullscreenWatch.js 整文件换主树版（idleSec
+  无输入超时=人离开、isOnBattery kernel32 直查、QQ 截图按进程镜像名排除、
+  GetWindowThreadProcessId 存量 bug 修复），**嫁接回 live 独有的 perDisplay 每屏
+  pauseOnFullscreen 覆盖**（evaluatePause + tickNow 传参）+ 单测文件同步（25→43 例）；
+  main.js getFlags 补 battery/idleSec/pauseOnBattery/pauseOnIdle/idlePauseSeconds
+  （powerMonitor 新导入）；store liveStage 补 pauseOnIdle/idlePauseMinutes(0~120)/
+  hideOnPaused 默认与 clamp；liveStage.js 补 setPauseHide + applyPauseState 藏窗/
+  showInactive 恢复（主树 52 轮核心，53/54 轮首帧门控机械不移植——live 没有）；
+  hideOnPaused 默认关（独占全屏游戏前手动勾，防驱动挂死）。
+- **深度视差联动禁用（用户新诉求）**：总开关关 → 整块置灰（总开关自身除外）；
+  DepthFlow 关 → 流专属项（动效风格/流动幅度/流动质量/进阶参数）置灰，漂移速度
+  与帧率上限保留（单平面平移也吃）。depth-flow-only 类标记 + updateDepthDisabled
+  （applyConfigToUI 回填后经 window.__syncDepthUI 重算）。
+
+### 验证
+
+- node --check 七文件全过；fs-watch 单测 43/43（主树版含 idle/battery/QQ 用例）、
+  scheduler 159/0、live-desktop 42/0；
+- 重启实例双屏 tick 正常、视差升级正常（upgrade 完成）；
+- 待真机验收：呼吸滑杆、粒子种类（含 random 每图重抽）、绕开鼠标、
+  拔电暂停（台式机无电池=isOnBattery 返回 false/null 不误触）、联动置灰。

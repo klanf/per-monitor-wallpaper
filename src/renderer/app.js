@@ -1277,10 +1277,21 @@ const ANIMATIONS = [
   ['random', '随机轮换'],
 ];
 
+/** 每屏卡片粒子下拉：''=跟随全局 / off=明确关闭 / 各种类 / random */
+function particleOptions(value) {
+  const opts = [
+    ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
+    ['snow', '雪'], ['fireflies', '萤火虫'], ['stars', '星空流星'], ['bubbles', '泡泡'],
+    ['leaves', '落叶'], ['confetti', '彩带纸屑'],
+    ['fireworks', '烟花'], ['embers', '火焰灰烬'], ['splash', '雨落水花'], ['raindrops', '雨滴挂屏'],
+    ['random', '随机（每次换图抽一种）'],
+  ];
+  return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
+}
+
 function animationOptions(value) {
   return ANIMATIONS.map(([val, text]) => (
-    `<option value="${val}"${val === value ? ' selected' : ''}>${text}</option>`
-  )).join('');
+    `<option value="${val}"${val === value ? ' selected' : ''}>${text}</option>`  )).join('');
 }
 
 function albumOf(id) {
@@ -1346,6 +1357,8 @@ function albumOptions(selectedId, withBlank = true) {
 
 function cardHtml(ch) {
   const p = ch.profile;
+  // 「跟随全局」要显示的是有没有**原始覆盖**，resolveProfile 合并后的值区分不出来（主树同款）
+  const ov = (state.config && state.config.monitors && state.config.monitors[ch.id]) || {};
   const previewing = ch.id === state.previewId;
   const classes = ['monitor-card'];
   if (previewing) classes.push('previewing');
@@ -1435,6 +1448,16 @@ function cardHtml(ch) {
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
       <label class="check"><input type="checkbox" data-field="pauseOnFullscreen"${p.pauseOnFullscreen !== false ? ' checked' : ''}><span>本屏被全屏窗口盖住时暂停（玩游戏的那块屏可以单独关掉，壁纸照常动）</span></label>
+      <div class="mc-block">
+        <label class="field-label">粒子特效</label>
+        <div class="field-row">
+          <select class="select sm" data-field="particles" title="这块屏的粒子特效；跟随全局 = 用「外观」页里的全局设置">${particleOptions(ov.particles)}</select>
+          <input type="number" class="select sm" data-field="particleCount" min="0" max="1000" step="4"
+            placeholder="数量跟随全局" title="这块屏的粒子数量；留空 = 跟随全局（0~1000）"
+            value="${ov.particleCount !== undefined ? ov.particleCount : ''}" style="width:118px;flex:0 0 auto">
+        </div>
+        <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；烟花数量内置（最多同时 5 发）。</div>
+      </div>
     </div>
   </div>`;
 }
@@ -2065,7 +2088,22 @@ function applyConfigToUI() {
   $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
   $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
+  // 呼吸节奏（主树 47 轮同款）：周期秒 / 幅度 %
+  const bp = Math.round(Number(c.breathPeriod));
+  $('cfg-breath-period').value = String(Number.isFinite(bp) ? Math.min(Math.max(bp, 2000), 15000) / 1000 : 6);
+  $('cfg-breath-period-out').textContent = `${$('cfg-breath-period').value} 秒/周期`;
+  const ba = Number(c.breathAmplitude);
+  $('cfg-breath-amplitude').value = String(Number.isFinite(ba) ? Math.min(Math.max(ba, 0.5), 5) : 2);
+  $('cfg-breath-amplitude-out').textContent = `±${$('cfg-breath-amplitude').value}%`;
   $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
+  // 暂停时藏舞台窗口（主树 52 轮；liveStage 嵌套键 hideOnPaused，默认关）
+  $('cfg-live-hide-paused').checked = (c.liveStage || {}).hideOnPaused === true;
+  // 粒子特效（主树 52 轮移植）：全局种类 + 数量；绕开鼠标 = 顶层键默认开
+  $('cfg-particles').value = typeof c.particles === 'string' ? c.particles : '';
+  const pc = Math.round(Number(c.particleCount));
+  $('cfg-particle-count').value = String(Number.isFinite(pc) ? Math.min(Math.max(pc, 0), 1000) : 256);
+  $('cfg-particle-count-out').textContent = `${$('cfg-particle-count').value} 粒`;
+  $('cfg-particle-cursor').checked = c.particleCursor !== false;
 
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
   $('cfg-depth-parallax').checked = c.depthParallax !== false;
@@ -2085,11 +2123,18 @@ function applyConfigToUI() {
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
   $('cfg-flow-style').value = ['circle', 'orbital', 'dolly'].includes(c.flowStyle) ? c.flowStyle : 'circle';
+  // 深度视差联动禁用重算（总开关/流模式 → 子选项置灰；bindSettings 挂的钩子）
+  if (window.__syncDepthUI) window.__syncDepthUI();
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
   $('cfg-close-to-tray').checked = c.closeToTray !== false;
   $('cfg-start-hidden').checked = c.startHidden === true;
+  // 自动暂停（主树 57/58 轮移植）：嵌套键 liveStage.pauseOnIdle / idlePauseMinutes / pauseOnBattery
+  const lsNow = c.liveStage || {};
+  $('cfg-pause-on-idle').checked = lsNow.pauseOnIdle !== false;
+  $('cfg-pause-on-battery').checked = lsNow.pauseOnBattery === true;
+  setSegment('cfg-idle-minutes', String([3, 5, 10, 15].includes(Number(lsNow.idlePauseMinutes)) ? Number(lsNow.idlePauseMinutes) : 5));
 
   // ---- 删除 ----
   $('cfg-confirm-delete').checked = c.confirmDelete !== false;
@@ -2291,12 +2336,102 @@ function bindSettings() {
     toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
   });
 
+  // 呼吸节奏（主树 47 轮移植）：周期/幅度滑条，落 profile 键，每屏卡片也能单独覆盖
+  $('cfg-breath-period').addEventListener('input', (e) => {
+    $('cfg-breath-period-out').textContent = `${e.target.value} 秒/周期`;
+  });
+  $('cfg-breath-period').addEventListener('change', async (e) => {
+    await save({ breathPeriod: Math.round(Number(e.target.value) * 1000) });
+  });
+  $('cfg-breath-amplitude').addEventListener('input', (e) => {
+    $('cfg-breath-amplitude-out').textContent = `±${e.target.value}%`;
+  });
+  $('cfg-breath-amplitude').addEventListener('change', async (e) => {
+    await save({ breathAmplitude: Number(e.target.value) });
+  });
+
+  // 暂停时隐藏舞台窗口（主树 52 轮移植）：嵌套合并写 liveStage.hideOnPaused，即时生效
+  $('cfg-live-hide-paused').addEventListener('change', async (e) => {
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, hideOnPaused: e.target.checked } });
+    toast(e.target.checked
+      ? '已开启：全屏 / 锁屏暂停时隐藏桌面画面（防独占全屏黑屏）'
+      : '已关闭：暂停时保留画面（若独占全屏游戏黑屏请重新开启）');
+  });
+
+  // 粒子特效（主树 52 轮移植）：全局种类 + 数量
+  $('cfg-particles').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    await save({ particles: v });
+    toast(v ? '粒子特效已开启（叠加在动态桌面画面上）' : '粒子特效已关闭');
+  });
+  $('cfg-particle-count').addEventListener('input', (e) => {
+    $('cfg-particle-count-out').textContent = `${e.target.value} 粒`;
+  });
+  $('cfg-particle-count').addEventListener('change', async (e) => {
+    const n = Math.min(Math.max(Math.round(Number(e.target.value) || 0), 0), 1000);
+    e.target.value = String(n);
+    $('cfg-particle-count-out').textContent = `${n} 粒`;
+    await save({ particleCount: n });
+    toast(`粒子数量已设为 ${n} 粒`);
+  });
+  // 粒子绕开鼠标（主树 54 轮追记六）：顶层键 particleCursor，经 resolveProfile 流进各屏
+  $('cfg-particle-cursor').addEventListener('change', async (e) => {
+    await save({ particleCursor: e.target.checked });
+    toast(e.target.checked ? '粒子会绕开鼠标了' : '粒子不再避让鼠标');
+  });
+
+  // 自动暂停（主树 57/58 轮移植）：无输入超时 / 电池
+  $('cfg-pause-on-idle').addEventListener('change', async (e) => {
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, pauseOnIdle: e.target.checked } });
+    toast(e.target.checked
+      ? '已开启：无输入超时 / 熄屏后自动冻结轮播，动一下鼠标恢复'
+      : '已关闭：人离开时轮播照常跑（平板耗电请重新打开）');
+  });
+  $('cfg-idle-minutes').addEventListener('click', async (event) => {
+    const item = event.target.closest('.seg-item');
+    if (!item) return;
+    setSegment('cfg-idle-minutes', item.dataset.value);
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, idlePauseMinutes: Number(item.dataset.value) || 5 } });
+    toast(`无输入 ${item.dataset.value} 分钟后自动暂停`);
+  });
+  $('cfg-pause-on-battery').addEventListener('change', async (e) => {
+    const current = (state.config && state.config.liveStage) || {};
+    await save({ liveStage: { ...current, pauseOnBattery: e.target.checked } });
+    toast(e.target.checked
+      ? '已开启：拔掉电源自动冻结，接回恢复'
+      : '已关闭：用电池时轮播照常跑');
+  });
+
   // ---- 深度视差（第十一轮）----
+  // 联动禁用（r20）：总开关关 → 整块置灰；流模式关 → 流专属项（风格/幅度/质量/进阶）置灰，
+  // 漂移速度与帧率上限仍可用（单平面平移也吃这两项）
+  function updateDepthDisabled() {
+    const master = $('cfg-depth-parallax').checked;
+    const flow = $('cfg-depth-flow').checked;
+    const field = $('cfg-depth-parallax').closest('.field');
+    if (!field) return;
+    for (const el of field.querySelectorAll('input, select, button, summary')) {
+      if (el.id === 'cfg-depth-parallax') continue;   // 总开关自己永远可点
+      el.disabled = !master;
+    }
+    for (const el of field.querySelectorAll('.depth-flow-only input, .depth-flow-only select')) {
+      el.disabled = !master || !flow;
+    }
+    const details = field.querySelector('details.depth-flow-only');
+    if (details) details.open = Boolean(details.open) && master && flow;
+  }
+  window.__syncDepthUI = updateDepthDisabled;   // applyConfigToUI 回填后也要重算一次
+  updateDepthDisabled();
   $('cfg-depth-parallax').addEventListener('change', async (e) => {
+    updateDepthDisabled();
     await save({ depthParallax: e.target.checked });
     toast(e.target.checked ? '深度视差已开启' : '深度视差已关闭（回退普通平移缩放）');
   });
   $('cfg-depth-flow').addEventListener('change', async (e) => {
+    updateDepthDisabled();
     await save({ depthFlow: e.target.checked });
     toast(e.target.checked ? 'DepthFlow 流动模式已开启' : '已回退单平面左右平移视差');
   });
@@ -2608,7 +2743,21 @@ function bindSettings() {
           : '已清空这块屏的相簿（不再轮播图片）');
       } else if (field === 'animation') {
         await pushProfile(id, { animation: e.target.value });
+      } else if (field === 'particles') {
+        // '' = 跟随全局（null 删除覆盖回落顶层）；'off' = 显式关闭（覆盖写 ''）
+        const v = e.target.value;
+        await pushProfile(id, { particles: v === '' ? null : (v === 'off' ? '' : v) });
+        // 卡片的「跟随全局」态读的是 monitors 原始覆盖，重拉 config 重画
+        state.config = await window.wp.getConfig();
+        renderCards();
       }
+    }
+    else if (e.target.type === 'number') {
+      // 数值类覆盖（粒子数量）：留空 = 跟随全局（null 删除覆盖回落顶层）
+      const raw = String(e.target.value).trim();
+      await pushProfile(id, { [field]: raw === '' ? null : Math.min(1000, Math.max(0, Math.round(Number(raw) || 0))) });
+      state.config = await window.wp.getConfig();
+      renderCards();
     }
     else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
     else if (e.target.type === 'checkbox') await pushProfile(id, { [field]: e.target.checked });

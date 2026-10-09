@@ -35,6 +35,7 @@ function win(over = {}) {
     cloaked: Boolean(over.cloaked),
     cls: over.cls || 'Chrome_WidgetWin_1',
     rect: over.rect,
+    imageName: over.imageName,
   };
 }
 
@@ -148,6 +149,84 @@ function main() {
 
     r = fw.evaluatePause({ monitors: MONITORS, windows: [win({ rect: FULL_MAIN, exStyle: 0x80000000 })] });
     check('扩展样式高位（WS_POPUP 痕迹）不影响判定', r.paused.has(1), '>>>0 转无符号');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n§7 进程镜像名排除（54 轮追记四：QQ 截图/录屏遮罩误判全屏）');
+  // -------------------------------------------------------------------------
+  {
+    let r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'QQ.exe' })] });
+    check('QQ.exe 铺满主屏 ⇒ 不暂停（镜像名命中黑名单）', r.paused.size === 0);
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'qq.exe' })] });
+    check('大小写变体 qq.exe 同样排除', r.paused.size === 0, '小写比较');
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'ELDEN RING.exe' })] });
+    check('黑名单之外的 exe 照常触发暂停', r.paused.has(1));
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN })] });
+    check('imageName 缺失（exeOf 失败）⇒ 不排除，照常暂停', r.paused.has(1), '宁可误暂停不可漏暂停');
+
+    r = evaluate({ windows: [win({ rect: FULL_MAIN, imageName: 'QQ.exe' }), win({ rect: FULL_MAIN, imageName: 'game.exe' })] });
+    check('QQ + 真全屏应用并存 ⇒ 真应用仍触发', r.paused.has(1));
+  }
+
+  console.log('\n§8 挂机/熄屏兜底（57 轮：纯熄屏不触发 QUNS，靠无输入超时）');
+  {
+    const base = { monitors: MONITORS, windows: [], pauseOnBattery: false };
+    // QUNS 正常 + 无输入超阈值 ⇒ idle 暂停（合盖熄屏场景：不锁屏不进屏保）
+    let r = fw.evaluatePause({ ...base, away: false, idleSec: 600, idlePauseSeconds: 300 });
+    check('QUNS 正常、无输入 600s ≥ 300s ⇒ 全部暂停（reason=idle）',
+      r.paused.size === MONITORS.length && Object.values(r.reasons).every((x) => x === 'idle'),
+      [...r.reasons.values?.() || Object.values(r.reasons)].join(','));
+    // 未超阈值
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 299, idlePauseSeconds: 300 });
+    check('无输入 299s < 300s ⇒ 不暂停', r.paused.size === 0);
+    // idlePauseSeconds=0 = 关闭判定
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 99999, idlePauseSeconds: 0 });
+    check('idlePauseSeconds=0 ⇒ 判定关闭，永不触发', r.paused.size === 0);
+    // pauseOnIdle=false 显式关闭
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 99999, pauseOnIdle: false, idlePauseSeconds: 300 });
+    check('pauseOnIdle=false ⇒ 不暂停', r.paused.size === 0);
+    // 锁屏（QUNS）与 idle 并存 ⇒ reason 取 away（QUNS 是更明确的人离开证据）
+    r = fw.evaluatePause({ ...base, away: true, idleSec: 600, idlePauseSeconds: 300 });
+    check('锁屏 + 超时并存 ⇒ reason=away', Object.values(r.reasons).every((x) => x === 'away'));
+    // 默认值：不传 idlePauseSeconds ⇒ 0 ⇒ 不触发（向后兼容旧调用方）
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 99999 });
+    check('不传 idlePauseSeconds（旧调用方）⇒ 不触发', r.paused.size === 0);
+    // idle 恢复：回掉阈值下 ⇒ 解除
+    r = fw.evaluatePause({ ...base, away: false, idleSec: 10, idlePauseSeconds: 300 });
+    check('用户动了一下（10s）⇒ 解除', r.paused.size === 0);
+  }
+
+  console.log('\n§9 电池供电暂停（58 轮改判：displayWatch 熄屏事件真机收不到，弃用；拔电走 GetSystemPowerStatus 直查）');
+  {
+    const base = { monitors: MONITORS, windows: [], idleSec: 0, idlePauseSeconds: 300 };
+    // 用电池 + 开关开 ⇒ 全部暂停
+    let r = fw.evaluatePause({ ...base, battery: true, pauseOnBattery: true });
+    check('用电池 + pauseOnBattery ⇒ 全部暂停（reason=battery）',
+      r.paused.size === MONITORS.length && Object.values(r.reasons).every((x) => x === 'battery'),
+      Object.values(r.reasons).join(','));
+    // 用电池 + 开关关 ⇒ 照常
+    r = fw.evaluatePause({ ...base, battery: true, pauseOnBattery: false });
+    check('pauseOnBattery=false ⇒ 用电池也不暂停', r.paused.size === 0);
+    // 接回电源 ⇒ 恢复
+    r = fw.evaluatePause({ ...base, battery: false, pauseOnBattery: true });
+    check('接回市电 ⇒ 不暂停（自动恢复）', r.paused.size === 0);
+    // 优先级：锁屏比电池证据更直接
+    r = fw.evaluatePause({ ...base, away: true, battery: true, pauseOnBattery: true });
+    check('锁屏 + 用电池并存 ⇒ reason=away', Object.values(r.reasons).every((x) => x === 'away'));
+    // 优先级：电池压过全屏应用（省电压倒一切，48 轮拍板）
+    r = fw.evaluatePause({
+      monitors: MONITORS,
+      windows: [{ visible: true, exStyle: 0, cloaked: false, cls: 'Chrome_WidgetWin_1', rect: { l: 0, t: 0, r: 1920, b: 1040 } }],
+      battery: true,
+      pauseOnBattery: true,
+    });
+    check('用电池 + 全屏应用并存 ⇒ reason=battery', Object.values(r.reasons).every((x) => x === 'battery'));
+    // isOnBattery()：真机调用要能出结果（台式机返回 false 或 null 都算正常，绝不能炸）
+    const b = fw.isOnBattery();
+    check('isOnBattery() 真机调用不炸（boolean 或 null）', b === true || b === false || b === null, String(b));
   }
 
   console.log(`\n===== 单测结果: ${pass}/${pass + fail} =====`);

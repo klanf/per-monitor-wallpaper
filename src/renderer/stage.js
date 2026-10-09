@@ -103,6 +103,7 @@ let rafId = 0;
 let lastPaint = 0;             // fpsCap 时间闸门
 const ken = { start: 0 };      // Ken Burns 相位（永不重置 —— 重置就是跳变）
 let activeVideo = null;        // 当前在播的 <video>（视频壁纸时非空，图片/网页壁纸为 null）
+let particleFx = null;         // 粒子层句柄（particles.js，init 时绑定 #particles）
 
 /** 全屏 / 锁屏暂停（stage:pause）：冻结 = 停 rAF，画面钉在当前帧 */
 let frozen = false;
@@ -868,8 +869,9 @@ function kenTick(now) {
   }
   if (cfg.breath) {
     // cos 从 0 相位起步：scale 从 1 平滑出发，不重置相位（重置=瞬跳，KEN 的教训）
-    const ph = (now % BREATH.period) / BREATH.period;   // 0..1
-    s += BREATH.amplitude * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
+    // 周期/幅度由 profile.breathPeriod / breathAmplitude 驱动（主树 47 轮同款）
+    const ph = (now % cfg.breathPeriod) / cfg.breathPeriod;   // 0..1
+    s += (cfg.breathAmplitude / 100) * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
   }
   layer.canvas.style.transform = `scale(${s.toFixed(5)})`;
 }
@@ -928,9 +930,14 @@ function ensureRaf() {
       if (activeVideo && currentEntry && kindOf(currentEntry) === 'video') {
         drawSource(layers[active], activeVideo, activeVideo.videoWidth, activeVideo.videoHeight);
       }
+      // 粒子层与过渡/缓动共享同一个 fpsCap 闸门；stage:pause 停 rAF 即冻结，
+      // 恢复后的时间跳变由 particles.js 的 DT_MAX 钳位兜住
+      if (particleFx) particleFx.frame(now);
     }
     if (frozen) return;                    // 暂停：这一帧画完就停表
-    if (anim || currentEntry) rafId = requestAnimationFrame(loop);
+    if (anim || currentEntry || (particleFx && particleFx.isActive())) {
+      rafId = requestAnimationFrame(loop);
+    }
   };
   rafId = requestAnimationFrame(loop);
 }
@@ -1148,8 +1155,32 @@ function applyChannelConfig() {
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
   if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
+  // 呼吸节奏（主树 47 轮：周期/幅度可配；profile 不写 = 6000ms / ±2%）
+  if (Number.isFinite(Number(p.breathPeriod))) {
+    cfg.breathPeriod = Math.min(Math.max(Math.round(Number(p.breathPeriod)), 2000), 15000);
+  }
+  if (Number.isFinite(Number(p.breathAmplitude))) {
+    cfg.breathAmplitude = Math.min(Math.max(Number(p.breathAmplitude), 0.5), 5);
+  }
   // 时段滤镜（profile 不写 = 无）
   if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
+  // 粒子特效：种类白名单与数量收紧都在 particles.js 里做，这里透传。
+  // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
+  if (p.particles !== undefined) cfg.particles = String(p.particles || '');
+  if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
+  // 粒子绕开鼠标（主树 54 轮追记六，profile 不写 = 默认开）：关了就不把光标喂给粒子层
+  if (p.particleCursor !== undefined) cfg.particleCursor = Boolean(p.particleCursor);
+  rollParticles();
+  if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
+  // 特效从关到开会把 rAF 循环唤醒（冻结时 ensureRaf 自己会挡）
+  ensureRaf();
+}
+
+/** random：每次换图从全部种类里抽一种。非 random 的值原样生效（含 '' = 关） */
+function rollParticles() {
+  if (cfg.particles !== 'random') { cfg.particlesActive = cfg.particles; return; }
+  const pool = (window.WPParticles && window.WPParticles.PARTICLE_TYPES) || ['rain', 'sakura'];
+  cfg.particlesActive = pool[(Math.random() * pool.length) | 0] || 'rain';
 }
 
 async function applyChannels(list) {
@@ -1188,6 +1219,7 @@ async function applyChannels(list) {
 function onResize() {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(async () => {
+    if (particleFx) particleFx.resize();   // 粒子画布跟屏幕走，与当前帧类型无关
     if (!currentEntry) return;
     // 视频：下一 rAF 自动按新画布尺寸重画；网页：iframe 100% 自适应 —— 都不用管
     if (kindOf(currentEntry) !== 'image') return;
@@ -1218,6 +1250,11 @@ async function init() {
   layers.A.ctx = layers.A.canvas.getContext('2d');
   layers.B.ctx = layers.B.canvas.getContext('2d');
   todEl = document.getElementById('tod');
+  // 粒子层（particles.js 先于本文件加载）。缺了不致命：粒子开关静默失效，其余照常
+  if (window.WPParticles && document.getElementById('particles')) {
+    particleFx = window.WPParticles.createParticles(document.getElementById('particles'));
+    particleFx.resize();
+  }
 
   window.addEventListener('resize', onResize);
   // 舞台盖在图标层之上必然吃掉鼠标（LAYERED 穿透会让 Chromium 白屏，见 desktopHost）。
@@ -1257,6 +1294,10 @@ async function init() {
   window.addEventListener('mousemove', (e) => {
     glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
     glState.mouseUntil = performance.now() + 2500;
+    // 粒子斥力避让（主树 54 轮追记六）：粒子层拿到 CSS 像素坐标自己换算；
+    // 开关关着就不喂（省一层白工）。live 不走主进程 30Hz 广播 —— 舞台窗口
+    // 本来就吃得到真实 mousemove（视差接管同源），直接本地喂。
+    if (particleFx && cfg.particleCursor) particleFx.setCursor(e.clientX, e.clientY);
   }, { passive: true });
   // 深度生成完成 → 正在显示这张图的话，现场从 2D 升级成视差（短交叉淡入）。
   // ⚠️ 不能因 glState.anim 直接放弃：上一张视差的退场淡出（~900ms）和本张的
@@ -1314,6 +1355,10 @@ async function init() {
     if (!payload || payload.id !== myChannel) return;   // 每块 stage 只听自己频道
     if (frozen) return;   // 暂停：留在当前帧，新图等恢复后下一拍再上
     if (payload.entry) {
+      if (cfg.particles === 'random') {   // 随机粒子：每次换图重抽一种（手动翻页也走 tick）
+        rollParticles();
+        if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
+      }
       showFrame(payload.entry, payload.dir, true);
     } else {
       currentEntry = null;   // 频道空了（相簿被清空）→ 黑屏
