@@ -86,6 +86,21 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
  */
 if (process.env.WP_USER_DATA) app.setPath('userData', path.resolve(process.env.WP_USER_DATA));
 
+/*
+ * 同一件事的命令行形式：桌面右键菜单的注册表命令会带 `--wp-user-data="<路径>"`
+ * （shellMenu.commandLine 注入）。不带的话，点菜单新起的进程会用**默认** userData
+ * —— 锁按 userData 分钥匙，它跟正在跑的隔离实例互不认识，就自己成了完整实例：
+ * 挂自己的舞台盖住原实例（用户看到「舞台消失又瞬间加回来」），800ms 后把动作
+ * 办在一个将死的进程上再退出 —— 运行中的实例毫无感知（暂停不生效、删错图的根因）。
+ * Windows 引号规则 `a="b c"` 解析成单个参数 `a=b c`，但这里还是兼容带引号的形式。
+ */
+(function applyArgvUserData() {
+  const raw = process.argv.find((a) => typeof a === 'string' && a.startsWith('--wp-user-data='));
+  if (!raw) return;
+  const p = raw.slice('--wp-user-data='.length).replace(/^"(.*)"$/, '$1').trim();
+  if (p) app.setPath('userData', path.resolve(p));
+})();
+
 let store = null;
 let mainWindow = null;
 let scheduler = null;
@@ -512,16 +527,34 @@ async function stepWallpaperAtCursor() {
   return stepWallpaperAt(pt, 1);
 }
 
-/* 手动暂停集（桌面右键「暂停/继续壁纸」）：与 fullscreenWatch 的自动暂停并集生效 */
+/* 手动暂停集（桌面右键「暂停/继续壁纸」）：与 fullscreenWatch 的自动暂停并集生效。
+ * 存的是 **Electron displayId**（与 fullscreenWatch/liveStage 同一口径）；
+ * unified 频道不对应单屏，用哨兵表示「全部舞台」。 */
 const manualPausedDisplays = new Set();
+const PAUSE_ALL = '__all__';
+
+/** IDesktopWallpaper 设备路径 → Electron displayId（频道 id 和舞台 id 是两套体系）。
+ *  直接把设备路径塞进暂停集，liveStage 的 pauseDisplays.has(rec.displayId)
+ *  永远是 false —— 这是第十五轮「点了暂停舞台照转」的第二层根因。 */
+function monitorPathToDisplayId(monitorId) {
+  if (!monitorId || monitorId === UNIFIED_ID) return null;
+  const result = desktopWallpaper.enumMonitors();
+  const m = (result.monitors || []).find((x) => x.id === monitorId);
+  if (!m) return null;
+  return liveStage.displayIdForMonitor(m);   // 几何匹配（±2px 容差），可能 null
+}
 
 /** 把自动暂停与手动暂停合并后广播（fullscreenWatch 每拍 / 手动切换后都走这里） */
 function broadcastPauseState(pausedIds, away, reasons) {
   const merged = new Set(pausedIds);
   const rs = { ...(reasons || {}) };
   for (const id of manualPausedDisplays) {
-    merged.add(id);
-    rs[id] = 'manual';
+    if (id === PAUSE_ALL) {
+      for (const did of liveStage.allDisplayIds()) { merged.add(did); rs[did] = 'manual'; }
+    } else {
+      merged.add(id);
+      rs[id] = 'manual';
+    }
   }
   liveStage.applyPauseState({ pausedIds: [...merged], away, reasons: rs });
 }
@@ -537,11 +570,30 @@ async function togglePauseAtCursor() {
     return { ok: false, error: at.text };
   }
   const { id, label } = at;
-  const paused = !manualPausedDisplays.has(id);
-  if (paused) manualPausedDisplays.add(id);
-  else manualPausedDisplays.delete(id);
+
+  // 频道 id（设备路径）→ Electron displayId；unified 直接全暂停。
+  // 换算失败时兜底：只有一块舞台就用它的 displayId，多屏时宁可报错也不乱暂停。
+  let pausedId;
+  if (id === UNIFIED_ID) {
+    pausedId = PAUSE_ALL;
+  } else {
+    const did = monitorPathToDisplayId(id);
+    if (did != null) pausedId = did;
+    else {
+      const ids = liveStage.allDisplayIds();
+      if (ids.length === 1) pausedId = ids[0];
+    }
+  }
+  if (pausedId == null) {
+    send('notice', { text: `${label} 对不上渲染舞台，暂停不了`, error: true });
+    return { ok: false, error: '显示器与舞台映射失败', channelId: id, label };
+  }
+
+  const paused = !manualPausedDisplays.has(pausedId);
+  if (paused) manualPausedDisplays.add(pausedId);
+  else manualPausedDisplays.delete(pausedId);
   broadcastPauseState([], false, {});   // 手动切换立即生效（不等 fullscreenWatch 下拍）
-  console.log(`[desktop-menu] ${paused ? '暂停' : '继续'} ${label}（手动）`);
+  console.log(`[desktop-menu] ${paused ? '暂停' : '继续'} ${label}（手动，pausedId=${pausedId}）`);
   send('notice', { text: `${label} 壁纸已${paused ? '暂停' : '恢复'}` });
   return { ok: true, channelId: id, label, paused };
 }
@@ -1870,8 +1922,14 @@ if (!gotLock) {
       // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
       isLiveDegraded: () => liveStage.isDegraded(),
       // 暂停感知：被冻结（全屏/挂机）的显示器不推进轮播（2026-10-09，
-      // 修复「暂停期间 index 走了、恢复后右键删除删到没显示过的图」）
-      isPaused: (displayId) => liveStage.isPausedForDisplay(displayId),
+      // 修复「暂停期间 index 走了、恢复后右键删除删到没显示过的图」）。
+      // ⚠️ 调度器传进来的是频道 id（设备路径），必须先换算成 Electron
+      // displayId 再查暂停集 —— 原样查永远 false，感知形同虚设。
+      isPaused: (monitorId) => {
+        if (monitorId === UNIFIED_ID) return liveStage.anyDisplayPaused();
+        const did = monitorPathToDisplayId(monitorId);
+        return did != null ? liveStage.isPausedForDisplay(did) : false;
+      },
       enumerate: () => {
         const info = listMonitors();
         return { ok: info.ok, error: info.error, monitors: info.monitors };

@@ -148,12 +148,36 @@ function entryPaths(override) {
   };
 }
 
-/** 拼 `"exe" "appPath" --flag`（含引号：两个路径都可能带空格） */
+/**
+ * userData 注入（2026-10-09）：
+ * 单实例锁按 userData 分钥匙。隔离 userData 的实例（WP_USER_DATA 环境变量 /
+ * 验货 VBS）在跑时，菜单命令若不带 userData，点菜单新起的进程用默认 userData
+ * —— 拿到的是另一把锁，它自己成为一个完整实例（挂自己的舞台盖住运行中的
+ * 实例，800ms 后把动作办在一个将死的进程上再退出），运行中的实例毫无感知。
+ * 命令行带上 `--wp-user-data="<路径>"` 后，新进程先换 userData 再抢锁：
+ * 拿不到锁 → second-instance 正常转发到运行中的实例。
+ * 在 Electron 主进程里从 app.getPath('userData') 现取；CLI 直装（脱离
+ * Electron，require('electron') 拿到的是字符串）必须显式传 override.userData。
+ */
+function userDataForCommand(override) {
+  if (override && override.userData) return override.userData;
+  try {
+    const { app } = require('electron');
+    if (app && typeof app.getPath === 'function' && app.isPackaged !== undefined) {
+      return app.getPath('userData');
+    }
+  } catch { /* 脱离 Electron（CLI 直装）—— 没有 override.userData 就不加 */ }
+  return null;
+}
+
+/** 拼 `"exe" "appPath" --flag --wp-user-data="…"`（含引号：路径都可能带空格） */
 function commandLine(item, override) {
   const { exe, appPath } = entryPaths(override);
   const parts = [`"${exe}"`];
   if (appPath) parts.push(`"${appPath}"`);
   parts.push(item.arg);
+  const ud = userDataForCommand(override);
+  if (ud) parts.push(`--wp-user-data="${ud}"`);
   return parts.join(' ');
 }
 

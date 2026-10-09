@@ -3808,3 +3808,45 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
 - 真机验收项：①动效风格下拉三个选项实际观感（切风格即生效，滑杆值自动重置）；
   ②桌面右键「暂停 / 继续壁纸」：暂停后 GPU 占用归零、轮播停走，再点恢复；
   ③暂停状态下右键删除删的就是看见的那张（index 与显示一致的直接验证）。
+
+## 深度视差第十六轮：桌面菜单路由 + 暂停 id 口径 —— 两个真机 bug 一次修（2026-10-09 20:xx）
+
+### 现象（用户实测）
+
+1. 右键「暂停 / 继续壁纸」：舞台**消失又瞬间加回来**，动画照转，暂停完全不生效；
+2. 右键「删除当前显示器的壁纸」：删掉的不是正在显示的那张。
+
+### 根因（两层，日志实锤）
+
+- **根因一（路由，两个 bug 共同）**：单实例锁按 userData 分钥匙，而验货实例的
+  userData 是 VBS 环境变量 `WP_USER_DATA=wp-live-userdata`；注册表菜单命令不带
+  userData → 点菜单新起的进程拿**默认** userData 的锁 → 拿到了 → 自己成为完整
+  实例：挂自己的舞台盖住原实例（=「舞台消失又瞬间加回来」），800ms 后把动作
+  办在**将死的进程**上再退出，运行中的实例毫无感知（live-debug.log 全程 0 条
+  manual/desktop-menu 记录）。删除落在新实例上 = 用它刚 rebuild 的 index 删 → 删错图。
+- **根因二（id 口径，暂停链路）**：暂停集的口径是 Electron displayId（数字，
+  fullscreenWatch 产出、liveStage 舞台判定都用它），而频道 id 是 IDesktopWallpaper
+  设备路径（字符串）。第十五轮手动暂停把设备路径直接塞进暂停集 →
+  `pauseDisplays.has(rec.displayId)` 永远 false；第十四轮的调度器 isPaused 感知
+  同理（isPaused(ch.id) 传设备路径，对照集里是数字）—— **感知从未命中过**。
+
+### 改动
+
+- **shellMenu.js**：commandLine 追加 `--wp-user-data="<userData>"`（在 Electron
+  主进程里从 app.getPath 现取；CLI 直装必须显式传 override.userData）；
+- **main.js**：①锁之前解析 argv 的 `--wp-user-data=`（与 WP_USER_DATA 环境变量
+  并列，新进程先换 userData 再抢锁 → 拿不到锁 → second-instance 正常转发）；
+  ②monitorPathToDisplayId（设备路径→displayId，复用 liveStage 几何匹配 ±2px）；
+  ③手动暂停集改存 displayId（unified 用 PAUSE_ALL 哨兵，广播时展开成全部舞台）；
+  ④调度器 isPaused 依赖先换算再查（unified 频道用 anyDisplayPaused）；
+- **liveStage.js**：导出 displayIdForMonitor / allDisplayIds / anyDisplayPaused；
+- **tools/reinstall-desktop-menu.js**：三项菜单命令重装进注册表（带 userData），
+  statusAll 核验 installed=true stale=false。（教训：node -e 内联脚本里的反斜杠
+  路径会被 Git Bash 改写成 `D://`，必须用脚本文件跑。）
+
+### 验证
+
+- node --check 三文件通过；注册表三项命令核验一致；
+- 真机验收（需重启验货实例加载新代码）：①右键暂停 → 舞台冻结、GPU 归零，
+  再点恢复续播，且**不再出现舞台消失/闪回**；②暂停期间与播放中右键删除，
+  删的都是看见的那张。

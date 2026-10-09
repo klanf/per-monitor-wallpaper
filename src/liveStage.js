@@ -137,6 +137,29 @@ function isPausedForDisplay(displayId) {
   return pauseDisplays.has(displayId);
 }
 
+/*
+ * 暂停集合的统一口径是 **Electron displayId**（fullscreenWatch 的 pausedIds 就是它）。
+ * 但频道 id 是 IDesktopWallpaper 设备路径 —— 两套体系直接互查永远 false
+ * （2026-10-09 实锤：手动暂停把设备路径塞进暂停集，舞台照转；调度器侧同理，
+ * 第十四轮的 isPaused 感知实际从未命中）。下面三个查询给 main.js 做换算用。
+ */
+
+/** IDesktopWallpaper 显示器描述（含物理矩形）→ Electron displayId；匹配不上返回 null */
+function displayIdForMonitor(m) {
+  const d = displayForMonitor(m || {});
+  return d ? d.id : null;
+}
+
+/** 当前所有舞台挂着的 Electron displayId（去重） */
+function allDisplayIds() {
+  return [...new Set([...stages.values()].map((r) => r.displayId).filter((id) => id != null))];
+}
+
+/** 任一舞台处于暂停 = 统一频道（unified）也要停轮播 */
+function anyDisplayPaused() {
+  return pauseDisplays.size > 0;
+}
+
 /* ---------------------------------------------------------------- 广播 */
 
 function broadcast(type, payload) {
@@ -453,6 +476,9 @@ function cancelDesktopMenu() {
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
   isPausedForDisplay,   // 调度器暂停感知用（暂停的显示器不推进轮播）
+  displayIdForMonitor,  // 设备路径 → Electron displayId（手动暂停换算用）
+  allDisplayIds,        // 当前舞台的 displayId 集合（PAUSE_ALL 展开用）
+  anyDisplayPaused,     // unified 频道的暂停感知
   showDesktopContextMenu,
   cancelDesktopMenu,
 };
