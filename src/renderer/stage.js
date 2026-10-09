@@ -77,6 +77,8 @@ const cfg = {
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
   depthEnabled: true,          // 深度视差（profile.depthParallax=false 关；默认开）
+  depthFlow: true,             // DepthFlow POM 模式（profile.depthFlow=false 回退第五轮单平面；
+                               // 离线逐帧对比 5 相位全帧差 ≈2.5 噪声级后默认开，真机验收后落库）
   depthAmp: 0.07,              // 视差幅度（profile.depthAmp）
   depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
   depthLight: 0.45,            // 灯光强度（profile.depthLight）
@@ -427,6 +429,57 @@ uniform float uLight;
 uniform float uLightsOn;
 uniform float uHasDepth;
 uniform float uAlpha;
+uniform float uFlow;       // 1 = DepthFlow POM 模式（C 路线移植）
+uniform vec2  uFlowOff;    // 流模式相机位移（屏幕 gluv 单位，y 向上）
+
+// stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
+// 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
+vec4 texMirror(sampler2D tex, vec2 stuv) {
+  return texture2D(tex, 1.0 - abs(1.0 - mod(stuv, 2.0)));
+}
+
+// DepthFlow POM 主路径（语义 1:1 对齐 depthflow.glsl + shaderflow camera.glsl）
+// Circle 预设参数：offset 幅度 0.5 / isometric 0.60 / steady 0.30；DepthState 默认 height 0.20。
+// 相机：origin 在 z=0 平面按 zoom*isometric 缩放，target 在 z=focal 平面按 zoom 缩放，
+// 与 z=1 深度面求交后，两阶段步进（粗探 overshoot + 细步回退）找视线与深度面的交点。
+vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
+  float height = 0.20;   // DepthState.height 默认（视差强度主旋钮）
+  float steady = 0.30;   // Circle 预设：固定点绕 depth=steady 转动
+  float isom   = 0.60;   // Circle 预设：视线平行分量
+  float focal  = 1.0;    // focus=0 → focal_length = 1 - focus*height
+  // camera.glsl CameraProject（透视投影）：origin/target 各在 z=0 / z=focal 平面
+  vec3 origin = vec3(off + g0 * (isom), 0.0);
+  vec3 target = vec3(off + g0, focal);
+  // CameraRay2D：与 z=1 平面求交（plane_normal=+z），t = (1-0)/focal
+  vec2 camGluv = origin.xy + (target.xy - origin.xy) * (1.0 / focal);
+  // DepthMake：sticky=true（背景钉住），center=0，origin 附加位移=0
+  float relSteady = steady * height;
+  vec3 intersect = vec3(camGluv - off / (1.0 - relSteady), 1.0);
+  // 步长取 CLI 默认 quality=50：细步 1/mix(200,2000,0.5)、粗探 1/mix(50,120,0.5)
+  float quality = 1.0 / 1100.0;
+  float probe   = 1.0 / 85.0;
+  float safe = 1.0 - height;
+  float value = 0.0;
+  float walk = 0.0;
+  vec2 guv = g0;
+  for (int stage = 0; stage < 2; stage++) {
+    bool fwd = (stage == 0);
+    for (int it = 0; it < 1000; it++) {
+      if (fwd && walk > 1.0) break;
+      walk += (fwd ? probe : -quality);
+      vec3 point = mix(origin, intersect, mix(safe, 1.0, walk));
+      guv = point.xy;
+      vec2 stD = guv / vec2(imgAspect, 1.0) * 0.5 + 0.5;
+      value = texMirror(uDepth, stD).r;
+      float surface = height * value;
+      float ceiling = 1.0 - point.z;
+      if (ceiling < surface) { if (fwd) break; }
+      else if (!fwd) break;   // 回退阶段回到表面外 → 交点即此处
+    }
+  }
+  vec2 stF = guv / vec2(imgAspect, 1.0) * 0.5 + 0.5;
+  return texMirror(uImg, stF).rgb;
+}
 
 void main() {
   float canvasAspect = uCanvas.x / uCanvas.y;
@@ -437,6 +490,15 @@ void main() {
   vec2 crop = vec2(1.0);
   if (uImgAspect > canvasAspect) crop.x = canvasAspect / uImgAspect;
   else                           crop.y = uImgAspect / canvasAspect;
+
+  // ---- DepthFlow POM 模式：无 margin（靠镜像重复兜边，与原版观感一致）----
+  if (uFlow > 0.5 && uHasDepth > 0.5) {
+    vec2 off = uFlowOff * crop;   // 屏幕位移 → 图像 gluv 空间（cover 裁切同比缩放）
+    vec2 g0 = (vec2(0.5) + (uv01 - 0.5) * crop - 0.5) * 2.0 * vec2(uImgAspect, 1.0);
+    gl_FragColor = vec4(flowSample(g0, off, uImgAspect), uAlpha);
+    return;
+  }
+
   float margin = uAmp * 0.55 + 0.015;
   vec2 zoom = crop * (1.0 - 2.0 * margin);
   vec2 uv = vec2(0.5) + (uv01 - 0.5) * zoom;
@@ -514,7 +576,7 @@ function glInit() {
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
     const U = {};
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
-      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha']) U[n] = gl.getUniformLocation(prog, n);
+      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
@@ -587,6 +649,27 @@ function glCam(tSec, nowMs) {
   ];
 }
 
+/**
+ * 流模式（DepthFlow Circle 移植）相机位移：8s 一圈的圆轨迹（与样片同款），
+ * 周期 = 2π 保证首尾无缝；鼠标接管时同一平滑权重淡入。
+ * 幅度 0.5 = DepthFlow Circle 预设 intensity；depthDrift 只调速不破坏连续性。
+ * ⚠️ y 轴符号：shader 内 uv01 已翻成「y 向下」屏幕系（与 clientY 同向），而
+ * DepthFlow 的 offset 是 y 向上 —— 离线逐帧对比实锤（negoff_y 变体把帧差从
+ * ~21 打到 ~2.5 噪声级），所以自动漂移的 y 取反进 uniform；鼠标 clientY 本就
+ * y 向下，天然同轴，不再翻。
+ */
+function glCamFlow(tSec, nowMs) {
+  const cycle = (tSec / 8.0) * Math.PI * 2 * cfg.depthDrift;
+  const ax = Math.cos(cycle) * 0.5;
+  const ay = -Math.sin(cycle) * 0.5;   // DepthFlow offset 是 y 向上，这里 y 向下
+  const active = nowMs < glState.mouseUntil;
+  glState.mouseW += ((active ? 1 : 0) - glState.mouseW) * (active ? 0.10 : 0.02);
+  return [
+    ax * (1 - glState.mouseW) + glState.mouse[0] * 0.5 * glState.mouseW,
+    ay * (1 - glState.mouseW) - glState.mouse[1] * 0.5 * glState.mouseW,
+  ];
+}
+
 function glDrawLayer(L, alpha, cam, tSec) {
   const gl = glState.gl;
   gl.activeTexture(gl.TEXTURE0);
@@ -605,6 +688,8 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uLightsOn, 1);
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
   gl.uniform1f(glState.U.uAlpha, alpha);
+  gl.uniform1f(glState.U.uFlow, cfg.depthFlow ? 1 : 0);
+  gl.uniform2f(glState.U.uFlowOff, cam[0], cam[1]);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -616,7 +701,7 @@ function glTick(now) {
   if (!has) return;
   const gl = glState.gl;
   const tSec = (now - t0GL) / 1000;
-  const cam = glCam(tSec, now);
+  const cam = cfg.depthFlow ? glCamFlow(tSec, now) : glCam(tSec, now);
   gl.disable(gl.BLEND);
   if (glState.anim) {
     const p = Math.min(1, (now - glState.anim.t0) / Math.max(1, glState.anim.duration));
@@ -980,6 +1065,7 @@ function applyChannelConfig() {
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
   // 深度视差（profile 不写 = 默认开 —— 用户要求「所有壁纸自动有视差」）
   if (p.depthParallax !== undefined) cfg.depthEnabled = Boolean(p.depthParallax);
+  if (p.depthFlow !== undefined) cfg.depthFlow = Boolean(p.depthFlow);
   if (Number.isFinite(p.depthAmp)) cfg.depthAmp = p.depthAmp;
   if (Number.isFinite(p.depthDrift)) cfg.depthDrift = p.depthDrift;
   if (Number.isFinite(p.depthLight)) cfg.depthLight = p.depthLight;

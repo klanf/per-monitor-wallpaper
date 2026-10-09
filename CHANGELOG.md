@@ -3590,3 +3590,48 @@ node --check 通过；grep 双平面符号清零。
 ### 验证
 
 node --check 两文件通过；双平面符号 grep 清零。
+
+## 深度视差第十轮：DepthFlow POM 实时移植（C 路线），离线逐帧验收通过（2026-10-09 11:3x~12:2x）
+
+### 背景
+
+第九轮终止分层后，用户确认社区方案 DepthFlow（AGPL，1.6k star）样片效果——
+Circle 预设出片通过。给用户对比 A（离线视频壁纸：实测 1440p/8s 仅 3.4s 渲染、
+1.1MB/张、首尾帧差 0.17 无缝循环）vs C（实时移植：保鼠标交互、零依赖零磁盘、
+效果为近似复刻）后，用户拍板 **C 路线**，并按第九轮纪律先离线对比验收再落库。
+
+### 移植内容（src/renderer/stage.js，未提交待真机）
+
+- **DEPTH_FS 新增 uFlow 分支**（旧单平面路径原样保留，可回退）：
+  - POM 两阶段步进 1:1 移植：粗探步长 1/85 overshoot + 细步回退 1/1100
+    （iQuality=0.5 对应 CLI 默认 quality 50）；
+  - shaderflow camera.glsl 投影：origin 在 z=0 按 zoom*isometric、target 在
+    z=focal 按 zoom，与 z=1 面求交；
+  - Circle 预设参数（intensity 0.5 / isometric 0.6 / steady 0.3，height 默认 0.20）；
+  - `texMirror` 镜像重复采样 = 大角度露边时的边缘外扩。
+- **glCamFlow**：8s/圈圆轨迹（cycle=(t/8)*2π，首尾无缝），鼠标接管平滑共存；
+  lens/blur/vignette/colors 全默认关未移植。
+- **cfg.depthFlow 默认开**，`profile.depthFlow: false` 一键回退第五轮。
+
+### 离线对比验收（真机纪律，_tmp/depthflow-demo/flowtest/ 四脚本）
+
+真图 + App 同款 worker 生成深度 → DepthFlow 原版渲 1280x720/8s 参考视频 →
+无头 Edge 用**同一份 shader 源码**（从 stage.js 正则抽取，单一真源）逐相位渲染 →
+5 相位帧差全部 ≈2.5（编码噪声级；垂直翻转对照 95+ 证明非碰巧）。
+修复一个方向坑：DepthFlow offset 是 y 向上、shader 内 uv01 已翻 y 向下，
+`negoff_y` 矩阵实验把带 y 相位帧差从 21 打到 2.5，glCamFlow 的自动漂移 y 取反
+（鼠标 clientY 天然同轴不翻）。
+
+### 踩坑记录
+
+- harness 模板 `const SHADER = %s` 忘包反引号 → 整个 script 解析期语法错误，
+  表现为**黑屏+无任何报错**（页面无错误 DOM）；node --check 抽取脚本定位。
+- file:// 页面 fetch 本地文件被 CORS 拦：改 `<img>` 加载 + `--allow-file-access-from-files`。
+- headless WebGL 截图要 `--headless=new --use-angle=swiftshader`。
+- cv2 VideoWriter avc1 缺 OpenH264 DLL：PNG 序列 + imageio_ffmpeg（libx264）编码。
+
+### 验证
+
+- node --check 通过；5 相位离线帧差 ≈2.5（噪声级）；
+- 并排对比视频 compare_loop.mp4（左原版/右移植，16 相位循环）用户已认可；
+- 真机重启验收通过（用户 12:2x 反馈「效果很不错的」）。
