@@ -1504,7 +1504,7 @@ function cardHtml(ch) {
       <div class="mc-block">
         <label class="field-label">深度视差</label>
         <select class="select sm" data-field="depthParallax" title="这块屏要不要开深度视差（有深度图的壁纸生效）；跟随全局 = 用「外观」页里的总开关。多屏全开 GPU 消耗大，可以只给主力屏开">${depthOptions(ov.depthParallax === true ? 'on' : ov.depthParallax === false ? 'off' : '')}</select>
-        <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹"${resolvedDepth(id) ? '' : ' style="display:none"'}>${flowStyleOptions(ov.flowStyle)}</select>
+        <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹"${resolvedDepth(ch.id) ? '' : ' style="display:none"'}>${flowStyleOptions(ov.flowStyle)}</select>
       </div>
     </div>
   </div>`;
@@ -1528,7 +1528,12 @@ function renderCards() {
   renderMonitorChips();
 
   const current = state.channels.find((c) => c.id === state.editMonitorId);
-  els.monitorCards.innerHTML = current ? cardHtml(current) : '';
+  // 单卡渲染失败不能炸主窗口（r23 实锤：一处 ReferenceError 让 init 断链，
+  // 相簿列表整页画不出来 → 停在「还没有图片目录」空态页）
+  let cardHtmlOut = '';
+  try { cardHtmlOut = current ? cardHtml(current) : ''; }
+  catch (err) { console.error('[cards] 卡片渲染失败:', err); }
+  els.monitorCards.innerHTML = cardHtmlOut;
 
   els.monitorHint.textContent = state.channels.length
     ? `已检测到 ${state.channels.length} 台显示器；点上面的胶囊切换要编辑的屏。`
