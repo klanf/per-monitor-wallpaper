@@ -452,6 +452,7 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
+  isPausedForDisplay,   // 调度器暂停感知用（暂停的显示器不推进轮播）
   showDesktopContextMenu,
   cancelDesktopMenu,
 };

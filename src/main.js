@@ -1832,6 +1832,9 @@ if (!gotLock) {
       playback,
       // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
       isLiveDegraded: () => liveStage.isDegraded(),
+      // 暂停感知：被冻结（全屏/挂机）的显示器不推进轮播（2026-10-09，
+      // 修复「暂停期间 index 走了、恢复后右键删除删到没显示过的图」）
+      isPaused: (displayId) => liveStage.isPausedForDisplay(displayId),
       enumerate: () => {
         const info = listMonitors();
         return { ok: info.ok, error: info.error, monitors: info.monitors };

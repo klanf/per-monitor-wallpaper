@@ -914,6 +914,16 @@ function setFrozen(next) {
       slog('解冻自愈：重启首帧重显', String(e.path).split(/[\\/]/).pop());
       currentEntry = null;                 // 绕过 applyChannels 的「同帧跳过」守卫
       showFrame(e, 1, false).catch((err) => slog('解冻自愈失败 ——', err && err.message));
+    } else {
+      // 解冻补同步：冻结期间调度器照常推进（tick 全被 frozen 拦掉），桌面
+      // 停在冻结前那张，调度器 index 却已前进若干张 —— 不补的话桌面最长
+      // 憋 60s 旧图，期间右键「删除当前显示器的壁纸」删的是**从没显示过**
+      // 的图（2026-10-09 用户实测踩中： maximizing 期间走了好几拍）。
+      // applyChannels 内部有「路径没变就不动」守卫：没掉拍时零开销。
+      if (window.wp && window.wp.listChannels) {
+        window.wp.listChannels().then(applyChannels)
+          .catch((err) => slog('解冻补同步失败 ——', err && err.message));
+      }
     }
   }
 }

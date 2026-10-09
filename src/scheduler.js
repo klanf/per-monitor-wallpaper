@@ -96,7 +96,7 @@ class MonitorScheduler {
    *        失效时降频写自动放开（degraded-fallback），显示职责交回系统壁纸。
    *        不传按「从未失效」处理 —— 单测里也能注入来验证这条兜底。
    */
-  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, isLiveDegraded }) {
+  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, isLiveDegraded, isPaused }) {
     this.store = store;
     this.cacheDir = cacheDir;
     this.enumerate = enumerate;
@@ -106,6 +106,7 @@ class MonitorScheduler {
       || ((imagePath, cacheDir, options) => win32.setWallpaper(imagePath, cacheDir, options));
     this.playback = playback || null;
     this.isLiveDegraded = isLiveDegraded || (() => false);
+    this.isPaused = isPaused || (() => false);   // 显示器被冻结（全屏/挂机）时不推进轮播
 
     this.channels = new Map();
     /** 目录扫描结果缓存：多个频道指向同一目录时不重复扫盘 */
@@ -664,6 +665,14 @@ class MonitorScheduler {
     const ms = Math.max(1, ch.profile.interval) * 1000;
     ch.timer = setTimeout(() => {
       ch.timer = null;
+      /*
+       * 暂停感知（2026-10-09）：显示器被冻结（全屏/挂机）时不推进轮播。
+       * 之前画面冻着但调度器照走，造成两个问题：①托盘/右键删除按 index 找
+       * 「当前张」与桌面显示脱节 —— 用户在恢复后的 60s 内右键删除，删掉的是
+       * 从没显示过的图（实测踩中）；②退出全屏瞬间跳到没看过的图。
+       * 到点重查：暂停期间每隔一个 interval 空转一次，恢复后自然续播。
+       */
+      if (this.isPaused(ch.id)) { this._schedule(ch); return; }
       this._advance(ch, 1, 'timer');
     }, ms);
   }
