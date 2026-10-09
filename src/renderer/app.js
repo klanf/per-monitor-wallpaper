@@ -42,6 +42,7 @@ const els = {
   iconPause: $('icon-pause'),
   memLabel: $('mem-label'),
   monitorCards: $('monitor-cards'),
+  monitorChips: $('monitor-chips'),
   monitorHint: $('monitor-hint'),
   modeHint: $('mode-hint'),
 
@@ -95,6 +96,7 @@ const state = {
   quickFolders: [],
   albums: [],                 // 相簿列表（config.albums 的镜像，主进程改了会推过来）
   lastAutoScanAt: 0,          // 上次定时自动扫描的时刻（0 = 本次会话还没扫过）
+  editMonitorId: null,        // 每屏卡片当前正在编辑哪块屏（r21 合并：4 张长卡 → 胶囊切换 + 1 张卡）
 };
 
 /* ------------------------------------------------------------ 胶片条状态 */
@@ -1280,13 +1282,37 @@ const ANIMATIONS = [
 /** 每屏卡片粒子下拉：''=跟随全局 / off=明确关闭 / 各种类 / random */
 function particleOptions(value) {
   const opts = [
-    ['', '跟随全局'], ['off', '关闭'], ['rain', '雨落'], ['sakura', '樱花落'],
-    ['snow', '雪'], ['fireflies', '萤火虫'], ['stars', '星空流星'], ['bubbles', '泡泡'],
-    ['leaves', '落叶'], ['confetti', '彩带纸屑'],
-    ['fireworks', '烟花'], ['embers', '火焰灰烬'], ['splash', '雨落水花'], ['raindrops', '雨滴挂屏'],
+    ['', '跟随全局'], ['off', '关闭'], ...PARTICLE_KINDS,
     ['random', '随机（每次换图抽一种）'],
   ];
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
+}
+
+/** 粒子种类表（r21）：全局随机池与排除清单共用；顺带喂给 particleOptions */
+const PARTICLE_KINDS = [
+  ['rain', '雨落'], ['sakura', '樱花落'], ['snow', '雪'], ['fireflies', '萤火虫'],
+  ['stars', '星空流星'], ['bubbles', '泡泡'], ['leaves', '落叶'], ['confetti', '彩带纸屑'],
+  ['fireworks', '烟花'], ['embers', '火焰灰烬'], ['splash', '雨落水花'], ['raindrops', '雨滴挂屏'],
+];
+
+/** 时段滤镜种类表（r21）：随机池共用 */
+const TOD_KINDS = [
+  ['morning', '早晨 · 暖金'], ['noon', '中午 · 通透'], ['overcast', '阴天 · 灰蓝'],
+  ['dusk', '黄昏 · 橙紫'], ['night', '夜晚 · 压暗'],
+];
+
+/**
+ * 随机池勾选 chips（r21）：池空 = 全部参与（防止一个不剩时随机失灵），
+ * chip 上「亮」= 参与。存盘时把空池仍存成空数组（语义由消费端兜底）。
+ */
+function renderPoolChips(boxId, kinds, pool) {
+  const box = $(boxId);
+  if (!box) return;
+  const set = new Set(Array.isArray(pool) ? pool : []);
+  const all = set.size === 0;
+  box.innerHTML = kinds.map(([v, t]) =>
+    `<button type="button" class="pool-chip${all || set.has(v) ? ' on' : ''}" data-kind="${v}">${t}</button>`
+  ).join('');
 }
 
 function animationOptions(value) {
@@ -1464,6 +1490,7 @@ function cardHtml(ch) {
 
 function renderCards() {
   if (!state.perMonitor) {
+    els.monitorChips.innerHTML = '';
     els.monitorCards.innerHTML = '';
     return;
   }
@@ -1472,11 +1499,54 @@ function renderCards() {
   const active = document.activeElement;
   if (active && active.type === 'range' && els.monitorCards.contains(active)) return;
 
-  els.monitorCards.innerHTML = state.channels.map(cardHtml).join('');
+  // r21 合并：编辑对象丢了（拔了显示器 / 首次进入）就落到「预览中那块」或第一块
+  if (!state.editMonitorId || !state.channels.some((c) => c.id === state.editMonitorId)) {
+    state.editMonitorId = (state.channels.find((c) => c.id === state.previewId) || state.channels[0] || {}).id || null;
+  }
+  renderMonitorChips();
+
+  const current = state.channels.find((c) => c.id === state.editMonitorId);
+  els.monitorCards.innerHTML = current ? cardHtml(current) : '';
 
   els.monitorHint.textContent = state.channels.length
-    ? `已检测到 ${state.channels.length} 台显示器；每台选择一个相簿，各自定节奏。`
+    ? `已检测到 ${state.channels.length} 台显示器；点上面的胶囊切换要编辑的屏。`
     : '没有检测到显示器，或每屏壁纸接口不可用。';
+}
+
+/** 显示器胶囊行（r21）：每块屏一枚 + 「复制到全部屏」 */
+function renderMonitorChips() {
+  const chips = state.channels.map((ch) => {
+    const cls = ['mchip'];
+    if (ch.id === state.editMonitorId) cls.push('active');
+    if (ch.id === state.previewId) cls.push('previewing');
+    const album = albumOf(ch.profile.albumId);
+    return `<button type="button" class="${cls.join(' ')}" data-mid="${escapeHtml(ch.id)}"
+      title="${escapeHtml(channelName(ch))} · 相簿：${album ? escapeHtml(album.name) : '未选择'} · ${ch.count} 张">`
+      + `${escapeHtml(channelName(ch))}</button>`;
+  }).join('');
+  els.monitorChips.innerHTML = chips
+    + '<button type="button" class="mchip copy" id="btn-monitor-copy" title="把这块屏的相簿 / 间隔 / 顺序 / 动画 / 填充 / 粒子覆盖复制给其他屏">复制到全部屏 ⇉</button>';
+}
+
+/** 复制当前编辑屏的配置给其他屏（r21）：null = 清掉那块的粒子覆盖，回落全局 */
+async function copyMonitorProfile() {
+  const src = state.channels.find((c) => c.id === state.editMonitorId);
+  if (!src) return;
+  const ov = (state.config && state.config.monitors && state.config.monitors[src.id]) || {};
+  const patch = {
+    albumId: src.profile.albumId,
+    interval: src.profile.interval,
+    shuffle: src.profile.shuffle,
+    recursive: src.profile.recursive,
+    animation: src.profile.animation,
+    duration: src.profile.duration,
+    fit: src.profile.fit,
+    particles: ov.particles !== undefined ? ov.particles : null,
+    particleCount: ov.particleCount !== undefined ? ov.particleCount : null,
+  };
+  const others = state.channels.filter((c) => c.id !== src.id);
+  for (const ch of others) await pushProfile(ch.id, patch);
+  toast(`已把「${channelName(src)}」的设置复制到 ${others.length} 块屏`);
 }
 
 /** 只改状态行文字，避免每来一次 tick 就重建整个面板 */
@@ -2096,10 +2166,17 @@ function applyConfigToUI() {
   $('cfg-breath-amplitude').value = String(Number.isFinite(ba) ? Math.min(Math.max(ba, 0.5), 5) : 2);
   $('cfg-breath-amplitude-out').textContent = `±${$('cfg-breath-amplitude').value}%`;
   $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
+  // 时段滤镜随机（r21）：开关 + 随机池勾选
+  $('cfg-tod-random').checked = c.todRandom === true;
+  renderPoolChips('tod-pool', TOD_KINDS, c.todPool);
   // 暂停时藏舞台窗口（主树 52 轮；liveStage 嵌套键 hideOnPaused，默认关）
   $('cfg-live-hide-paused').checked = (c.liveStage || {}).hideOnPaused === true;
-  // 粒子特效（主树 52 轮移植）：全局种类 + 数量；绕开鼠标 = 顶层键默认开
-  $('cfg-particles').value = typeof c.particles === 'string' ? c.particles : '';
+  // 粒子特效（主树 52 轮移植）：随机开关 + 固定种类 + 随机池 + 数量；绕开鼠标 = 顶层键默认开
+  // 旧值 particles:'random' 迁移为「随机开关勾上」，固定种类下拉回落关闭态
+  const pRandom = c.particles === 'random';
+  $('cfg-particles-random').checked = pRandom;
+  $('cfg-particles').value = pRandom ? '' : (typeof c.particles === 'string' ? c.particles : '');
+  renderPoolChips('particle-pool', PARTICLE_KINDS, c.particlePool);
   const pc = Math.round(Number(c.particleCount));
   $('cfg-particle-count').value = String(Number.isFinite(pc) ? Math.min(Math.max(pc, 0), 1000) : 256);
   $('cfg-particle-count-out').textContent = `${$('cfg-particle-count').value} 粒`;
@@ -2123,8 +2200,8 @@ function applyConfigToUI() {
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
   $('cfg-flow-style').value = ['circle', 'orbital', 'dolly'].includes(c.flowStyle) ? c.flowStyle : 'circle';
-  // 深度视差联动禁用重算（总开关/流模式 → 子选项置灰；bindSettings 挂的钩子）
-  if (window.__syncDepthUI) window.__syncDepthUI();
+  // 开关联动显隐重算（r21：隐藏代替置灰；applyConfigToUI 回填后必须跑一遍）
+  syncConditionalUI();
 
   // ---- 后台驻留 ----
   $('cfg-tray').checked = c.tray !== false;
@@ -2203,6 +2280,27 @@ function refreshMonitorTargets() {
   if (err) hint.textContent = `每屏壁纸接口不可用：${err}`;
   else if (monitors.length <= 1) hint.textContent = '当前只检测到 1 台显示器；接入第二台后这里会自动出现独立选项。';
   else hint.textContent = `已检测到 ${monitors.length} 台显示器。仅修改所选屏幕，其他屏幕保持原样。`;
+}
+
+/**
+ * r21 开关联动显隐：勾上才展开子项，勾掉就收起（隐藏代替旧版的置灰）。
+ * 约定：HTML 里子项包在 `<div class="cond" data-cond="某开关id">` 里；
+ * `data-cond-invert="1"` 表示反相（开关勾上时隐藏）；`data-cond-particles-on="1"`
+ * 是粒子数量的复合条件（随机开启 或 固定种类≠关闭 时显示）。
+ * 嵌套 cond 靠外层 hidden 自然生效（父级藏了子级再算也无妨）。
+ */
+function syncConditionalUI() {
+  const on = (id) => { const el = document.getElementById(id); return Boolean(el && el.checked); };
+  for (const box of document.querySelectorAll('.settings-pane .cond')) {
+    if (box.dataset.cond) {
+      const want = on(box.dataset.cond);
+      box.hidden = box.dataset.condInvert === '1' ? want : !want;
+    } else if (box.dataset.condParticlesOn) {
+      const random = on('cfg-particles-random');
+      const kind = (document.getElementById('cfg-particles') || {}).value || '';
+      box.hidden = !(random || kind !== '');
+    }
+  }
 }
 
 function bindSettings() {
@@ -2332,6 +2430,7 @@ function bindSettings() {
   });
 
   $('cfg-breath').addEventListener('change', async (e) => {
+    syncConditionalUI();
     await save({ breath: e.target.checked });
     toast(e.target.checked ? '呼吸缩放已开启（动态桌面画面缓慢起伏）' : '呼吸缩放已关闭');
   });
@@ -2359,9 +2458,42 @@ function bindSettings() {
       : '已关闭：暂停时保留画面（若独占全屏游戏黑屏请重新开启）');
   });
 
-  // 粒子特效（主树 52 轮移植）：全局种类 + 数量
+  // 时段滤镜随机（r21）：开关 + 随机池排除
+  $('cfg-tod-random').addEventListener('change', async (e) => {
+    syncConditionalUI();
+    await save({ todRandom: e.target.checked });
+    toast(e.target.checked ? '时段滤镜改为随机：每次换图抽一种' : '时段滤镜回到固定选择');
+  });
+  $('tod-pool').addEventListener('click', async (e) => {
+    const chip = e.target.closest('.pool-chip');
+    if (!chip) return;
+    const all = TOD_KINDS.map(([v]) => v);
+    const pool = new Set(Array.isArray(state.config.todPool) && state.config.todPool.length ? state.config.todPool : all);
+    if (pool.has(chip.dataset.kind)) pool.delete(chip.dataset.kind); else pool.add(chip.dataset.kind);
+    if (!pool.size) { toast('至少保留一种滤镜，全空按「全部参与」处理'); return; }
+    await save({ todPool: all.filter((v) => pool.has(v)) });
+    renderPoolChips('tod-pool', TOD_KINDS, state.config.todPool);
+  });
+
+  // 粒子特效（主树 52 轮移植）：随机开关 + 固定种类 + 随机池
+  $('cfg-particles-random').addEventListener('change', async (e) => {
+    syncConditionalUI();
+    await save({ particles: e.target.checked ? 'random' : (($('cfg-particles').value || '')) });
+    toast(e.target.checked ? '粒子改为随机轮换：每次换图抽一种' : '粒子回到固定种类');
+  });
+  $('particle-pool').addEventListener('click', async (e) => {
+    const chip = e.target.closest('.pool-chip');
+    if (!chip) return;
+    const all = PARTICLE_KINDS.map(([v]) => v);
+    const pool = new Set(Array.isArray(state.config.particlePool) && state.config.particlePool.length ? state.config.particlePool : all);
+    if (pool.has(chip.dataset.kind)) pool.delete(chip.dataset.kind); else pool.add(chip.dataset.kind);
+    if (!pool.size) { toast('至少保留一种粒子，全空按「全部参与」处理'); return; }
+    await save({ particlePool: all.filter((v) => pool.has(v)) });
+    renderPoolChips('particle-pool', PARTICLE_KINDS, state.config.particlePool);
+  });
   $('cfg-particles').addEventListener('change', async (e) => {
     const v = e.target.value;
+    syncConditionalUI();
     await save({ particles: v });
     toast(v ? '粒子特效已开启（叠加在动态桌面画面上）' : '粒子特效已关闭');
   });
@@ -2383,6 +2515,7 @@ function bindSettings() {
 
   // 自动暂停（主树 57/58 轮移植）：无输入超时 / 电池
   $('cfg-pause-on-idle').addEventListener('change', async (e) => {
+    syncConditionalUI();
     const current = (state.config && state.config.liveStage) || {};
     await save({ liveStage: { ...current, pauseOnIdle: e.target.checked } });
     toast(e.target.checked
@@ -2406,24 +2539,11 @@ function bindSettings() {
   });
 
   // ---- 深度视差（第十一轮）----
-  // 联动禁用（r20）：总开关关 → 整块置灰；流模式关 → 流专属项（风格/幅度/质量/进阶）置灰，
-  // 漂移速度与帧率上限仍可用（单平面平移也吃这两项）
+  // r21：联动从「置灰」改为「隐藏」——总开关关 → 子项全收起；
+  // 流模式关 → 流专属项（风格/幅度/质量/进阶）收起，漂移速度与帧率仍显示（单平面平移也吃这两项）
   function updateDepthDisabled() {
-    const master = $('cfg-depth-parallax').checked;
-    const flow = $('cfg-depth-flow').checked;
-    const field = $('cfg-depth-parallax').closest('.field');
-    if (!field) return;
-    for (const el of field.querySelectorAll('input, select, button, summary')) {
-      if (el.id === 'cfg-depth-parallax') continue;   // 总开关自己永远可点
-      el.disabled = !master;
-    }
-    for (const el of field.querySelectorAll('.depth-flow-only input, .depth-flow-only select')) {
-      el.disabled = !master || !flow;
-    }
-    const details = field.querySelector('details.depth-flow-only');
-    if (details) details.open = Boolean(details.open) && master && flow;
+    syncConditionalUI();
   }
-  window.__syncDepthUI = updateDepthDisabled;   // applyConfigToUI 回填后也要重算一次
   updateDepthDisabled();
   $('cfg-depth-parallax').addEventListener('change', async (e) => {
     updateDepthDisabled();
@@ -2502,6 +2622,7 @@ function bindSettings() {
 
   // ---- 后台驻留 ----
   $('cfg-tray').addEventListener('change', async (e) => {
+    syncConditionalUI();
     await save({ tray: e.target.checked });
     toast(e.target.checked ? '托盘图标会在下次启动时出现' : '托盘图标会在下次启动时移除（当前实例仍保留）');
   });
@@ -2621,6 +2742,7 @@ function bindSettings() {
 
   // ---- 胶片条 ----
   $('cfg-filmstrip').addEventListener('change', async (e) => {
+    syncConditionalUI();
     await save({ filmstrip: e.target.checked });
     if (e.target.checked) updateFilmstrip(true);
   });
@@ -2704,6 +2826,15 @@ function bindSettings() {
   });
 
   // ---- 每屏卡片（事件委托，卡片会整体重绘）----
+  // r21：胶囊行 —— 点胶囊切换编辑对象；「复制到全部屏」一键对齐
+  els.monitorChips.addEventListener('click', async (e) => {
+    if (e.target.closest('#btn-monitor-copy')) { await copyMonitorProfile(); return; }
+    const chip = e.target.closest('.mchip[data-mid]');
+    if (!chip || chip.dataset.mid === state.editMonitorId) return;
+    state.editMonitorId = chip.dataset.mid;
+    renderCards();
+  });
+
   els.monitorCards.addEventListener('input', (e) => {
     const input = e.target;
     if (input.type !== 'range') return;

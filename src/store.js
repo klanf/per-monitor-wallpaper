@@ -259,10 +259,13 @@ const PROFILE_KEYS = [
   'breath',                    // 呼吸缩放特效（不写 = 默认关；与 Ken Burns 叠加）
   'breathPeriod',              // 呼吸缩放周期 ms（不写 = 渲染端默认 6000；收紧 2000~15000）
   'breathAmplitude',           // 呼吸缩放幅度 %（不写 = 渲染端默认 2，即 ±2%；收紧 0.5~5）
-  'particles',                 // 舞台粒子特效：rain/sakura/...（不写 = 关；白名单收紧在渲染端 particles.js）
+  'particles',                 // 舞台粒子特效：rain/sakura/.../random（不写 = 关；白名单收紧在渲染端 particles.js）
   'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
   'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
+  'particlePool',              // 粒子随机池（r21）：random 时只抽池内种类；空数组 = 全部参与
   'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
+  'todRandom',                 // 时段滤镜随机（r21）：每次换图抽一种（true 时无视 timeOfDay 固定值）
+  'todPool',                   // 时段滤镜随机池（r21）：空数组 = 全部参与
   // ---- 深度视差（第十一轮起进设置面板；不写 = stage.js 内置默认）----
   'depthParallax',             // 深度视差总开关
   'depthFlow',                 // DepthFlow POM 流模式开关
@@ -404,6 +407,7 @@ const BOOL_KEYS = new Set([
   'videoOptimize',
   'depthParallax',             // 深度视差总开关（不写 = 默认开）
   'depthFlow',                 // DepthFlow 流模式开关（不写 = 默认开）
+  'todRandom',                 // 时段滤镜随机开关（r21）
 ]);
 
 /** 热键字段：值必须是非空字符串或空串，别让 undefined / 数字混进来 */
@@ -429,8 +433,24 @@ function normalizeConfig(obj) {
   if ('autoScanMinutes' in out) out.autoScanMinutes = clampAutoScanMinutes(out.autoScanMinutes);
   if ('settingsTab' in out) out.settingsTab = clampSettingsTab(out.settingsTab);
   if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
-  if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
+  if ('particlePool' in out) out.particlePool = clampStringArray(out.particlePool, PARTICLE_KIND_WHITELIST);
+  if ('todPool' in out) out.todPool = clampStringArray(out.todPool, TOD_KIND_WHITELIST);
   return out;
+}
+
+/** 粒子种类白名单（r21，与渲染端 PARTICLE_KINDS / particles.js 的收紧保持一致） */
+const PARTICLE_KIND_WHITELIST = [
+  'rain', 'sakura', 'snow', 'fireflies', 'stars', 'bubbles', 'leaves',
+  'confetti', 'fireworks', 'embers', 'splash', 'raindrops',
+];
+
+/** 时段滤镜白名单（r21，与 stage.js TOD_FILTERS 的键一致） */
+const TOD_KIND_WHITELIST = ['morning', 'noon', 'overcast', 'dusk', 'night'];
+
+/** 随机池收紧：只留白名单内的字符串，去重（空数组 = 全部参与，语义在消费端兜底） */
+function clampStringArray(value, whitelist) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((v) => typeof v === 'string' && whitelist.includes(v)))];
 }
 
 function normalizeBooleans(obj) {

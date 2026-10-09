@@ -76,6 +76,10 @@ const cfg = {
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
   timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
+  todRandom: false,            // 时段滤镜随机（r21 profile.todRandom；开=每次换图抽一种，无视固定值）
+  todPool: [],                 // 时段滤镜随机池（r21；空数组 = 全部参与）
+  particles: '',               // 粒子特效（profile.particles；'random' = 每次换图抽一种）
+  particlePool: [],            // 粒子随机池（r21 profile.particlePool；空数组 = 全部参与）
   depthEnabled: true,          // 深度视差（profile.depthParallax=false 关；默认开）
   depthFlow: true,             // DepthFlow POM 模式（profile.depthFlow=false 回退第五轮单平面；
                                // 离线逐帧对比 5 相位全帧差 ≈2.5 噪声级后默认开，真机验收后落库）
@@ -1162,11 +1166,17 @@ function applyChannelConfig() {
   if (Number.isFinite(Number(p.breathAmplitude))) {
     cfg.breathAmplitude = Math.min(Math.max(Number(p.breathAmplitude), 0.5), 5);
   }
-  // 时段滤镜（profile 不写 = 无）
+  // 时段滤镜（profile 不写 = 无）。r21：todRandom 开 = 每次换图从池里抽一种（池空 = 全部），
+  // 抽签只在换图时机发生（见 onTick 的 rollTod），profile 回放时也抽一次保证首帧有滤镜
+  if (p.todRandom !== undefined) cfg.todRandom = Boolean(p.todRandom);
+  if (Array.isArray(p.todPool)) cfg.todPool = p.todPool.filter((v) => typeof v === 'string');
   if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
+  if (cfg.todRandom) applyTod(pickTod());
   // 粒子特效：种类白名单与数量收紧都在 particles.js 里做，这里透传。
   // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
   if (p.particles !== undefined) cfg.particles = String(p.particles || '');
+  // r21：粒子随机池（random 时只抽池内种类；池空 = 全部参与）
+  if (Array.isArray(p.particlePool)) cfg.particlePool = p.particlePool.filter((v) => typeof v === 'string');
   if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
   // 粒子绕开鼠标（主树 54 轮追记六，profile 不写 = 默认开）：关了就不把光标喂给粒子层
   if (p.particleCursor !== undefined) cfg.particleCursor = Boolean(p.particleCursor);
@@ -1176,11 +1186,23 @@ function applyChannelConfig() {
   ensureRaf();
 }
 
-/** random：每次换图从全部种类里抽一种。非 random 的值原样生效（含 '' = 关） */
+/** random：每次换图从随机池里抽一种（池空 = 全部种类）。非 random 的值原样生效（含 '' = 关） */
 function rollParticles() {
   if (cfg.particles !== 'random') { cfg.particlesActive = cfg.particles; return; }
-  const pool = (window.WPParticles && window.WPParticles.PARTICLE_TYPES) || ['rain', 'sakura'];
+  const all = (window.WPParticles && window.WPParticles.PARTICLE_TYPES) || ['rain', 'sakura'];
+  const pool = (Array.isArray(cfg.particlePool) && cfg.particlePool.length
+    ? all.filter((k) => cfg.particlePool.includes(k))
+    : all);
   cfg.particlesActive = pool[(Math.random() * pool.length) | 0] || 'rain';
+}
+
+/** r21：时段滤镜随机池（池空 = 全部参与） */
+function pickTod() {
+  const all = Object.keys(TOD_FILTERS);
+  const pool = (Array.isArray(cfg.todPool) && cfg.todPool.length
+    ? all.filter((k) => cfg.todPool.includes(k))
+    : all);
+  return pool[(Math.random() * pool.length) | 0] || '';
 }
 
 async function applyChannels(list) {
@@ -1359,6 +1381,7 @@ async function init() {
         rollParticles();
         if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
       }
+      if (cfg.todRandom) applyTod(pickTod());   // r21：随机时段滤镜同拍重抽
       showFrame(payload.entry, payload.dir, true);
     } else {
       currentEntry = null;   // 频道空了（相簿被清空）→ 黑屏
