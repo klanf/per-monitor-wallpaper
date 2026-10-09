@@ -601,7 +601,12 @@ async function togglePauseAtCursor() {
   // dlog 才能进 live-debug.log —— 没有它就无法区分「一次点击翻两次」和
   // 「暂停集与舞台对不上」（2026-10-09 用户报暂停无效时的诊断盲区）。
   debugLog.dlog('desktop-menu', `${paused ? '暂停' : '继续'} pausedId=${pausedId} label=${label} 手动集=[${[...manualPausedDisplays]}]`);
-  broadcastPauseState([], false, {});   // 手动切换立即生效（不等 fullscreenWatch 下拍）
+  // 先采样一次全屏/挂机的当前暂停集再广播 —— 直接传 [] 会把 fullscreenWatch
+  // 已生效但「状态未变、不会重发」的全屏暂停一并清掉：手动继续之后，全屏
+  // 暂停就静默失效直到下一次全屏状态翻转（2026-10-09 实锤：21:43 手动继续
+  // 后主屏全屏暂停再没接上）。tickNow 顺带刷新 watch 的内部状态，语义对齐。
+  const fs = fullscreenWatch.tickNow();
+  broadcastPauseState(fs.ok ? fs.pausedIds : [], fs.away, fs.ok ? fs.reasons : {});
   console.log(`[desktop-menu] ${paused ? '暂停' : '继续'} ${label}（手动，pausedId=${pausedId}）`);
   send('notice', { text: `${label} 壁纸已${paused ? '暂停' : '恢复'}` });
   return { ok: true, channelId: id, label, paused };

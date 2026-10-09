@@ -3907,3 +3907,35 @@ dump-dom 取 ERROR）当场揪出。补声明后重跑：5 相位帧差 ≈2.5�
   系测试命令抢锁/timeout 击杀连锁；另实锤 20:43:34 用户会话「动态桌面已停止」
   （用户在设置里找暂停开关时疑似关掉了动态桌面 → app 正常退出）；
 - 注意：launch-dev.py 启动的实例 cmdline 是 `electron.exe .`，psutil 判定要认这个形态。
+
+## 深度视差第十八轮：切相簿「没一起切」= 沿用旧进度序号 + 手动继续误清全屏暂停（2026-10-09 22:3x）
+
+### 现象（用户报）
+
+切换相簿后，桌面舞台观感上没跟着切。
+
+### 排查（日志实锤）
+
+- 22:08:56 用户把主屏相簿从「里世界」(4526) 切到「Anima-Random」(9703) → reason=profile
+  重建 → channels:changed → 舞台 applyChannels **立即** showFrame 了新相簿的图
+  （14:08:56 的 showFrame 脱离 30s tick 网格 = 非 tick 触发，实锤即时切换）。
+- 观感问题的真因：重建时 `index = min(progress.index, max)` **沿用了旧相簿的进度
+  序号 1921** —— 桌面只是「从新相簿中间继续轮」，用户看到的是又换了一张同类图，
+  完全没有「切到了新相簿」的可见跳变。
+- 顺带发现：21:43 手动「继续」把主屏的全屏暂停一并清掉后再没接上 ——
+  fullscreenWatch 只在状态变化时回调，手动广播 [] 清空后 watch 的内部状态
+  没变、不重发，全屏暂停静默失效直到下一次全屏翻转。
+
+### 改动
+
+- **scheduler.js**：①用 playedAlbum 判定「显式切换相簿」，切了就 index=0
+  （随机模式下 = 洗牌后第一张）并清 played；②切换的频道 rebuild 后立即
+  `_write(ch, 'album-switch')`（对齐 takeover 模式），stage / 系统壁纸 /
+  playback.json 三路同步跳变；改间隔等普通 rebuild（albumId 未变）照旧续播。
+- **main.js**：togglePauseAtCursor 广播前先 `fullscreenWatch.tickNow()` 取当前
+  全屏/挂机暂停集再合并 —— 手动暂停/继续都不再误清全屏暂停。
+
+### 验证
+
+- node --check 两文件通过；重启实例后双屏轮播正常（playback.json 主屏=
+  Anima-Random、副屏=涩不了一点）；切相簿跳变语义待用户真机验收。

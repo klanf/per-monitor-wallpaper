@@ -220,6 +220,9 @@ class MonitorScheduler {
       return { ...spec, ...scan };
     }));
 
+    /** 本次 rebuild 中「用户显式切换了相簿」的频道 id（下面循环里填，切换后立即上屏用） */
+    const albumSwitchedIds = new Set();
+
     // 逐个频道定下这一轮的顺序（随机模式在这里洗牌，见 _orderFor）
     for (const item of built) {
       if (item.files.length) {
@@ -249,10 +252,19 @@ class MonitorScheduler {
 
       // 换相簿了 → 旧的「看过」序号对新列表毫无意义，留着只会把没看过的标成看过
       const prevAlbum = this.playedAlbum.get(item.id);
-      if (prevAlbum !== undefined && prevAlbum !== item.profile.albumId) played.clear();
+      const albumSwitched = prevAlbum !== undefined && prevAlbum !== item.profile.albumId;
+      if (albumSwitched) {
+        played.clear();
+        albumSwitchedIds.add(item.id);
+      }
       this.playedAlbum.set(item.id, item.profile.albumId);
 
-      const index = saved ? Math.min(saved.index, max) : 0;
+      // 显式切换相簿 → 从新相簿开头播（随机模式下是洗牌后的第一张），
+      // **不再沿用旧相簿的进度序号**：沿用的话桌面只是「从新相簿中间继续轮」，
+      // 用户看到的还是又换了一张动画图，完全没有「切到新相簿」的可见跳变
+      // （2026-10-09 用户实测：切相簿后观感 = 没切）。改间隔等普通 rebuild
+      // 不受影响（albumId 没变，照旧从 progress 续播）。
+      const index = albumSwitched ? 0 : (saved ? Math.min(saved.index, max) : 0);
       // 当前正在显示的这张算「看过」，否则刚开软件时胶片条会把首图标成未看
       if (item.files.length) played.add(index);
 
@@ -289,6 +301,15 @@ class MonitorScheduler {
     if (takeOver) {
       const targets = [...this.channels.values()].filter((ch) => ch.profile.enabled && ch.files.length);
       await Promise.all(targets.map((ch) => this._write(ch, 'takeover')));
+    }
+
+    // 显式切换相簿的频道：立刻把新相簿第一张推上桌面，不等下一个 interval。
+    // stage 路径靠 channels:changed 的 applyChannels 也会立即换图，但这里同时
+    // 覆盖系统壁纸路径（applyToSystem）并刷新 playback.json 存档，两条路都齐。
+    if (!takeOver && albumSwitchedIds.size) {
+      const switched = [...this.channels.values()].filter(
+        (ch) => albumSwitchedIds.has(ch.id) && ch.profile.enabled && ch.files.length);
+      await Promise.all(switched.map((ch) => this._write(ch, 'album-switch')));
     }
 
     for (const ch of this.channels.values()) this._schedule(ch);
