@@ -417,16 +417,52 @@ const DEPTH_FS = `
 precision highp float;
 uniform sampler2D uImg;
 uniform sampler2D uDepth;
+uniform sampler2D uBG;      // 2：背景板（分层模式，含 LaMa 修补内容）
+uniform sampler2D uMask;    // 3：前景 alpha（分层模式，ISNet 软边）
 uniform vec2  uCanvas;
 uniform float uImgAspect;
 uniform float uTime;
 uniform vec2  uCam;
 uniform float uAmp;
+uniform float uAmpScale;    // 前景层 1.3 / 背景与单平面 1.0（分层视差速率）
 uniform float uNrm;
 uniform float uLight;
 uniform float uLightsOn;
 uniform float uHasDepth;
+uniform float uHasMask;     // 1=分层模式的两刀绘制之一
+uniform float uIsBG;        // 1=本刀画背景板
 uniform float uAlpha;
+
+// POM 视线步进（第八轮核心，借鉴 DepthFlow 的 steep parallax 思路）：
+// 从 uv0 出发沿 P 方向逐层深入，命中「层深度 == 表面深度」处采样。
+// 深度语义 d∈[0,1]：1=近 0=远；层深度 l 处的表面位于 l = 1-d。
+// 前景挡住的视线停在前景表面 —— 物理上不露洞，根除大角度撕裂/条纹，
+// 且不再需要深度梯度阻尼（第六轮的教训：阻尼会把立体感砍平）。
+vec2 steepParallax(vec2 uv0, vec2 P) {
+  if (uHasDepth < 0.5 || length(P) < 1e-5) return uv0;
+  const int STEPS = 14;
+  const float stepL = 1.0 / float(STEPS);
+  float lLo = 0.0;
+  float lHi = 1.0;
+  vec2 uvHit = clamp(uv0 + P, vec2(0.0), vec2(1.0));
+  bool found = false;
+  for (int i = 1; i <= STEPS; i++) {
+    float l = float(i) * stepL;
+    vec2 uvs = uv0 + P * l;
+    float ds = texture2D(uDepth, clamp(uvs, vec2(0.0), vec2(1.0))).r;
+    if (l >= 1.0 - ds) { lHi = l; uvHit = uvs; found = true; break; }
+    lLo = l;
+  }
+  if (!found) return uvHit;
+  for (int j = 0; j < 4; j++) {                       // 二分细化
+    float lm = (lLo + lHi) * 0.5;
+    vec2 uvm = uv0 + P * lm;
+    float dm = texture2D(uDepth, clamp(uvm, vec2(0.0), vec2(1.0))).r;
+    if (lm >= 1.0 - dm) { lHi = lm; uvHit = uvm; }
+    else { lLo = lm; }
+  }
+  return clamp(uvHit, vec2(0.0), vec2(1.0));
+}
 
 void main() {
   float canvasAspect = uCanvas.x / uCanvas.y;
@@ -437,22 +473,32 @@ void main() {
   vec2 crop = vec2(1.0);
   if (uImgAspect > canvasAspect) crop.x = canvasAspect / uImgAspect;
   else                           crop.y = uImgAspect / canvasAspect;
-  float margin = uAmp * 0.55 + 0.015;
+  float margin = uAmp * 0.8 + 0.02;   // 步进最大偏移 ~uAmp*1.3(前景)，超界部分 clamp
   vec2 zoom = crop * (1.0 - 2.0 * margin);
   vec2 uv = vec2(0.5) + (uv01 - 0.5) * zoom;
 
-  float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 无深度=平面
-  vec2 par = uCam * (d - 0.5) * uAmp;
-  vec2 uvP = uv - par;
-  vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
-  vec3 col = texture2D(uImg, uvC).rgb;
+  vec2 P = uCam * uAmp * uAmpScale;
+  vec2 uvC = steepParallax(uv, P);
+  float a = uAlpha;
+  vec3 col;
+  if (uHasMask > 0.5) {
+    if (uIsBG > 0.5) {
+      col = texture2D(uBG, uvC).rgb;                    // 背景板：露洞由修补内容填
+    } else {
+      col = texture2D(uImg, uvC).rgb;                   // 前景原图
+      a *= texture2D(uMask, uvC).r;                     // 软边 alpha：速率在此连续渐变（治贴纸感）
+    }
+  } else {
+    col = texture2D(uImg, uvC).rgb;
+  }
+  float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 灯光用未步进 uv（省采样）
 
   if (uHasDepth > 0.5) {
     vec2 px = 1.5 / vec2(1024.0, 1024.0);
-    float dl = texture2D(uDepth, uvC - vec2(px.x, 0.0)).r;
-    float dr = texture2D(uDepth, uvC + vec2(px.x, 0.0)).r;
-    float db = texture2D(uDepth, uvC - vec2(0.0, px.y)).r;
-    float dt = texture2D(uDepth, uvC + vec2(0.0, px.y)).r;
+    float dl = texture2D(uDepth, uv - vec2(px.x, 0.0)).r;
+    float dr = texture2D(uDepth, uv + vec2(px.x, 0.0)).r;
+    float db = texture2D(uDepth, uv - vec2(0.0, px.y)).r;
+    float dt = texture2D(uDepth, uv + vec2(0.0, px.y)).r;
     vec3 nrm = normalize(vec3((dl - dr) * uNrm, (db - dt) * uNrm, 1.0));
 
     if (uLightsOn > 0.5) {
@@ -477,7 +523,7 @@ void main() {
       col += c1 * att1 * (0.35 + 0.65 * diff1 * 0.5) * a1 * (1.0 - d * 0.5);
     }
   }
-  gl_FragColor = vec4(col, uAlpha);
+  gl_FragColor = vec4(col, a);
 }
 `;
 
@@ -513,10 +559,12 @@ function glInit() {
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
-      'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha']) U[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['uImg', 'uDepth', 'uBG', 'uMask', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
+      'uAmpScale', 'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uHasMask', 'uIsBG', 'uAlpha']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
+    gl.uniform1i(U.uBG, 2);
+    gl.uniform1i(U.uMask, 3);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
     glState.ok = true;
   } catch (err) {
@@ -541,11 +589,11 @@ function glMakeTex(unit, src) {
 
 function glFreeLayer(L) {
   if (!L || !glState.gl) return;
-  for (const t of [L.imgTex, L.depTex]) if (t) glState.gl.deleteTexture(t);
+  for (const t of [L.imgTex, L.depTex, L.maskTex, L.bgTex]) if (t) glState.gl.deleteTexture(t);
   if (L._bmp) { try { L._bmp.close(); } catch (_) { /* 已关 */ } L._bmp = null; }
 }
 
-/** 取/建视差图层描述 {imgTex, depTex, aspect}；任何一步失败返回 null（调用方回退 2D）。
+/** 取/建视差图层描述 {imgTex, depTex, maskTex, bgTex, aspect}；任何一步失败返回 null（调用方回退 2D）。
  *  ⚠️ glLayerFor 返回的层不携带位图（bmp 已关）；需要位图垫底用 glLoadLayer。 */
 async function glLayerFor(imagePath, depthPath) {
   const loaded = await glLoadLayer(imagePath, depthPath);
@@ -554,19 +602,32 @@ async function glLayerFor(imagePath, depthPath) {
   return loaded.layer;
 }
 
-/** 同 glLayerFor，但把原图位图一并带回（不关）—— showFrame 给 2D 层垫底用 */
+/** 同 glLayerFor，但把原图位图一并带回（不关）—— showFrame 给 2D 层垫底用。
+ *  mask/bg 路径由深度图路径按命名规则推导（service 端三件套同 key 同目录），
+ *  任一缺失（旧缓存）→ 整层降级单平面，不做额外 IPC。 */
 async function glLoadLayer(imagePath, depthPath) {
   try {
-    const [bmp, depBmp] = await Promise.all([
+    const sidecars = depthPath ? {
+      mask: String(depthPath).replace(/\.depth\.png$/i, '.mask.png'),
+      bg: String(depthPath).replace(/\.depth\.png$/i, '.bg.jpg'),
+    } : null;
+    const [bmp, depBmp, maskBmp, bgBmp] = await Promise.all([
       fetchBitmap({ path: imagePath }),
       depthPath ? fetchBitmap({ path: depthPath }).catch(() => null) : Promise.resolve(null),
+      sidecars ? fetchBitmap({ path: sidecars.mask }).catch(() => null) : Promise.resolve(null),
+      sidecars ? fetchBitmap({ path: sidecars.bg }).catch(() => null) : Promise.resolve(null),
     ]);
+    const layered = Boolean(depBmp && maskBmp && bgBmp);   // 三件套齐才分层
     const layer = {
       imgTex: glMakeTex(0, bmp),
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
+      maskTex: layered ? glMakeTex(3, maskBmp) : null,
+      bgTex: layered ? glMakeTex(2, bgBmp) : null,
       aspect: bmp.width / bmp.height,
     };
     if (depBmp) depBmp.close();
+    if (maskBmp && !layered) maskBmp.close();
+    if (bgBmp && !layered) bgBmp.close();
     return { layer, bmp };   // 原图位图不关：调用方 2D 垫底后自行 close
   } catch (err) {
     console.warn('[stage] 视差纹理加载失败（本帧回退 2D）:', imagePath, err.message);
@@ -587,12 +648,18 @@ function glCam(tSec, nowMs) {
   ];
 }
 
-function glDrawLayer(L, alpha, cam, tSec) {
+/** plane: 'single' 单平面 | 'bg' 背景板平面 | 'fg' 前景平面（三件套齐时走两刀） */
+function glDrawLayer(L, alpha, cam, tSec, plane) {
   const gl = glState.gl;
+  const two = plane !== 'single' && L.maskTex && L.bgTex;
   gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, L.imgTex);
+  gl.bindTexture(gl.TEXTURE_2D, plane === 'bg' ? L.bgTex : L.imgTex);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, L.depTex || L.imgTex);   // 无深度时占位（uHasDepth 压平）
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, (two && L.bgTex) ? L.bgTex : L.imgTex);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, (two && L.maskTex) ? L.maskTex : L.imgTex);
   const { w, h } = canvasSize(glState.canvas);
   gl.viewport(0, 0, w, h);
   gl.uniform2f(glState.U.uCanvas, w, h);
@@ -600,12 +667,25 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uTime, tSec);
   gl.uniform2f(glState.U.uCam, cam[0], cam[1]);
   gl.uniform1f(glState.U.uAmp, cfg.depthAmp);
+  gl.uniform1f(glState.U.uAmpScale, plane === 'fg' ? 1.3 : 1.0);   // 前景速率渐变的上限
   gl.uniform1f(glState.U.uNrm, 9.0);
   gl.uniform1f(glState.U.uLight, cfg.depthLight);
   gl.uniform1f(glState.U.uLightsOn, 1);
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
+  gl.uniform1f(glState.U.uHasMask, two ? 1 : 0);
+  gl.uniform1f(glState.U.uIsBG, plane === 'bg' ? 1 : 0);
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/** 一「层」= 三件套齐画背景+前景两刀，否则单平面一刀 */
+function glDrawPair(L, alpha, cam, tSec) {
+  if (L.maskTex && L.bgTex) {
+    glDrawLayer(L, alpha, cam, tSec, 'bg');
+    glDrawLayer(L, alpha, cam, tSec, 'fg');
+  } else {
+    glDrawLayer(L, alpha, cam, tSec, 'single');
+  }
 }
 
 /** 每帧调（gate 之后）：有内容就画，没内容就把 canvas 藏起来 */
@@ -621,11 +701,11 @@ function glTick(now) {
   if (glState.anim) {
     const p = Math.min(1, (now - glState.anim.t0) / Math.max(1, glState.anim.duration));
     const e = easeCubicBezier(p);
-    if (glState.anim.out) glDrawLayer(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
+    if (glState.anim.out) glDrawPair(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
     if (glState.anim.in) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      glDrawLayer(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
+      glDrawPair(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
     }
     if (p >= 1) {
       glFreeLayer(glState.anim.out);
@@ -634,7 +714,7 @@ function glTick(now) {
       if (!glState.cur) { glActive = false; glState.canvas.style.display = 'none'; }
     }
   } else if (glState.cur) {
-    glDrawLayer(glState.cur, 1, cam, tSec);
+    glDrawPair(glState.cur, 1, cam, tSec);
   }
 }
 

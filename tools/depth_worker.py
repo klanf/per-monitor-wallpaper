@@ -8,14 +8,16 @@ depth_worker.py —— depthService.js 的常驻深度生成 worker（stdin/stdo
        "depth_in": "<已有 depth png 绝对路径，可选 —— 旧缓存回填 mask/bg 时跳过推理>"}
       或字符串 "EXIT"（礼貌退出）
   出: "DONE" / "FAIL <原因>"（行缓冲，必须 flush）
+      "WARN <环节> <原因>" —— 图层环节失败，深度照常交付
 
-图层分割（第六轮）：深度推理后顺带产出
-  - mask.png      前景 alpha（Otsu 阈值 + 形态学清理 + 去小连通域 + 高斯羽化），灰度 8bit
-  - bg.jpg        背景板（按 mask 膨胀抠洞，Telea inpaint 补全），大角度视差露洞用它填
-  mask/bg 任一失败只打 WARN 不算 FAIL —— 主进程按文件存在性自动降级回单平面。
-  depth_in 存在时不跑模型（老缓存只有 depth，回填 mask/bg 复用它，秒级）。
+素材三件套（第八轮 v2）:
+  - depth.png     深度图（推理后做边缘外扩 ~2px：近景吃进远景，压边缘拉伸）
+  - mask.png      前景 alpha —— ISNet 动漫分割（isnetis.onnx）优先，Otsu 回退
+  - bg.jpg        背景板 —— LaMa（big-lama.pt torchscript）优先，Telea 回退
+  任一环节失败只 WARN 不 FAIL —— 主进程/渲染端按文件存在性自动降级。
+  depth_in 存在时不跑深度模型（复用已有深度图，仅补 mask/bg）。
 
-模型从 --model 目录离线加载（curl 直拉的三件套），全程不联网。
+模型位置：tools/models/{isnetis.onnx, big-lama.pt}；深度模型从 --model 目录加载。
 写文件走「临时名 + os.replace」保证原子性 —— 主进程 stat 到的一定是完整文件。
 """
 import json
@@ -37,42 +39,223 @@ def save_img_atomic(arr_or_img, out, fmt):
     os.replace(tmp, out)   # 原子落盘
 
 
-def make_layers(im_rgb, depth_img, out_mask, out_bg):
-    """从（已对齐分辨率的）RGB 原图 + 深度图生成 mask + 背景板。失败抛异常由调用方兜。"""
+# ── ISNet 动漫分割（第八轮新增，Otsu 的替代/上位）────────────────────────
+_ISNET = {'sess': None, 'in_name': None, 'failed': False}
+
+def isnet_session(model_dir):
+    """懒加载 ISNet ONNX；失败置 failed，后续调用直接回退 Otsu。"""
+    if _ISNET['failed']:
+        return None
+    if _ISNET['sess'] is not None:
+        return _ISNET['sess']
+    try:
+        import onnxruntime as ort
+        # onnxruntime 的 CUDA provider 需要 cublasLt64_12/cudnn9 —— 本机没单独装，
+        # 但 torch 自带同款 DLL：把 torch/lib 暴露给 DLL 搜索即可上 GPU（CPU 跑 1024 要 ~15s）
+        try:
+            import torch as _torch
+            _tlib = os.path.join(os.path.dirname(_torch.__file__), 'lib')
+            if os.path.isdir(_tlib):
+                os.add_dll_directory(_tlib)
+        except Exception:  # noqa: BLE001
+            pass
+        p = os.path.join(model_dir, 'isnetis.onnx')
+        if not os.path.isfile(p):
+            raise FileNotFoundError(p)
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        sess = ort.InferenceSession(p, providers=providers)
+        _ISNET['sess'] = sess
+        _ISNET['in_name'] = sess.get_inputs()[0].name
+        print('WARN isnet loaded', flush=True)   # 借 WARN 通道报一次加载成功
+        return sess
+    except Exception as e:  # noqa: BLE001
+        print(f'WARN isnet unavailable {type(e).__name__}: {e}', flush=True)
+        _ISNET['failed'] = True
+        return None
+
+
+def isnet_mask(im_rgb, model_dir):
+    """ISNet 前景 alpha（0~255 uint8，自带软边）。失败抛异常由调用方回退。"""
     import cv2
     import numpy as np
-    from PIL import Image
+    sess = isnet_session(model_dir)
+    if sess is None:
+        raise RuntimeError('ISNet 不可用')
+    S = 1024
+    img = np.asarray(im_rgb, dtype=np.float32) / 255.0
+    h, w = img.shape[:2]
+    scale = S / max(h, w)
+    nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+    small = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    ph, pw = S - nh, S - nw
+    padded = np.pad(small, ((ph // 2, ph - ph // 2), (pw // 2, pw - pw // 2), (0, 0)))
+    x = padded.transpose(2, 0, 1)[None].astype(np.float32)
+    out = sess.run(None, {_ISNET['in_name']: x})[0]      # [1,1,1024,1024]
+    m = out[0, 0]
+    m = m[ph // 2: ph // 2 + nh, pw // 2: pw // 2 + nw]  # 去 letterbox
+    m = cv2.resize(m, (w, h), interpolation=cv2.INTER_LINEAR)
+    return (np.clip(m, 0, 1) * 255).astype(np.uint8)
 
-    d = np.asarray(depth_img, dtype=np.float32)
-    if d.ndim == 3:
-        d = d[:, :, 0]
-    span = float(d.max() - d.min())
-    if span < 1e-6:
-        raise RuntimeError('深度图无对比度')
-    d = (d - d.min()) / span                       # 0=远 1=近（DepthAnything 反深度）
 
-    # 前景 mask：Otsu 自动阈值 → 开运算去噪点 → 闭运算补小洞 → 掐掉碎连通域 → 羽化
-    d8 = (d * 255).astype(np.uint8)                # Otsu 只吃 8U/16U
-    thr, _ = cv2.threshold(d8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    fg = (d8 > thr).astype(np.uint8)
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+def clean_mask_soft(m_soft):
+    """软 mask 清理：主体阈值 → 闭补小洞 → 掐碎域 → 轻羽化。"""
+    import cv2
+    import numpy as np
+    fg = (m_soft > 64).astype(np.uint8)
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     n, labels, st, _ = cv2.connectedComponentsWithStats(fg, 8)
     min_area = 0.004 * fg.size
     for i in range(1, n):
         if st[i, cv2.CC_STAT_AREA] < min_area:
             fg[labels == i] = 0
-    if fg.mean() > 0.92:                           # 全图都是「前景」＝阈值失效，别害背景板
-        raise RuntimeError('Otsu 前景占比 >92%%，mask 不可信')
-    m = cv2.GaussianBlur((fg * 255).astype(np.uint8), (0, 0), 2.0)
-    save_img_atomic(Image.fromarray(m, mode='L'), out_mask, 'PNG')
+    if fg.mean() > 0.92:   # 全图「前景」＝分割不可信
+        raise RuntimeError('前景占比 >92%，mask 不可信')
+    soft = np.maximum(m_soft.astype(np.float32), fg * 255 * 0.0)
+    soft = np.where(fg > 0, np.maximum(soft, 96), soft)  # 主体内压住低于 96 的洞
+    return cv2.GaussianBlur(soft.astype(np.uint8), (0, 0), 1.5)
 
-    # 背景板：mask 稍膨胀出 hole，Telea 修补（在深度分辨率上做，毫秒级）
-    hm, wm = m.shape
-    src = cv2.resize(np.asarray(im_rgb), (wm, hm), interpolation=cv2.INTER_AREA)
-    hole = cv2.dilate((m > 10).astype(np.uint8), np.ones((9, 9), np.uint8))
-    bg = cv2.inpaint(src, hole, 5, cv2.INPAINT_TELEA)
+
+# ── LaMa 背景板（第八轮新增，Telea 的上位）──────────────────────────────
+_LAMA = {'model': None, 'failed': False}
+LAMA_MAX_SIDE = 768           # bbox 裁剪后输入上限（FFT 成本随面积暴涨，裁剪+限边双保险）
+
+def lama_model():
+    """懒加载 LaMa torchscript；优先原版 big-lama.pt（standard FFC，GPU ~1s 级），
+    备选动漫微调版 anime_manga_lama.pt（large FFC，修补质量对动漫背景更好但
+    3070Ti 上 FFT 慢 10 倍+，实测 14s/张 —— 只当原版缺失时的兜底）。
+    失败置 failed，回退 Telea。"""
+    if _LAMA['failed']:
+        return None
+    if _LAMA['model'] is not None:
+        return _LAMA['model']
+    try:
+        import torch
+        here = os.path.dirname(os.path.abspath(__file__))
+        for name in ('big-lama.pt', 'anime_manga_lama.pt'):
+            p = os.path.join(here, 'models', name)
+            if os.path.isfile(p):
+                dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+                m = torch.jit.load(p, map_location=dev).eval()
+                _LAMA['model'] = (m, dev)
+                print(f'WARN lama loaded {name} dev={dev}', flush=True)
+                return _LAMA['model']
+        raise FileNotFoundError('models/ 下没有 anime_manga_lama.pt 或 big-lama.pt')
+    except Exception as e:  # noqa: BLE001
+        print(f'WARN lama unavailable {type(e).__name__}: {e}', flush=True)
+        _LAMA['failed'] = True
+        return None
+
+
+def lama_inpaint(im_rgb, hole_mask_u8):
+    """LaMa 修补。hole: uint8，>0 处待补。返回 RGB ndarray（原尺寸）。失败抛异常。
+    性能关键：LaMa 的 FFT 层成本随面积暴涨（全图 1280 要 ~18s），而修补只需要
+    洞附近的内容 —— 取 hole 包围盒外扩 20% 裁剪后跑，输出贴回（实测 ~2s 级）。"""
+    import cv2
+    import numpy as np
+    import torch
+    from PIL import Image
+    pair = lama_model()
+    if pair is None:
+        raise RuntimeError('LaMa 不可用')
+    model, dev = pair
+    arr = np.asarray(im_rgb)
+    h, w = arr.shape[:2]
+    ys, xs = np.where(hole_mask_u8 > 0)
+    if len(ys) == 0:
+        return arr.copy()
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    padY = int((y1 - y0) * 0.2) + 48
+    padX = int((x1 - x0) * 0.2) + 48
+    cy0, cy1 = max(0, y0 - padY), min(h, y1 + padY)
+    cx0, cx1 = max(0, x0 - padX), min(w, x1 + padX)
+    crop = arr[cy0:cy1, cx0:cx1]
+    hole = hole_mask_u8[cy0:cy1, cx0:cx1]
+    ch, cw = crop.shape[:2]
+    s = min(1.0, LAMA_MAX_SIDE / max(ch, cw))
+    tw, th = max(8, round(cw * s) // 8 * 8), max(8, round(ch * s) // 8 * 8)
+    small = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_AREA)
+    hsmall = cv2.resize(hole, (tw, th), interpolation=cv2.INTER_NEAREST)
+    t_img = torch.from_numpy(small.astype(np.float32) / 255.0).permute(2, 0, 1)[None].to(dev)
+    t_mask = torch.from_numpy((hsmall > 0).astype(np.float32))[None, None].to(dev)
+    with torch.no_grad():
+        out = model(t_img, t_mask)[0]                    # [3,H,W] 0~1
+    patched = (out.clamp(0, 1).permute(1, 2, 0).float().cpu().numpy() * 255).astype(np.uint8)
+    patched = cv2.resize(patched, (cw, ch), interpolation=cv2.INTER_CUBIC)
+    result = arr.copy()
+    m3 = (hole > 0)[:, :, None]
+    result[cy0:cy1, cx0:cx1] = np.where(m3, patched, crop)   # 洞外原样（LaMa 已保真，双保险）
+    return result
+
+
+def make_layers(im_rgb, depth_img, out_mask, out_bg, model_dir):
+    """mask（ISNet→Otsu）+ 背景板（LaMa→Telea）。任何上位失败自动回退下位。"""
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    m_soft = None
+    try:
+        m_soft = clean_mask_soft(isnet_mask(im_rgb, model_dir))
+        src = 'isnet'
+    except Exception as e:  # noqa: BLE001
+        print(f'WARN isnet fallback {type(e).__name__}: {e}', flush=True)
+
+    if m_soft is None:   # ── Otsu 回退（第六轮逻辑原样）──
+        d = np.asarray(depth_img, dtype=np.float32)
+        if d.ndim == 3:
+            d = d[:, :, 0]
+        span = float(d.max() - d.min())
+        if span < 1e-6:
+            raise RuntimeError('深度图无对比度')
+        d = (d - d.min()) / span
+        d8 = (d * 255).astype(np.uint8)                # Otsu 只吃 8U/16U
+        thr, _ = cv2.threshold(d8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        fg = (d8 > thr).astype(np.uint8)
+        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        n, labels, st, _ = cv2.connectedComponentsWithStats(fg, 8)
+        min_area = 0.004 * fg.size
+        for i in range(1, n):
+            if st[i, cv2.CC_STAT_AREA] < min_area:
+                fg[labels == i] = 0
+        if fg.mean() > 0.92:
+            raise RuntimeError('Otsu 前景占比 >92%%，mask 不可信')
+        m_soft = cv2.GaussianBlur((fg * 255).astype(np.uint8), (0, 0), 2.0)
+        src = 'otsu'
+
+    save_img_atomic(Image.fromarray(m_soft, mode='L'), out_mask, 'PNG')
+    print(f'WARN mask={src}', flush=True)
+
+    # ── 背景板：LaMa 优先（bbox 裁剪修补，洞外原样贴回），Telea 回退 ──
+    hm, wm = m_soft.shape
+    src_img = cv2.resize(np.asarray(im_rgb), (wm, hm), interpolation=cv2.INTER_AREA)
+    hole = cv2.dilate((m_soft > 10).astype(np.uint8), np.ones((9, 9), np.uint8))
+    bg = None
+    try:
+        bg = lama_inpaint(Image.fromarray(src_img), hole)
+        print('WARN bg=lama', flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f'WARN lama fallback {type(e).__name__}: {e}', flush=True)
+    if bg is None:
+        bg = cv2.inpaint(src_img, hole, 5, cv2.INPAINT_TELEA)
+        print('WARN bg=telea', flush=True)
     save_img_atomic(bg, out_bg, 'JPG')
+
+
+def expand_depth(d_img):
+    """深度边缘外扩（Tiefling 技巧）：近景值吃进远景 2px，压渲染端边缘拉伸。"""
+    import cv2
+    import numpy as np
+    a = np.asarray(d_img, dtype=np.float32)
+    if a.ndim == 3:
+        a = a[:, :, 0]
+    span = float(a.max() - a.min())
+    if span > 1e-6:
+        a = (a - a.min()) / span
+        a = cv2.dilate(a, np.ones((3, 3), np.float32), iterations=2)
+    from PIL import Image
+    return Image.fromarray(a)
 
 
 def main():
@@ -94,13 +277,11 @@ def main():
     import numpy as np  # noqa: F401  （transformers 依赖链需要，提前暴露缺失）
     from PIL import Image
 
-    use_model = '--no-model' not in sys.argv   # 纯回填任务可省 6s 模型加载（暂不用，留着）
     pipe = None
-    if use_model:
-        import torch
-        from transformers import pipeline
-        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-        pipe = pipeline('depth-estimation', model=model_dir, device=dev)
+    import torch
+    from transformers import pipeline
+    dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+    pipe = pipeline('depth-estimation', model=model_dir, device=dev)
     print('READY', flush=True)          # 模型加载完成，父进程可开始派活
 
     for line in sys.stdin:
@@ -126,14 +307,15 @@ def main():
                 d = result['depth'] if isinstance(result, dict) else getattr(result, 'depth', result[0])
                 dw, dh = max(1, w0 // 2), max(1, h0 // 2)
                 d = d.resize((dw, dh), Image.LANCZOS)
+                d = expand_depth(d)              # 边缘外扩：压渲染端轮廓拉伸
                 save_img_atomic(d, job['out'], 'PNG')
 
-            # 图层分割：失败只 WARN，深度照常交付（渲染端按文件存在性降级单平面）
+            # 素材三件套：失败只 WARN，深度照常交付（渲染端按文件存在性降级）
             if job.get('out_mask') and job.get('out_bg'):
                 try:
                     dw, dh = max(1, w0 // 2), max(1, h0 // 2)
                     d_aligned = d.resize((dw, dh), Image.LANCZOS)
-                    make_layers(im, d_aligned, job['out_mask'], job['out_bg'])
+                    make_layers(im, d_aligned, job['out_mask'], job['out_bg'], model_dir)
                 except Exception as e:  # noqa: BLE001
                     print(f'WARN layers {type(e).__name__}: {e}', flush=True)
             print('DONE', flush=True)

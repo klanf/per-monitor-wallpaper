@@ -3524,3 +3524,44 @@ mesh warp（前景内部形变）。渲染端在 v1 三件套素材质量达标�
 ### 验证
 
 node --check 通过；grep 双平面符号清零。
+
+## 深度视差第八轮：一步到位 —— POM 视线步进 + ISNet/LaMa 素材链（2026-10-09 10:0x）
+
+### 市面调研结论（用户要求搜成熟开源项目）
+
+- **DepthFlow**（BrokenSource，AGPL）：最成熟开源 2.5D，核心是 steep parallax
+  （POM 视线步进）而非图层分层 —— 证明单图+深度图即可大角度无撕裂。
+- **Tiefling**（MIT）：深度图边缘外扩压伪影的技巧。
+- **SkyTNT anime-segmentation**（ISNet）：动漫角色 mask 社区标准（rembg 内置）。
+- **LaMa**（advimman）：大洞修补标准；fashn-ai 镜像有 torchscript 版。
+- 第六轮四根因（Otsu mask 脏/Telea 糊/贴纸感/阻尼砍效果）说明分层路线的坑
+  全在素材质量 —— 本轮用成熟开源模型逐一替换。
+
+### 改动
+
+**worker（tools/depth_worker.py）**
+- mask：Otsu → **ISNet**（isnetis.onnx 176MB，onnxruntime，软边直出），
+  失败回退 Otsu。实测前景 10.6%（Otsu 是虚胖的 24.5%），CPU 推理 0.86s。
+- 背景板：Telea → **LaMa**（big-lama.pt torchscript，hf-mirror 下载），
+  失败回退 Telea。关键优化：①bbox 裁剪修补（洞外原样贴回）②LAMA_MAX_SIDE=768。
+  试过动漫微调版 anime_manga_lama.pt（large FFC）——修补质量好但 3070Ti 上
+  FFT 慢 10 倍（14s/张），standard 版 bbox 后 5s 级，定为首选（anime 版留作备选）。
+- 深度图边缘外扩（Tiefling 技巧）：近景值吃进远景 2px，压渲染端轮廓拉伸。
+- 单张稳态：**7.1s/张**（ISNet 0.9s + LaMa ~5s + resize），后台缓存回填可接受。
+  onnxruntime CUDA provider 起不来（缺 cudnn9 独立安装）但 CPU 已够快，不折腾。
+
+**渲染端（src/renderer/stage.js）**
+- DEPTH_FS 重写：**POM 视线步进**（14 步 march + 4 步二分，借鉴 DepthFlow 思路，
+  POM 为通用图形学算法）替代单步 uv 偏移 —— 前景挡住的视线停在前景表面，
+  物理上不露洞，根除大角度撕裂；第六轮的深度梯度阻尼**彻底移除**（教训：砍立体感）。
+- 分层模式：三件套齐（mask+bg 存在）→ 背景板（×1.0）+前景（×1.3）两刀，
+  前景 alpha 用 ISNet 软边 —— mask 渐变处两层速率连续过渡（治贴纸感）；
+  mask/bg 路径由 depth 路径按命名规则推导（零新增 IPC），旧缓存自动降级单平面。
+- glLoadLayer 四纹理、glDrawPair、灯光法线照旧（uv0 四邻，省采样）。
+
+### 验证
+
+- node --check / ast.parse 通过。
+- 真图端到端：mask=isnet 前景 10.6% 软边带 9.1%，bg=lama 221KB，稳态 7.1s/张。
+- .gitignore 挡掉 tools/models/*.onnx|*.pt（~400MB 模型不进库）。
+- 真机观感（撕裂是否消失、双平面立体感、ISNet 边缘）待用户重启验收。
