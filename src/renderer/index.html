@@ -247,21 +247,19 @@
 
       <!-- 画面动效（r21 新组：呼吸缩放 + 时段滤镜从「系统·动态桌面」搬来，都是视觉参数） -->
       <div class="field" id="field-motion">
-        <label class="field-label">画面动效 <span class="info-dot" tabindex="0" data-tip="只作用于动态桌面画面，不写入系统壁纸（主窗口预览不带）。呼吸 = 缓慢放大缩小；时段滤镜 = 色温罩（早晨暖金 / 中午通透 / 阴天灰蓝 / 黄昏橙紫 / 夜晚压暗）。注意：深度视差开启时画面由视差层驱动，呼吸缩放不生效，本组的呼吸项会自动收起。"></span></label>
-        <!-- 呼吸缩放与深度视差互斥（r22）：视差层自带漂移运动，呼吸点了两层一起晕 —— 视差开着就整组收起 -->
-        <div class="cond" data-cond="cfg-depth-parallax" data-cond-invert="1">
-          <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放</span></label>
-          <div class="cond" data-cond="cfg-breath">
-            <div class="field-row sub">
-              <span class="field-label" style="flex:0 0 56px">速度</span>
-              <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
-              <span class="muted" id="cfg-breath-period-out" style="flex:0 0 72px;text-align:right">6 秒/周期</span>
-            </div>
-            <div class="field-row sub">
-              <span class="field-label" style="flex:0 0 56px">幅度</span>
-              <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
-              <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 72px;text-align:right">±2%</span>
-            </div>
+        <label class="field-label">画面动效 <span class="info-dot" tabindex="0" data-tip="只作用于动态桌面画面，不写入系统壁纸（主窗口预览不带）。呼吸 = 缓慢放大缩小；时段滤镜 = 色温罩（早晨暖金 / 中午通透 / 阴天灰蓝 / 黄昏橙紫 / 夜晚压暗）。注意：深度视差激活的屏幕上呼吸不生效 —— 想用呼吸就在「轮播 › 每屏卡片」里把那块屏的深度视差关掉。"></span></label>
+        <!-- 呼吸组常显（r24）：深度视差已支持每屏单独关，两者不再整体互斥 -->
+        <label class="check"><input type="checkbox" id="cfg-breath"><span>呼吸缩放</span></label>
+        <div class="cond" data-cond="cfg-breath">
+          <div class="field-row sub">
+            <span class="field-label" style="flex:0 0 56px">速度</span>
+            <input type="range" id="cfg-breath-period" min="2" max="15" step="0.5" style="flex:1">
+            <span class="muted" id="cfg-breath-period-out" style="flex:0 0 72px;text-align:right">6 秒/周期</span>
+          </div>
+          <div class="field-row sub">
+            <span class="field-label" style="flex:0 0 56px">幅度</span>
+            <input type="range" id="cfg-breath-amplitude" min="0.5" max="5" step="0.5" style="flex:1">
+            <span class="muted" id="cfg-breath-amplitude-out" style="flex:0 0 72px;text-align:right">±2%</span>
           </div>
         </div>
         <div class="field-row" style="margin-top:8px">

@@ -58,6 +58,13 @@ const DEFAULTS = {
    * 默认应该落回用户上次看的那一页 —— 否则每次打开都要重新点一遍。
    */
   settingsTab: 'play',
+  /**
+   * 界面记忆（r24）：主窗口上次预览的频道 id / 设置面板每屏卡片上次编辑的显示器 id。
+   * 频道 id 对显示器是稳定值（IDesktopWallpaper 设备路径），跨重启可复原；
+   * 失效（拔显示器/换模式）时渲染端自动回落，不用在这里校验。
+   */
+  lastPreviewId: '',
+  settingsEditMonitor: '',
   animation: 'slide',      // 全清单见下方 ANIMATIONS（含 random 随机轮换）
   duration: 520,           // 毫秒
   shuffle: false,
@@ -436,6 +443,10 @@ function normalizeConfig(obj) {
   if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
   if ('particlePool' in out) out.particlePool = clampStringArray(out.particlePool, PARTICLE_KIND_WHITELIST);
   if ('todPool' in out) out.todPool = clampStringArray(out.todPool, TOD_KIND_WHITELIST);
+  // 界面记忆键（r24）：只收字符串，不校验有效性（失效时渲染端自动回落）
+  for (const k of ['lastPreviewId', 'settingsEditMonitor']) {
+    if (k in out && typeof out[k] !== 'string') out[k] = '';
+  }
   return out;
 }
 

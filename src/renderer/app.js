@@ -1124,6 +1124,11 @@ async function setPreview(id) {
   const previous = channelById(state.previewId);
   state.previewId = id;
   state.firstPaintDone = false;
+  // 记住上次预览的频道（r24）：重启主窗口直接回到这块屏。UI_ONLY 键，
+  // 写配置不会惊动调度器；失败（理论上只有进程正在退出）静默放弃。
+  window.wp.setConfig({ lastPreviewId: id || '' })
+    .then((c) => { state.config = c; })
+    .catch(() => {});
   renderCards();
   updateBadges();
   await loadPreviewChannel();
@@ -1211,10 +1216,12 @@ function applyChannelInfo(info) {
   document.body.classList.toggle('mode-per-monitor', state.perMonitor);
   setSegment('cfg-mode', state.perMonitor ? 'per-monitor' : 'unified');
 
-  // 预览目标失效（换模式 / 显示器被拔掉）时自动落一个有效的
+  // 预览目标失效（换模式 / 显示器被拔掉）时自动落一个有效的；
+  // 启动时优先回「上次预览的那块屏」（r24 持久化，lastPreviewId）
   const ids = state.channels.map((c) => c.id);
   if (!ids.includes(state.previewId)) {
-    state.previewId = ids[0] || null;
+    const saved = state.config ? state.config.lastPreviewId : '';
+    state.previewId = (saved && ids.includes(saved) ? saved : (ids[0] || null));
     state.firstPaintDone = false;
   }
 
@@ -1324,15 +1331,7 @@ function flowStyleOptions(value) {
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
 }
 
-/** 每屏卡片深度视差三态下拉（r23）：''=跟随全局 / true=开启 / false=关闭（多屏全开 GPU 吃不消，按屏关） */
-function depthOptions(value) {
-  const sel = (v) => (value === v ? ' selected' : '');
-  return `<option value=""${sel('')}>跟随全局</option>`
-    + `<option value="on"${sel('on')}>开启</option>`
-    + `<option value="off"${sel('off')}>关闭</option>`;
-}
-
-/** 这块屏深度视差的生效值（覆盖优先；true/false/null） */
+/** 这块屏深度视差的生效值（覆盖优先；true/false/null）—— r24 起也是每屏开关的勾选态 */
 function resolvedDepth(chId) {
   const cfg = state.config || {};
   const ov = (cfg.monitors || {})[chId] || {};
@@ -1502,9 +1501,11 @@ function cardHtml(ch) {
         <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；烟花数量内置（最多同时 5 发）。</div>
       </div>
       <div class="mc-block">
-        <label class="field-label">深度视差</label>
-        <select class="select sm" data-field="depthParallax" title="这块屏要不要开深度视差（有深度图的壁纸生效）；跟随全局 = 用「外观」页里的总开关。多屏全开 GPU 消耗大，可以只给主力屏开">${depthOptions(ov.depthParallax === true ? 'on' : ov.depthParallax === false ? 'off' : '')}</select>
-        <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹"${resolvedDepth(ch.id) ? '' : ' style="display:none"'}>${flowStyleOptions(ov.flowStyle)}</select>
+        <label class="check"><input type="checkbox" data-field="depthSwitch"${resolvedDepth(ch.id) ? ' checked' : ''}><span>深度视差</span></label>
+        <div class="field-row"${resolvedDepth(ch.id) ? '' : ' hidden'}>
+          <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹；跟随全局 = 用「外观」页里的全局设置">${flowStyleOptions(ov.flowStyle)}</select>
+        </div>
+        <div class="field-hint">开关 = 这块屏的生效状态（全局关了这里也能单独开）；多屏全开 GPU 消耗大，可只给主力屏开。</div>
       </div>
     </div>
   </div>`;
@@ -1521,9 +1522,14 @@ function renderCards() {
   const active = document.activeElement;
   if (active && active.type === 'range' && els.monitorCards.contains(active)) return;
 
-  // r21 合并：编辑对象丢了（拔了显示器 / 首次进入）就落到「预览中那块」或第一块
+  // r21 合并：编辑对象丢了（拔了显示器 / 首次进入）就落 —— 优先「上次编辑的那块」
+  // （r24 持久化 settingsEditMonitor），再「预览中那块」，最后第一块
   if (!state.editMonitorId || !state.channels.some((c) => c.id === state.editMonitorId)) {
-    state.editMonitorId = (state.channels.find((c) => c.id === state.previewId) || state.channels[0] || {}).id || null;
+    const savedEdit = state.config ? state.config.settingsEditMonitor : '';
+    const pick = state.channels.find((c) => c.id === savedEdit)
+      || state.channels.find((c) => c.id === state.previewId)
+      || state.channels[0];
+    state.editMonitorId = pick ? pick.id : null;
   }
   renderMonitorChips();
 
@@ -2880,6 +2886,10 @@ function bindSettings() {
     const chip = e.target.closest('.mchip[data-mid]');
     if (!chip || chip.dataset.mid === state.editMonitorId) return;
     state.editMonitorId = chip.dataset.mid;
+    // 记住上次编辑的显示器（r24）：重开设置面板停在原来那张卡。UI_ONLY 键不惊动调度器。
+    window.wp.setConfig({ settingsEditMonitor: state.editMonitorId })
+      .then((c) => { state.config = c; })
+      .catch(() => {});
     renderCards();
   });
 
@@ -2935,13 +2945,6 @@ function bindSettings() {
         await pushProfile(id, { flowStyle: v === '' ? null : v });
         state.config = await window.wp.getConfig();
         renderCards();
-      } else if (field === 'depthParallax') {
-        // 深度视差每屏开关（r23）：''=跟随全局（null 删覆盖）/ on=true / off=false；
-        // 选「开启」时风格下拉才出现（renderCards 重画后按 resolvedDepth 决定）
-        const v = e.target.value;
-        await pushProfile(id, { depthParallax: v === 'on' ? true : v === 'off' ? false : null });
-        state.config = await window.wp.getConfig();
-        renderCards();
       }
     }
     else if (e.target.type === 'number') {
@@ -2952,7 +2955,18 @@ function bindSettings() {
       renderCards();
     }
     else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
-    else if (e.target.type === 'checkbox') await pushProfile(id, { [field]: e.target.checked });
+    else if (e.target.type === 'checkbox') {
+      if (field === 'depthSwitch') {
+        // 每屏深度视差开关（r24）：勾 = 显式开（覆盖 true），取消 = 显式关（覆盖 false）；
+        // 开关状态显示的是「生效值」（跟随全局时反映全局总开关），一动就变成显式覆盖。
+        // 风格下拉随生效值显隐 —— 卡片整体重绘后自然到位。
+        await pushProfile(id, { depthParallax: e.target.checked });
+        state.config = await window.wp.getConfig();
+        renderCards();
+      } else {
+        await pushProfile(id, { [field]: e.target.checked });
+      }
+    }
   });
 
   els.monitorCards.addEventListener('click', async (e) => {

@@ -1243,7 +1243,7 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
  * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
  */
-const UI_ONLY_KEYS = ['settingsTab', 'swipeSwitch'];
+const UI_ONLY_KEYS = ['settingsTab', 'swipeSwitch', 'lastPreviewId', 'settingsEditMonitor'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */

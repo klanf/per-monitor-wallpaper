@@ -1114,6 +1114,8 @@ body.filmstrip-off .filmstrip { display: none; }
 
 /* ---- 联动显隐：cond 容器由 app.js 的 syncConditionalUI 控制 hidden ---- */
 .cond[hidden] { display: none !important; }
+/* 每屏卡片的深度视差风格行（r24）：display:flex 会压过 UA 的 [hidden]，须显式覆盖 */
+.field-row[hidden] { display: none; }
 .cond .sub { margin-top: 6px; }
 label.check.sub { margin-left: 12px; }
 .field-row.sub { margin-left: 12px; }
