@@ -479,9 +479,11 @@ function lookup(entryPath) {
 }
 
 function configure(patch) {
-  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot']) {
+  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot', 'depthDevice']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
+  // 设备偏好转发给 JS 引擎（'cpu'=强制 CPU；缺省/其他=gpu）——放探测前，首建会话即生效
+  try { engineJs.configure({ depthDevice: state.depthDevice }); } catch (_) {}
   // 覆盖项单独记档（空串=没覆盖），resolveRuntime 按覆盖→打包布局→legacy 探测
   state.overrides = {
     python: (patch && patch.python) || '',

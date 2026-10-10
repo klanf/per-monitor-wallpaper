@@ -2160,6 +2160,7 @@ if (!gotLock) {
       python: store.get().depthPython,
       workerScript: store.get().depthWorkerScript,
       modelDir: store.get().depthModelDir,
+      depthDevice: store.get().depthDevice,   // 'cpu'=强制CPU；缺省=GPU(DML)优先（3070 Ti 实测快 5 倍）
       onReady: (imagePath) => {
         // 现场升级：正在显示这张图的舞台立刻从 2D 切视差
         send('depth:ready', { path: imagePath });

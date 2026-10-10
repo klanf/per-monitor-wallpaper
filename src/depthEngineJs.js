@@ -37,6 +37,7 @@ const state = {
   session: null,
   onnxModel: '',
   releaseTimer: null,
+  depthDevice: 'gpu',          // 'gpu'=DML 优先(回落 CPU) | 'cpu'=强制 CPU（2026-10-10 实测 DML 快 5 倍）
   failed: false,               // require 失败后不再反复试（降级交由 depthService 决策）
   failReason: '',
 };
@@ -201,11 +202,43 @@ async function ensureSession() {
   }
   const ort = state.ort;
   const t0 = Date.now();
-  state.session = await ort.InferenceSession.create(state.onnxModel, {
-    executionProviders: ['cpu'],
+  // 执行器选择（2026-10-10 实测，3070 Ti / depth_anything_v2_small）：
+  //   cpu 450ms/张 → dml 86ms/张（5.2 倍），DML 是 Windows 自带的 DX12 推理层，
+  //   不需要装 CUDA/cuDNN；ort-node 未内置 CUDA 后端（probe 实锤 backend not found）。
+  //   ['dml','cpu'] 里 ORT 对不支持的算子自动落到 CPU（shape 类算子），无需手动切分。
+  const wantGpu = state.depthDevice !== 'cpu';
+  const mkSession = (providers) => ort.InferenceSession.create(state.onnxModel, {
+    executionProviders: providers,
   });
-  log(`ONNX 会话就绪 ${path.basename(state.onnxModel)}（${((Date.now() - t0) / 1000).toFixed(1)}s，CPU EP）`);
+  try {
+    state.session = await mkSession(wantGpu ? ['dml', 'cpu'] : ['cpu']);
+  } catch (err) {
+    if (!wantGpu) throw err;
+    // DML 会话创建异常（老驱动/显卡不兼容等）：回落 CPU，深度功能不瘫
+    log(`GPU(DML) 会话创建失败，回落 CPU EP：${err.message}`);
+    state.session = await mkSession(['cpu']);
+  }
+  const epDesc = wantGpu && state.depthDevice !== 'cpu' ? 'GPU(DML)+CPU兜底' : 'CPU EP';
+  log(`ONNX 会话就绪 ${path.basename(state.onnxModel)}（${((Date.now() - t0) / 1000).toFixed(1)}s，${epDesc}）`);
   return state.session;
+}
+
+/**
+ * 设备偏好（depthService.configure 转发 config 的 depthDevice 键）。
+ * 'cpu' = 强制 CPU（GPU 占用冲突/驱动异常时用）；其余值 = GPU(DML) 优先。
+ * 会话已存在且偏好变了：释放旧会话，下张图按新设备重建。
+ */
+function configure(patch) {
+  if (!patch || typeof patch.depthDevice !== 'string') return;
+  const next = patch.depthDevice === 'cpu' ? 'cpu' : 'gpu';
+  if (next === state.depthDevice) return;
+  state.depthDevice = next;
+  if (state.session) {
+    const old = state.session;
+    state.session = null;
+    old.release().catch(() => { /* 已释放 */ });
+    log(`深度设备切换为 ${next}，旧会话已释放`);
+  }
 }
 
 function armReleaseTimer() {
@@ -258,4 +291,4 @@ function close() {
   }
 }
 
-module.exports = { probe, generate, close, isReady: () => Boolean(state.onnxModel) && !state.failed };
+module.exports = { probe, generate, close, configure, isReady: () => Boolean(state.onnxModel) && !state.failed };
