@@ -1739,6 +1739,24 @@ async function addDirsToAlbum(albumId) {
     folders: [...album.folders, ...fresh.map((p) => ({ path: p, enabled: true }))],
   });
   toast(`已加入相簿「${album.name}」：${fresh.map(baseName).join('、')}`);
+  // 加完目录还没人用 → 绑给空屏并收起相簿页，让壁纸立刻出来（新用户别再卡空态）
+  if (await ensureAlbumBound(albumId)) closeAlbumsPage();
+}
+
+/** 相簿未被任何屏幕使用时，绑给「还没绑相簿」的屏 —— 新用户引导的收尾一步。
+ * 返回是否发生了绑定；所有屏都已绑别的相簿时不抢（不动现有配置），提示手动绑。
+ * ⚠️ 回归史：54 轮追记九（bc4ab05）首次加入，重建功能分支时丢失，用户实报
+ * 「装好包、建好相簿加好目录，一直卡在选择相簿页面」后于 r32 补回。 */
+async function ensureAlbumBound(albumId) {
+  if (state.channels.some((c) => c.profile && c.profile.albumId === albumId)) return false;
+  const target = state.channels.find((c) => c.profile && !c.profile.albumId);
+  if (!target) {
+    toast('相簿已更新。它还没绑定屏幕，可在显示器卡片的「相簿」下拉里选择');
+    return false;
+  }
+  await pushProfile(target.id, { albumId });
+  toast(`已把相簿「${album.name}」绑定到「${channelName(target)}」`);
+  return true;
 }
 
 async function onAlbumListClick(e) {
@@ -3152,7 +3170,15 @@ async function refreshChannelInfo() {
 
 function bindEvents() {
   // 添加目录统一走「相簿」页（顶栏按钮已撤，空态大按钮和菜单都指向相簿）
-  $('empty-pick').addEventListener('click', () => $('btn-albums').click());
+  // 空态大按钮：直接弹原生目录对话框 —— folder:pick 会自动建相簿并绑到当前屏。
+  // ⚠️ 不能只开相簿页：相簿页没有「绑定屏幕」的操作，新用户建相簿、加完目录，
+  // 频道仍绑着空 albumId 永远 0 张图，空态遮罩永远在（54 轮追记九用户实报）。
+  // 选择取消就留在原地，无副作用；没有可预览频道时回落到相簿页。
+  $('empty-pick').addEventListener('click', async () => {
+    if (!state.previewId) { $('btn-albums').click(); return; }
+    const folder = await window.wp.pickFolder(state.previewId);
+    if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
+  });
   $('btn-rescan').addEventListener('click', async () => {
     if (!state.previewId) { $('btn-albums').click(); return; }
     const result = await window.wp.channelCommand(state.previewId, 'rescan');

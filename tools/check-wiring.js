@@ -54,7 +54,8 @@ const orphanFields = [...block.matchAll(/^ {2}<div class="field[ "]/gm)];
 check('没有字段块漏在分类页外面', orphanFields.length === 0, `漏了 ${orphanFields.length} 个`);
 
 const fieldCount = (block.match(/^ {6}<div class="field[ "]/gm) || []).length;
-check('22 个字段块都归进了某一页', fieldCount === 22, String(fieldCount));
+const totalFields = (block.match(/<div class="field[ "]/gm) || []).length;
+check('所有字段块都归进了某一页', fieldCount === totalFields, `页内 ${fieldCount}/${totalFields}（孤儿看上一条）`);
 
 // 每个页至少有一个字段块
 const perPane = {};
@@ -120,9 +121,16 @@ check('内容区自己滚（标签条不跟着滚）', /\.settings-body \{[\s\S]
 check('内容区给了 min-height:0（不然滚动条出不来）', /\.settings-body \{[\s\S]*?min-height: 0/.test(CSS));
 check('设置面板本身不再整块滚动', /\.settings \{[\s\S]*?overflow: hidden;/.test(CSS));
 
+// ---- 空态引导闭环（54 轮追记九修复的回归，r32 补回） ----
+check('空态大按钮直弹目录对话框（folder:pick 自动建相簿并绑屏），不是只开相簿页',
+  /\$\('empty-pick'\)\.addEventListener\('click', async[\s\S]{0,200}pickFolder\(state\.previewId\)/.test(APP));
+check('相簿页加目录后会尝试自动绑定空屏', /ensureAlbumBound\(albumId\)\) closeAlbumsPage\(\)/.test(APP));
+check('ensureAlbumBound 只绑还没绑相簿的屏（不抢已绑定的）',
+  /function ensureAlbumBound[\s\S]{0,400}profile\.albumId === albumId[\s\S]{0,200}!c\.profile\.albumId/.test(APP));
+
 // ---- 主进程：切页不该重建频道 ----
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab'\]/.test(MAIN));
+check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'swipeSwitch', 'lastPreviewId', 'settingsEditMonitor'\]/.test(MAIN));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

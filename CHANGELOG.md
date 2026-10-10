@@ -4006,3 +4006,44 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
 - 重启实例双屏 tick 正常、视差升级正常（upgrade 完成）；
 - 待真机验收：呼吸滑杆、粒子种类（含 random 每图重抽）、绕开鼠标、
   拔电暂停（台式机无电池=isOnBattery 返回 false/null 不误触）、联动置灰。
+
+---
+
+## 第三十二轮：修复「装好包、建好相簿加好目录，一直卡在选择相簿页面」
+
+### 现象
+
+- 用户反馈：打包版安装后，设置好相簿（`D:/test/image`，23 张受支持图片，目录实际存在），
+  首页却永远停在「还没有图片目录」空态页；相簿卡片显示「1/1 目录启用 · 未绑定屏幕」。
+- 排查结论（配置实测定罪，非路径/权限/格式问题）：相簿保存了、目录也启用了，
+  但统一频道的 `profile.albumId` 是空字符串、播放记录里 album 为 null ——
+  **相簿从未被绑定到播放频道**，调度器按 `profile.albumId` 找不到相簿就返回 0 张图。
+
+### 根因（回归）
+
+- 历史提交 `bc4ab05`（54 轮追记九）曾修过同一个问题：空态按钮直弹目录对话框
+  （`folder:pick` 自动建相簿并绑屏）+ 相簿页加目录后 `ensureAlbumBound` 自动绑定空屏。
+- 重建功能分支时这两段逻辑丢失：空态按钮退化为只开相簿页（相簿页没有「绑定屏幕」的操作），
+  `addDirsToAlbum` 只写 folders 不绑频道 —— 新用户从空态进相簿页新建相簿再加目录，
+  必然形成「有相簿、有目录、但没绑定」的死局。已绑定过相簿的老配置不受影响，
+  所以不是所有电脑都能复现。
+
+### 决定与改动
+
+- `src/renderer/app.js`：
+  - 补回 `ensureAlbumBound(albumId)`：相簿没被任何屏幕用时绑给第一个空 `albumId` 的屏，
+    绑完收起相簿页；所有屏都已绑别的相簿时不抢（不动现有配置），toast 提示手动绑；
+  - `addDirsToAlbum` 收尾调用它，加完目录壁纸立刻出来；
+  - 空态大按钮恢复直弹 `pickFolder(previewId)`（`folder:pick` 主进程侧自动建相簿并绑屏），
+    无可预览频道时回落到相簿页。
+- `tools/check-wiring.js`：+3 条接线断言（空态直弹 / 加目录即绑 / 只绑空屏不抢）；
+  顺手修两条过时断言 —— 字段块计数不再钉死数字（改为页内数==全部数），
+  `UI_ONLY_KEYS` 对齐四键现状。
+
+### 验证
+
+- node --check 通过；check-wiring **40/0**、scheduler **159/0**、testConfig 0 失败；
+- 夹具复盘：`tools/fixtures/monitor-*.bmp` 是 gitignore 的生成型夹具，
+  盘上被清后 `test-scheduler` 崩溃（ENOENT），`npm run fixtures` 重新生成即恢复；
+- 绑定后闭环对拍：`pushProfile` → `applyChannelInfo` 尾部 `previewSignature` 变化
+  → `loadPreviewChannel` 重取文件 → `els.empty.hidden = true` 空态自动收起。
