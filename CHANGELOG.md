@@ -4079,3 +4079,39 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
 - 界面图：`git show 6e9c074:docs/界面-主界面.png` 导出目检确认后覆盖，两版本 byte 级 DIFFERENT（97871B vs 331203B）。
 - 打包链自举推演：新机器 clone → 双击 bat → npm install 自举 → 模型缺失即明确报错并给出两条获取路径；
   模型就位后与 r34 流程一致（已实测出包 291MB + 冒烟全过）。
+
+---
+
+## 第三十六轮：深度模型打包自动下载（新机器零手工）
+
+### 现象
+
+- 用户问：模型不在仓库里，打包的时候能自动下载吗？
+- 前情（r35）：bat 只做「缺失即失败+两条手动获取路径」，新开发者仍需手工准备 99MB ONNX。
+
+### 决定（先验证再换源）
+
+- 下载 HF 公开的 onnx-community/depth-anything-v2-small fp32（onnx/model.onnx，94.5MB），
+  与现役自导出 ONNX 对拍（同图、同预处理）：输出名 predicted_depth、dims [1,392,700]、
+  **CORR=1.0000、MAD=0.0/255（逐像素一致）**——r30「不换公开版」的顾虑系当时无实测数据，
+  现撤销：公开版可直接当自动下载源，省掉自建 Release 托管。
+- 两文件 SHA256 不同属正常（导出器元数据差异），数值层等价已实证。
+
+### 改动
+
+- `打包exe.bat`：模型缺失时自动下载——主源 hf-mirror.com（国内直连约 18MB/s），备源 huggingface.co；
+  curl.exe（Win10+ 自带）优先、PowerShell Invoke-WebRequest 兜底；
+  `certutil` SHA256 校验（afb6a5c2...）→ 原子 move 落位；
+  失败回落 r35 的三条手动路径（浏览器下载改名 / 跨机拷贝 / export_onnx.py 自导出）。
+- README 打包章节「新机器必读」条目改写为「深度模型自动下载（新机器零手工）」。
+
+### 验证（真机全链）
+
+- 移走本地模型后跑打包脚本：下载 5 秒 → SHA256 过 → 原子落位 → 构建出包
+  `壁纸切换器-Setup-0.2.1.exe` 291,195,554B；包内 ONNX hash = afb6a5c2（下载版）、
+  零 .py/.pyd、app.asar.unpacked 含 sharp/onnxruntime-node —— 全部达标。
+- 坑实录：①Git Bash 直接 `cmd //c xxx.bat` 参数被吞（日志只有 cmd 横幅、1 秒假成功），
+  须经 python subprocess 起 cmd；②经 bat 链启动的构建在 packaging 阶段卡死 8 分钟
+  （electron 解包完 351MB 后零 CPU 零 IO 停滞，r34 直接 npm run dist 无此问题，未定罪），
+  按 PID 树杀掉后清理 dist/win-unpacked.tmp 与 .lock（目录）残留，改走 npm run dist 完成。
+  对外说明：用户双击 bat 不经本会话环境，卡死与 bat 无关，属 agent 会话环境问题。
