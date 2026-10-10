@@ -321,6 +321,13 @@
         <div class="field-hint mono" id="depth-status"></div>
         <div class="cond" data-cond="cfg-depth-parallax">
           <div class="field-row sub">
+            <span class="field-label" style="flex:0 0 84px">推理设备</span>
+            <select class="select" id="cfg-depth-device" style="flex:1">
+              <option value="gpu">GPU · 显卡推理（DirectML，快约 5 倍，推荐）</option>
+              <option value="cpu">CPU · 兼容模式（显卡占用冲突 / 驱动异常时用）</option>
+            </select>
+          </div>
+          <div class="field-row sub">
             <span class="field-label" style="flex:0 0 84px">动效风格</span>
             <select class="select" id="cfg-flow-style" style="flex:1">
               <option value="circle">环绕 · Circle（镜头绕圈）</option>

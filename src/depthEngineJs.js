@@ -291,4 +291,4 @@ function close() {
   }
 }
 
-module.exports = { probe, generate, close, configure, isReady: () => Boolean(state.onnxModel) && !state.failed };
+module.exports = { probe, generate, close, configure, device: () => state.depthDevice, isReady: () => Boolean(state.onnxModel) && !state.failed };

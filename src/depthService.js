@@ -554,6 +554,7 @@ function status() {
   return {
     ...stats(),
     engine: state.engine,
+    device: state.engine === 'js' && engineJs.device ? engineJs.device() : undefined,
     python: state.python,
     workerScript: state.workerScript,
     modelDir: state.modelDir,

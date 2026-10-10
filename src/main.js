@@ -1448,6 +1448,11 @@ async function applyConfigChange(patch) {
   // 59 轮：拨到「让位」（接管=关）的瞬间，把幻灯片相册配置还回去 ——
   // 接管期间的最后一笔写入已经把它踩空了，不还的话用户切幻灯片起不来
   if (patch && patch.applyToSystem === false) restoreSlideshowIni();
+  // 深度推理设备切换（GPU(DML)/CPU）：实时转发 —— depthEngineJs.configure 会释放
+  // 旧会话，下一张图按新设备重建（引擎创建处 DML 优先、异常回落 CPU）
+  if (keys.includes('depthDevice')) {
+    depthService.configure({ depthDevice: store.get().depthDevice });
+  }
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');

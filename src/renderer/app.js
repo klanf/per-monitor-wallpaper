@@ -1357,9 +1357,10 @@ async function refreshDepthStatus() {
     const s = await window.wp.depthStatus();
     if (s.enabled) {
       const engineName = s.engine === 'js' ? 'JS·ONNX' : s.engine === 'python' ? 'Python' : (s.engine || '—');
-      el.textContent = `深度生成：就绪 ✓（引擎 ${engineName}）`;
+      const devName = s.engine === 'js' ? (s.device === 'cpu' ? 'CPU' : 'GPU(DML)') : '';
+      el.textContent = `深度生成：就绪 ✓（引擎 ${engineName}${devName ? ` · ${devName}` : ''}）`;
       el.title = s.engine === 'js'
-        ? `onnx: ${s.onnxModel}\n（零 Python 依赖，onnxruntime CPU 推理）`
+        ? `onnx: ${s.onnxModel}\n设备: ${devName}（外观页「推理设备」可切换）`
         : `python: ${s.python}\nworker: ${s.workerScript}\nmodel: ${s.modelDir}`;
     } else {
       el.textContent = `深度生成不可用：${s.disabledReason || '依赖缺失'}（视差自动回退普通平移缩放）`;
@@ -2312,6 +2313,7 @@ function applyConfigToUI() {
 
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
   $('cfg-depth-parallax').checked = c.depthParallax !== false;
+  $('cfg-depth-device').value = c.depthDevice === 'cpu' ? 'cpu' : 'gpu';  // 缺省 = GPU(DML)
   const flowKeys = [
     ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', 0.5, (v) => v.toFixed(2)],
     ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', 1.0, (v) => `${v.toFixed(1)}×`],
@@ -2724,6 +2726,14 @@ function bindSettings() {
     updateDepthDisabled();
     await save({ depthParallax: e.target.checked });
     toast(e.target.checked ? '深度视差已开启' : '深度视差已关闭（回退普通平移缩放）');
+  });
+  // 深度推理设备（GPU(DML)/CPU）：写配置即生效 —— 主进程 applyConfigChange 实时
+  // 转发给 depthService，旧会话立刻释放、下一张图按新设备重建，不用重启。
+  $('cfg-depth-device').addEventListener('change', async (e) => {
+    const v = e.target.value === 'cpu' ? 'cpu' : 'gpu';
+    await save({ depthDevice: v });
+    toast(v === 'cpu' ? '深度推理已切到 CPU（下一张图生效）' : '深度推理已切到 GPU（下一张图生效）');
+    refreshDepthStatus();
   });
   // （DepthFlow 流动模式开关已移除（r23）：恒开 —— 用户实测关掉效果非常差，
   //   没有存在的价值；store 层也不再读写 depthFlow 键）
