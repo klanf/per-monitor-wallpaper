@@ -388,6 +388,22 @@ body.idle { cursor: none; }
 .field-value { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
 .field-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
 
+/* 设置 → 系统 → 软件更新 */
+.update-version-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.update-version-row .badge[hidden], .update-actions .btn[hidden], .update-progress[hidden], .update-notes[hidden] { display: none; }
+.update-progress { height: 5px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.10); }
+.update-progress-fill { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.16s linear; }
+.update-notes {
+  max-height: 84px;
+  overflow-y: auto;
+  padding: 7px 8px;
+  white-space: pre-wrap;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.update-actions { flex-wrap: wrap; }
+
 .select {
   width: 100%;
   padding: 7px 9px;

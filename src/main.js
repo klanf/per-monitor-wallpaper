@@ -19,7 +19,8 @@
  *   tray.js           托盘图标 + 开机自启
  */
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, globalShortcut, Notification } = require('electron');
+const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -47,6 +48,7 @@ const desktopWallpaper = require('./desktopWallpaper');
 const slideshowGuard = require('./slideshowGuard');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
 const { PlaybackState } = require('./playbackState');
+const { UpdateService } = require('./updater');
 
 const CACHE_DIR = path.join(os.tmpdir(), 'electron-wallpaper-cache');
 
@@ -116,6 +118,9 @@ const debugLog = require('./debugLog');
 let playback = null;
 let quitting = false;
 let hideNoticeShown = false;
+let updater = null;
+let updateNotification = null;
+let notifiedUpdateVersion = null;
 
 /* ------------------------------------------------------------------ 显示器 */
 
@@ -241,6 +246,51 @@ function createWindow() {
 
 function send(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function openUpdateSettings() {
+  showWindow();
+  send('menu:action', 'open-updates');
+}
+
+/** 更新状态既推给设置页，也在首次发现新版时给一个不打断工作的提示。 */
+function announceUpdateState(state) {
+  send('update:state', state);
+  if (!state || state.status !== 'available' || !state.latestVersion) return;
+  if (notifiedUpdateVersion === state.latestVersion) return;
+  notifiedUpdateVersion = state.latestVersion;
+
+  if (isWindowVisible()) {
+    send('notice', { text: `发现新版本 v${state.latestVersion}，可到「设置 → 系统」更新` });
+    return;
+  }
+
+  if (!Notification.isSupported()) return;
+  updateNotification = new Notification({
+    title: `壁纸切换器 v${state.latestVersion} 可更新`,
+    body: '点击查看版本说明并下载更新。',
+    icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
+  });
+  updateNotification.on('click', openUpdateSettings);
+  updateNotification.on('close', () => { updateNotification = null; });
+  updateNotification.show();
+}
+
+function spawnUpdateInstaller(installerPath, args) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(installerPath, args, { detached: true, stdio: 'ignore', windowsHide: false });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 function isWindowVisible() {
@@ -1426,6 +1476,36 @@ async function runChannelCommand(id, command, payload) {
 
 function registerIpc() {
   ipcMain.handle('config:get', () => store.get());
+  // ---- 软件更新（Gitee Release 分片）----
+  ipcMain.handle('update:state', () => updater ? updater.snapshot() : null);
+  ipcMain.handle('update:check', () => updater
+    ? updater.check({ manual: true })
+    : { status: 'error', error: '更新服务尚未初始化' });
+  ipcMain.handle('update:download', () => updater
+    ? updater.download()
+    : { status: 'error', error: '更新服务尚未初始化' });
+  ipcMain.handle('update:install', async () => {
+    if (!updater) return { status: 'error', error: '更新服务尚未初始化' };
+    const state = updater.snapshot();
+    if (state.status !== 'ready') return { ...state, status: 'error', error: '更新包尚未下载完成' };
+    const answer = await dialog.showMessageBox(mainWindow || undefined, {
+      type: 'question',
+      title: '安装新版本',
+      message: `立即重启并安装 v${state.latestVersion}？`,
+      detail: '程序会正常保存播放位置并退出，安装完成后自动重新打开。',
+      buttons: ['立即安装', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (answer.response !== 0) return updater.snapshot();
+    const result = await updater.install();
+    if (result.status === 'installing') {
+      quitting = true;
+      setTimeout(() => app.quit(), 100);
+    }
+    return result;
+  });
   // 舞台置顶吃掉了桌面右键：渲染端捕获后转发 DefView 弹原生菜单（见 liveStage）
   ipcMain.handle('desktop:context-menu', (_e, x, y) => liveStage.showDesktopContextMenu(x, y));
   // 菜单是模态的、等不到舞台上的点击：任何按下时由渲染端通知这里解除
@@ -1973,6 +2053,24 @@ if (!gotLock) {
     // 用 depthPython / depthWorkerScript / depthModelDir。不填则按
     // 「覆盖 → 打包布局 → 本机开发布局」自动探测，详见 depthService.resolveRuntime。
     debugLog.init(path.join(app.getPath('userData'), 'logs'));
+
+    // Release 更新包只覆盖正式安装版：源码开发态、非 Windows 和 portable 都允许
+    // 手动查看版本，但不会启动安装器，避免把便携版悄悄变成安装版。
+    const portable = Boolean(process.env.PORTABLE_EXECUTABLE_DIR);
+    const updateSupported = process.platform === 'win32' && app.isPackaged && !portable;
+    const unsupportedReason = process.platform !== 'win32'
+      ? '自动安装仅支持 Windows'
+      : (!app.isPackaged ? '源码开发模式不执行自动覆盖安装' : '便携版不执行自动覆盖安装');
+    updater = new UpdateService({
+      currentVersion: app.getVersion(),
+      updatesDir: path.join(app.getPath('userData'), 'updates'),
+      supported: updateSupported,
+      unsupportedReason: updateSupported ? '' : unsupportedReason,
+      spawnInstaller: spawnUpdateInstaller,
+      onState: announceUpdateState,
+      logger: console,
+    });
+    updater.cleanupOld().catch((err) => console.warn('[updater] 清理旧更新失败:', err.message));
     // 打包后 __dirname 在 resources\app.asar\src 里，而 extraResources（模型等）
     // 落在 resources\ 平级目录 —— appRoot 取 resources\，布局才和 depthService
     // 的三级解析（models\depth-anything）对上。开发态保持仓库根不变。
@@ -2044,6 +2142,12 @@ if (!gotLock) {
     createWindow();
 
     if (store.get().tray !== false) installTray();
+
+    // 一次会话只自动检查一次；延后 10 秒，别和启动扫描、舞台创建抢网络与磁盘。
+    // 开发态不自动访问 Gitee，设置页的手动检查仍然可用。
+    if (app.isPackaged) {
+      setTimeout(() => updater.check({ manual: false }).catch(() => {}), 10_000);
+    }
 
     // 全局热键：窗口藏进托盘也要能切壁纸，所以注册在主进程
     const hotkeys = applyHotkeys();

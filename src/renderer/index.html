@@ -557,6 +557,26 @@
         <div class="field-hint mono" id="login-hint"></div>
       </div>
 
+      <!-- ---------------------------------------------------------- 软件更新 -->
+      <div class="field" id="update-section">
+        <label class="field-label">软件更新</label>
+        <div class="update-version-row">
+          <span id="update-current">当前版本读取中…</span>
+          <span class="badge" id="update-latest" hidden></span>
+        </div>
+        <div class="field-hint" id="update-status">尚未检查更新</div>
+        <div class="update-progress" id="update-progress" hidden>
+          <div class="update-progress-fill" id="update-progress-fill"></div>
+        </div>
+        <div class="field-hint update-notes" id="update-notes" hidden></div>
+        <div class="field-row update-actions">
+          <button class="btn sm" id="btn-update-check">检查更新</button>
+          <button class="btn sm primary" id="btn-update-download" hidden>下载更新</button>
+          <button class="btn sm primary" id="btn-update-install" hidden>立即重启并安装</button>
+        </div>
+        <div class="field-hint">更新来自本项目的 Gitee Release；下载完成后会校验每个分片及完整安装包的 SHA-256。</div>
+      </div>
+
       <!-- ---------------------------------------------------------- 缓存 -->
       <div class="field">
         <label class="field-label">缩略图缓存</label>

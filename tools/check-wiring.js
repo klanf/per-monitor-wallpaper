@@ -83,6 +83,7 @@ check('热键在「操作」页', paneOf('id="hotkey-list"') === 'action', Strin
 check('快捷文件夹在「操作」页', paneOf('id="quick-section"') === 'action', String(paneOf('id="quick-section"')));
 check('开机自启在「系统」页', paneOf('id="cfg-launch-at-login"') === 'system', String(paneOf('id="cfg-launch-at-login"')));
 check('缩略图缓存在「系统」页', paneOf('id="thumb-stats"') === 'system', String(paneOf('id="thumb-stats"')));
+check('软件更新在「系统」页', paneOf('id="update-section"') === 'system', String(paneOf('id="update-section"')));
 
 // ---- 全局项不能被 per-monitor / unified 的显示规则挡住 ----
 // mode-hint / album-bind-hint 是两种模式都要看的，不能带模式限定 class
@@ -112,6 +113,15 @@ check('「快捷文件夹」跳转会先翻到所在那一页',
 check('切页函数有定义', /function selectSettingsTab\(/.test(APP));
 check('记住分类的函数有定义', /async function persistSettingsTab\(/.test(APP));
 check('els 里加了 settingsBody', /settingsBody: \$\('settings-body'\)/.test(APP));
+check('更新状态事件已接到渲染层', /window\.wp\.onUpdateState\(renderUpdateState\)/.test(APP));
+check('更新三阶段按钮都已接线',
+  ['btn-update-check', 'btn-update-download', 'btn-update-install']
+    .every((id) => new RegExp(`\\$\\('${id}'\\)\\.addEventListener`).test(APP)));
+
+const PRELOAD = fs.readFileSync(path.join(ROOT, 'src/preload.js'), 'utf8');
+for (const api of ['updateState', 'checkForUpdate', 'downloadUpdate', 'installUpdate', 'onUpdateState']) {
+  check(`preload 暴露 ${api}`, new RegExp(`\\b${api}:`).test(PRELOAD));
+}
 
 // ---- CSS ----
 check('标签条样式在', /\.settings-tabs \{/.test(CSS));
@@ -130,6 +140,9 @@ check('ensureAlbumBound 只绑还没绑相簿的屏（不抢已绑定的）',
 
 // ---- 主进程：切页不该重建频道 ----
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+for (const channel of ['update:state', 'update:check', 'update:download', 'update:install']) {
+  check(`主进程注册 ${channel}`, MAIN.includes(`ipcMain.handle('${channel}'`));
+}
 // 自洽式断言：UI_ONLY_KEYS 必须同时含这些键（顺序不限，后续加键不算违规）
 // （47 轮的 expandedMonitors 折叠记忆未移植：r21 起设置面板是「胶囊 + 单卡渲染」，
 //  「整列卡片默认折叠」的前提已不存在，移植反而会让唯一那张卡默认收起）

@@ -122,6 +122,12 @@ contextBridge.exposeInMainWorld('wp', {
   /** 取托盘菜单结构（不弹菜单），给验证脚本核对菜单项 */
   trayMenuTemplate: () => ipcRenderer.invoke('tray:menu-template'),
 
+  // ---- 软件更新 ----
+  updateState: () => ipcRenderer.invoke('update:state'),
+  checkForUpdate: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+
   // ---- 全局热键 ----
   /** 取动作表 + 当前绑定 + 上一次注册结果（哪些被别的程序占了） */
   getHotkeys: () => ipcRenderer.invoke('hotkeys:get'),
@@ -221,6 +227,10 @@ contextBridge.exposeInMainWorld('wp', {
 
   onLaunchAtLoginChanged: (cb) => {
     ipcRenderer.on('launch-at-login:changed', (_event, payload) => cb(payload));
+  },
+
+  onUpdateState: (cb) => {
+    ipcRenderer.on('update:state', (_event, payload) => cb(payload));
   },
 
   /** 用户在删除确认框里勾了「不再询问」，开关被主进程关掉了 */
