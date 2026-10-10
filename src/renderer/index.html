@@ -610,6 +610,22 @@
 <div id="toast" class="toast"></div>
 <div id="tip-box" hidden></div>
 
+<!-- 53 轮：切到「每屏独立」时的一次性指路弹窗（勾选后不再弹出） -->
+<div class="modal-overlay" id="pm-hint-overlay" hidden>
+  <div class="modal-card">
+    <div class="modal-title">每屏独立模式已开启</div>
+    <div class="modal-body">
+      <p>轮播的<b>目录、节奏</b>在每台显示器的卡片里设置；</p>
+      <p><b>粒子特效</b>也在卡片里（每屏独立时上方不再显示全局特效开关，两种设置互斥）。</p>
+      <p class="muted">「跟随全局」的屏会用统一配置里保存的特效默认值（切回统一配置可改）。</p>
+      <label class="check"><input type="checkbox" id="pm-hint-dont-show"><span>下次不再提示</span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary sm" id="pm-hint-ok">知道了</button>
+    </div>
+  </div>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>

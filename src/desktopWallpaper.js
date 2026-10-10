@@ -44,6 +44,9 @@ const SLOT = {
   GET_DEVICE_PATH_AT: 5,
   GET_DEVICE_PATH_COUNT: 6,
   GET_MONITOR_RECT: 7,
+  // ---- 59 轮追记：幻灯片修复 ----
+  // 8 SetBackgroundColor  9 GetBackgroundColor  10 SetPosition  11 GetPosition
+  SET_SLIDESHOW: 12,          // SetSlideshow(IShellItemArray *)
 };
 
 /** HRESULT 常见值，用于把错误翻译成人话 */
@@ -75,12 +78,16 @@ function ensureTypes() {
   const Guid = koffi.struct('WpDesktopWallpaperGuid', {
     d1: 'uint32', d2: 'uint16', d3: 'uint16', d4: 'uint8[8]',
   });
+  const Bytes16 = koffi.struct('WpDesktopWallpaperGuidBytes', {
+    b: 'uint8[16]',
+  });
   const Rect = koffi.struct('WpDesktopWallpaperRect', {
     left: 'int32', top: 'int32', right: 'int32', bottom: 'int32',
   });
 
   Ty = {
     Guid,
+    Bytes16,
     Rect,
     P_QueryInterface: koffi.proto('int32 WpIdwQueryInterface(void *thiz, const WpDesktopWallpaperGuid *riid, void *out)'),
     P_Release: koffi.proto('uint32 WpIdwRelease(void *thiz)'),
@@ -89,8 +96,31 @@ function ensureTypes() {
     P_GetDevicePathAt: koffi.proto('int32 WpIdwGetMonitorDevicePathAt(void *thiz, uint32 index, void *out)'),
     P_GetDevicePathCount: koffi.proto('int32 WpIdwGetMonitorDevicePathCount(void *thiz, uint32 *out)'),
     P_GetMonitorRect: koffi.proto('int32 WpIdwGetMonitorRECT(void *thiz, char16_t *monitorId, void *out)'),
+    // 59 轮追记：SetSlideshow(IShellItemArray *) —— 把幻灯片相册指回去（slideshow.ini 被踩空时的自愈）
+    P_SetSlideshow: koffi.proto('int32 WpIdwSetSlideshow(void *thiz, void *items)'),
   };
 }
+
+/**
+ * 把 '{xxxxxxxx-...-xxxxxxxxxxxx}' 解析成 16 字节裸缓冲区（标准二进制布局）。
+ * ⚠️ 不用 Guid 结构体传 IID —— 实测（59 轮）koffi 对 uint32/uint16/uint8[8] 复合结构体
+ * 的编组在 riid 位置会错位（CoCreateInstance 能过是另一条路径），裸 uint8[16] 才稳。
+ */
+function guidBuffer(str) {
+  const m = /^\{?([0-9a-fA-F]{8})-?([0-9a-fA-F]{4})-?([0-9a-fA-F]{4})-?([0-9a-fA-F]{2})([0-9a-fA-F]{2})-?([0-9a-fA-F]{12})\}?$/.exec(str);
+  if (!m) throw new Error(`GUID 格式不合法: ${str}`);
+  const raw = Buffer.alloc(16);
+  raw.writeUInt32LE(parseInt(m[1], 16), 0);
+  raw.writeUInt16LE(parseInt(m[2], 16), 4);
+  raw.writeUInt16LE(parseInt(m[3], 16), 6);
+  Buffer.from(m[4] + m[5] + m[6], 'hex').copy(raw, 8);
+  const buf = koffi.alloc(Ty.Bytes16, 1);
+  koffi.encode(buf, Ty.Bytes16, { b: [...raw.values()] });
+  return buf;
+}
+
+const IID_SHELL_ITEM = '{43826d1e-e718-42ee-bc55-a1e261c37bfe}';
+const IID_SHELL_ITEM_ARRAY = '{b63ea76d-1f85-456f-a19c-48159efa858b}';
 
 /** 把 JS 对象编码成 GUID 缓冲区（koffi 的结构体入参也可以直接传对象，这里显式编码更稳） */
 function encodeGuid(obj) {
@@ -155,7 +185,13 @@ function load() {
       );
     }
 
-    api = { CoTaskMemFree, fnAt };
+    const shell32 = koffi.load('shell32.dll');
+    api = {
+      CoTaskMemFree,
+      fnAt,
+      SHCreateItemFromParsingName: shell32.func('int32 SHCreateItemFromParsingName(char16_t *path, void *bc, void *riid, void **out)'),
+      SHCreateShellItemArrayFromShellItem: shell32.func('int32 SHCreateShellItemArrayFromShellItem(void *si, void *riid, void **out)'),
+    };
     com = { thisPtr, vtbl, call, fnAt };
   } catch (err) {
     loadError = err;
@@ -243,6 +279,36 @@ function setWallpaper(monitorId, imagePath) {
     method: monitorId ? 'com:per-monitor' : 'com:all',
     monitorId: monitorId || null,
   };
+}
+
+/**
+ * 把 Windows 幻灯片放映的相册指回某个文件夹（59 轮追记）。
+ * 走 IDesktopWallpaper::SetSlideshow(IShellItemArray*)：系统会自己重建 slideshow.ini，
+ * 比手写 ini 文件格式可靠（那是 Explorer 的私有格式）。
+ * 注意：这会同时把背景模式切成「幻灯片放映」—— 只在确认要修复时调用。
+ */
+function setSlideshow(folderPath) {
+  load();
+  if (!com) {
+    return { ok: false, error: loadError ? loadError.message : 'COM 不可用' };
+  }
+  // 文件夹 → IShellItem → IShellItemArray（单元素）
+  const ppSi = koffi.alloc('void *', 1);
+  let hr = api.SHCreateItemFromParsingName(folderPath, null, guidBuffer(IID_SHELL_ITEM), ppSi) >>> 0;
+  if (hr !== 0) return { ok: false, error: `SHCreateItemFromParsingName ${describeHr(hr)}` };
+  const si = koffi.decode(ppSi, 'void *');
+
+  const ppArr = koffi.alloc('void *', 1);
+  hr = api.SHCreateShellItemArrayFromShellItem(si, guidBuffer(IID_SHELL_ITEM_ARRAY), ppArr) >>> 0;
+  // 数组建好后 IShellItem 就没用了，无论成败都释放（Release = 槽 2）
+  com.call(SLOT.RELEASE, Ty.P_Release, si);
+  if (hr !== 0) return { ok: false, error: `SHCreateShellItemArrayFromShellItem ${describeHr(hr)}` };
+  const arr = koffi.decode(ppArr, 'void *');
+
+  const hrSet = com.call(SLOT.SET_SLIDESHOW, Ty.P_SetSlideshow, arr) >>> 0;
+  com.call(SLOT.RELEASE, Ty.P_Release, arr);
+  if (hrSet !== 0) return { ok: false, error: `SetSlideshow ${describeHr(hrSet)}`, hresult: hrSet };
+  return { ok: true, folder: folderPath };
 }
 
 /**
@@ -378,6 +444,7 @@ module.exports = {
   enumMonitors,
   getWallpaper,
   setWallpaper,
+  setSlideshow,
   release,
   describeHr,
   monitorIdForWindow,

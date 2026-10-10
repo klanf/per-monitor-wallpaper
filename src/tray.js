@@ -173,6 +173,25 @@ function buildMenuTemplate() {
     },
   });
 
+  // 接管系统壁纸（57 轮）：关掉 = 让位给 Windows 自带幻灯片，程序其余功能照常跑。
+  // 不让位的话，轮播每个间隔都会用 IDesktopWallpaper 把个性化里刚选的幻灯片
+  // 打回「图片」模式并清空 slideshow.ini —— 表现就是「幻灯片怎么都切不动」。
+  template.push({
+    label: '接管系统壁纸',
+    type: 'checkbox',
+    checked: actions.isApplyToSystem ? actions.isApplyToSystem() : true,
+    click: (item) => {
+      if (actions.setApplyToSystem) actions.setApplyToSystem(item.checked);
+      notify(
+        item.checked ? '已接管系统壁纸' : '已让出系统壁纸',
+        item.checked
+          ? '轮播恢复写入桌面壁纸；Windows 自带幻灯片会被本程序覆盖。'
+          : '本程序不再写入系统壁纸，可以去 Windows 个性化里用幻灯片放映了（动态桌面画面不受影响）。',
+      );
+      refresh();
+    },
+  });
+
   template.push({ label: '打开配置目录', click: () => actions.openConfigDir() });
   template.push({ type: 'separator' });
   template.push({

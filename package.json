@@ -11,7 +11,7 @@
     "shot": "node tools/screenshot-ui.js",
     "shot:readme": "node tools/screenshot-readme.js",
     "shot:new": "node tools/screenshot-new-features.js",
-    "verify:unit": "node tools/test-scheduler.js",
+    "verify:unit": "node tools/test-scheduler.js && node tools/test-slideshow-guard.js",
     "verify:desktop": "node tools/test-desktop-host.js",
     "verify:live": "node tools/test-live-desktop.js",
     "verify:fs-watch": "node tools/test-fullscreen-watch.js",

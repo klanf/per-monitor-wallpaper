@@ -130,7 +130,13 @@ check('ensureAlbumBound 只绑还没绑相簿的屏（不抢已绑定的）',
 
 // ---- 主进程：切页不该重建频道 ----
 const MAIN = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-check('主进程认得纯界面配置键', /const UI_ONLY_KEYS = \['settingsTab', 'swipeSwitch', 'lastPreviewId', 'settingsEditMonitor'\]/.test(MAIN));
+// 自洽式断言：UI_ONLY_KEYS 必须同时含这些键（顺序不限，后续加键不算违规）
+// （47 轮的 expandedMonitors 折叠记忆未移植：r21 起设置面板是「胶囊 + 单卡渲染」，
+//  「整列卡片默认折叠」的前提已不存在，移植反而会让唯一那张卡默认收起）
+const mUiOnly = MAIN.match(/const UI_ONLY_KEYS = \[([^\]]*)\]/);
+check('主进程认得纯界面配置键', Boolean(mUiOnly)
+  && ['settingsTab', 'swipeSwitch', 'hintParticlesPerMonitor']
+    .every((k) => mUiOnly[1].includes(`'${k}'`)));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

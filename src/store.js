@@ -169,6 +169,9 @@ const DEFAULTS = {
   applyOnStart: true,      // 启动时立即用当前帧接管所选屏幕
   monitors: {},            // { [IDesktopWallpaper 设备路径]: Partial<Profile> }
 
+  // 「切到每屏独立时提示粒子去哪设置」弹窗已看过（53 轮，true = 不再弹）
+  hintParticlesPerMonitor: false,
+
   /**
    * 记住上一次停在哪张 —— 重启（含开机自启）后从那张接着播，而不是回到第一张。
    *
@@ -242,6 +245,8 @@ const DEFAULTS = {
 
   // ---- 右键菜单 ----
   contextMenu: true,
+  // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫切上/下一张，不写 = 默认开
+  swipeSwitch: true,
   // 快捷移动/复制目标，[{ id, name, path }]
   quickFolders: [],
   /**

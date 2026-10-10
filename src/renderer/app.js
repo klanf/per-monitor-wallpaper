@@ -2442,7 +2442,24 @@ function bindSettings() {
     toast(perMonitor
       ? '已切换到每屏独立模式：可以给每台显示器单独设置目录和节奏'
       : '已切换到统一配置模式：所有显示器共用一套设置');
+    // 53 轮：首次切到每屏独立，指路粒子/目录设置入口（勾选「不再提示」后消失）
+    if (perMonitor && state.config && state.config.hintParticlesPerMonitor !== true) {
+      showPerMonitorHintOnce();
+    }
   });
+
+  // ---- 一次性指路弹窗（53 轮）----
+  function showPerMonitorHintOnce() {
+    const overlay = $('pm-hint-overlay');
+    if (!overlay) return;
+    overlay.hidden = false;
+    const close = async (remember) => {
+      overlay.hidden = true;
+      if (remember) await save({ hintParticlesPerMonitor: true });
+    };
+    $('pm-hint-ok').onclick = () => close($('pm-hint-dont-show').checked);
+    overlay.onclick = (e) => { if (e.target === overlay) close($('pm-hint-dont-show').checked); };
+  }
 
   // ---- 统一模式的字段 ----
   $('cfg-interval').addEventListener('input', (e) => {

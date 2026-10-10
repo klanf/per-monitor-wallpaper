@@ -44,6 +44,7 @@ const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
 const win32 = require('./win32');
 const desktopWallpaper = require('./desktopWallpaper');
+const slideshowGuard = require('./slideshowGuard');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
 const { PlaybackState } = require('./playbackState');
 
@@ -1243,7 +1244,7 @@ function announceAutoSetup(info, viaBalloon = false) {
  * 这些键走的是同一条 config:set，但改它们不该把频道重建一遍 ——
  * 比如点一下设置面板的分类标签就重建，等于每点一次都重新扫一遍相簿、重排定时器。
  */
-const UI_ONLY_KEYS = ['settingsTab', 'swipeSwitch', 'lastPreviewId', 'settingsEditMonitor'];
+const UI_ONLY_KEYS = ['settingsTab', 'hintParticlesPerMonitor', 'swipeSwitch', 'lastPreviewId', 'settingsEditMonitor'];
 
 /** 改动配置后统一走这里重建，保证「改完立刻生效」 */
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */
@@ -1335,6 +1336,9 @@ async function applyConfigChange(patch) {
   store.set(patch);
   // 纯界面状态：写盘就够了，别惊动调度器
   if (uiOnly) return store.get();
+  // 59 轮：拨到「让位」（接管=关）的瞬间，把幻灯片相册配置还回去 ——
+  // 接管期间的最后一笔写入已经把它踩空了，不还的话用户切幻灯片起不来
+  if (patch && patch.applyToSystem === false) restoreSlideshowIni();
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
@@ -1368,6 +1372,36 @@ async function applyConfigChange(patch) {
     }
   }
   return store.get();
+}
+
+/** slideshow.ini 快照备份的落盘路径（app ready 时初始化，见 configureSlideshowGuard 接线） */
+let slideshowBackupFile = null;
+
+/**
+ * slideshow.ini 守卫的还原动作（59 轮）：接管期间任何一笔系统壁纸写入都会把
+ * Windows 幻灯片的相册配置清成 0 字节 —— 让位 / 退出的瞬间把快照还回去，
+ * 用户去个性化点「幻灯片放映」就不用重选相册（模式本身不代拨，见 slideshowGuard.js）。
+ */
+function restoreSlideshowIni() {
+  if (!slideshowBackupFile) return false;
+  const dir = slideshowGuard.themesDir();
+  if (!dir) return false;
+  const restored = slideshowGuard.restoreIfEmpty(dir, slideshowBackupFile);
+  if (restored) return true;
+  // 59 轮追记二兜底：连快照都没有（守卫上线前 ini 就被踩空）→ 用记录的相册路径
+  // 走 IDesktopWallpaper::SetSlideshow 让系统重建 ini。相册文件由修复流程落盘。
+  try {
+    const albumFile = path.join(path.dirname(slideshowBackupFile), 'slideshow-album.txt');
+    if (!fs.existsSync(albumFile)) return false;
+    const folder = fs.readFileSync(albumFile, 'utf8').trim();
+    if (!folder) return false;
+    const r = desktopWallpaper.setSlideshow(folder);
+    console.log('[slideshow-guard] 快照缺失，SetSlideshow 兜底修复:', JSON.stringify(r));
+    return r.ok;
+  } catch (err) {
+    console.warn('[slideshow-guard] SetSlideshow 兜底修复失败:', err.message);
+    return false;
+  }
 }
 
 /** 频道命令的单一入口 —— IPC 与托盘菜单共用同一份实现 */
@@ -1913,6 +1947,11 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     store = new Store(path.join(app.getPath('userData'), 'config.json'));
 
+    // slideshow.ini 守卫（59 轮）：接管期间每笔系统壁纸写入都会清空幻灯片相册配置，
+    // 写前快照到 userData，让位/退出时还原（见 restoreSlideshowIni / slideshowGuard.js）
+    slideshowBackupFile = path.join(app.getPath('userData'), 'slideshow-backup.ini');
+    win32.configureSlideshowGuard(slideshowBackupFile);
+
     /*
      * 播放位置存档：跟配置文件放同一个目录，但**是独立文件**。
      * 它每次换图都要写（间隔可能只有几秒），而 config.json 是「配置」——
@@ -2113,7 +2152,13 @@ if (!gotLock) {
       event.preventDefault();
       scheduler.anchorSystem()
         .catch((err) => console.warn('[quit] 锚点补写失败:', err.message))
-        .finally(() => { anchorFlushed = true; app.quit(); });
+        .finally(() => {
+          anchorFlushed = true;
+          restoreSlideshowIni();   // 59 轮：锚点那笔又把幻灯片配置踩空了，退出前还回去
+          app.quit();
+        });
+    } else {
+      restoreSlideshowIni();     // 59 轮：不补写也还一次（ini 可能被运行期间的任何一笔踩空）
     }
   });
 
@@ -2160,6 +2205,14 @@ function installTray() {
     },
     setAllPlaying: (playing) => {
       for (const ch of scheduler.channels.values()) scheduler.setPlaying(ch.id, playing);
+      send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
+    },
+    /** 托盘一键让位/收回系统壁纸（57 轮）：让位后 Windows 自带幻灯片随便切 */
+    isApplyToSystem: () => Boolean(store.get().applyToSystem),
+    setApplyToSystem: (on) => {
+      store.set({ applyToSystem: Boolean(on) });
+      // 59 轮：让位瞬间还幻灯片相册配置（接管期间的写入把它踩空了）
+      if (!on) restoreSlideshowIni();
       send('channels:changed', channelBroadcast({ reason: 'tray', channels: scheduler.list() }));
     },
     isWindowVisible,
