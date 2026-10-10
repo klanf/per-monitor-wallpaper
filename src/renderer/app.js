@@ -67,6 +67,12 @@ const els = {
   loginHint: $('login-hint'),
   hotkeyList: $('hotkey-list'),
   hotkeyHint: $('hotkey-hint'),
+  updateCurrent: $('update-current'),
+  updateLatest: $('update-latest'),
+  updateStatus: $('update-status'),
+  updateProgress: $('update-progress'),
+  updateProgressFill: $('update-progress-fill'),
+  updateNotes: $('update-notes'),
 };
 
 const state = {
@@ -96,6 +102,7 @@ const state = {
   albums: [],                 // 相簿列表（config.albums 的镜像，主进程改了会推过来）
   lastAutoScanAt: 0,          // 上次定时自动扫描的时刻（0 = 本次会话还没扫过）
   editMonitorId: null,        // 每屏卡片当前正在编辑哪块屏（r21 合并：4 张长卡 → 胶囊切换 + 1 张卡）
+  update: null,               // 主进程更新服务的瞬时状态（不写 config）
 };
 
 /* ------------------------------------------------------------ 胶片条状态 */
@@ -1860,6 +1867,7 @@ function openSettings() {
   refreshThumbStats();
   refreshTrayState();
   refreshHotkeys();
+  refreshUpdateState();
 }
 
 function closeSettings() {
@@ -1953,6 +1961,56 @@ async function refreshTrayState() {
       ? `自启命令：${s.loginCommand}`
       : `托盘${s.installed ? '已启用' : '未启用'}。开启自启后写入的是：${s.loginCommand}`;
   } catch { /* 托盘不可用时忽略 */ }
+}
+
+function renderUpdateState(next) {
+  if (!next) return;
+  state.update = next;
+  const status = next.status || 'idle';
+  els.updateCurrent.textContent = `当前版本 v${next.currentVersion || '未知'}`;
+  els.updateLatest.hidden = !next.latestVersion || next.latestVersion === next.currentVersion;
+  els.updateLatest.textContent = next.latestVersion ? `最新 v${next.latestVersion}` : '';
+
+  const messages = {
+    idle: '尚未检查更新',
+    checking: '正在连接 Gitee 检查发行版本…',
+    available: `发现新版本 v${next.latestVersion}`,
+    downloading: `正在下载 ${next.percent || 0}% · ${humanSize(next.downloadedBytes)} / ${humanSize(next.totalBytes)}`,
+    ready: `v${next.latestVersion} 已下载并校验完成`,
+    installing: '正在启动安装程序…',
+    'up-to-date': '当前已经是最新版本',
+    error: `更新失败：${next.error || '未知错误'}`,
+  };
+  els.updateStatus.textContent = messages[status] || status;
+
+  const showProgress = status === 'downloading' || status === 'ready';
+  els.updateProgress.hidden = !showProgress;
+  els.updateProgressFill.style.width = `${Math.max(0, Math.min(100, Number(next.percent) || 0))}%`;
+
+  const notes = String(next.releaseNotes || '').trim();
+  els.updateNotes.hidden = !notes;
+  els.updateNotes.textContent = notes;
+
+  const busy = status === 'checking' || status === 'downloading' || status === 'installing';
+  $('btn-update-check').disabled = busy;
+  $('btn-update-check').textContent = status === 'checking' ? '检查中…' : '检查更新';
+
+  const canRetryDownload = status === 'error' && Number(next.totalBytes) > 0;
+  $('btn-update-download').hidden = !(status === 'available' || canRetryDownload);
+  $('btn-update-download').disabled = busy;
+  $('btn-update-download').textContent = status === 'available' ? `更新到 v${next.latestVersion}` : '重新下载';
+
+  $('btn-update-install').hidden = status !== 'ready';
+  $('btn-update-install').disabled = !next.supported;
+  $('btn-update-install').title = next.supported ? '' : (next.unsupportedReason || '当前运行方式不支持自动安装');
+  if (status === 'ready' && !next.supported) {
+    els.updateStatus.textContent += `；${next.unsupportedReason || '当前运行方式不支持自动安装'}`;
+  }
+}
+
+async function refreshUpdateState() {
+  try { renderUpdateState(await window.wp.updateState()); }
+  catch (err) { els.updateStatus.textContent = `读取更新状态失败：${err.message}`; }
 }
 
 /* ---------------------------------------------------------------- 热键 */
@@ -3078,6 +3136,16 @@ function bindSettings() {
     toast(`已清理缓存   ·   主进程内存 ${mem.rss} MB`);
   });
 
+  $('btn-update-check').addEventListener('click', async () => {
+    renderUpdateState(await window.wp.checkForUpdate());
+  });
+  $('btn-update-download').addEventListener('click', async () => {
+    renderUpdateState(await window.wp.downloadUpdate());
+  });
+  $('btn-update-install').addEventListener('click', async () => {
+    renderUpdateState(await window.wp.installUpdate());
+  });
+
   $('btn-settings-close').addEventListener('click', closeSettings);
 
 
@@ -3423,6 +3491,12 @@ function bindEvents() {
       case 'apply-now': $('btn-apply').click(); break;
       case 'toggle-fullscreen': window.wp.toggleFullscreen(); break;
       case 'toggle-settings': toggleSettings(); break;
+      case 'open-updates': {
+        openSettings();
+        selectSettingsTab('system', { save: true });
+        $('update-section').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        break;
+      }
       case 'toggle-filmstrip': $('btn-filmstrip').click(); break;
       case 'toggle-info': toggleInfo(); break;
       case 'open-quick-folders': {
@@ -3500,6 +3574,8 @@ function bindEvents() {
 
   window.wp.onLaunchAtLoginChanged(() => refreshTrayState());
 
+  window.wp.onUpdateState(renderUpdateState);
+
   /** 用户在删除确认框里勾了「不再询问」，把设置里的开关同步过来 */
   window.wp.onConfirmDeleteChanged((payload) => {
     const on = payload ? payload.confirmDelete !== false : false;
@@ -3544,6 +3620,7 @@ function bindEvents() {
     infoOpen: state.infoOpen,
     infoPath: state.infoPath,
     quickFolders: state.quickFolders.length,
+    update: state.update,
   });
 }
 
@@ -3556,6 +3633,7 @@ async function init() {
   bindEvents();
   pokeBars();
   refreshDepthStatus();   // 深度生成三件套的状态行（r25）
+  await refreshUpdateState();
 
   await refreshChannelInfo();
   await refreshQuickFolders();

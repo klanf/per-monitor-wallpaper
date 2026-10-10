@@ -1,6 +1,6 @@
 {
   "name": "electron-wallpaper",
-  "version": "0.2.2",
+  "version": "0.3.1",
   "private": true,
   "description": "Windows 多显示器壁纸轮播器 —— 每块屏一套目录和节奏，随机顺序不重复，缩略图胶片条能当播放历史读",
   "main": "src/main.js",
@@ -11,7 +11,8 @@
     "shot": "node tools/screenshot-ui.js",
     "shot:readme": "node tools/screenshot-readme.js",
     "shot:new": "node tools/screenshot-new-features.js",
-    "verify:unit": "node tools/test-scheduler.js && node tools/test-slideshow-guard.js",
+    "verify:unit": "node tools/test-scheduler.js && node tools/test-slideshow-guard.js && node tools/test-updater.js",
+    "verify:update": "node tools/test-updater.js",
     "verify:desktop": "node tools/test-desktop-host.js",
     "verify:live": "node tools/test-live-desktop.js",
     "verify:fs-watch": "node tools/test-fullscreen-watch.js",
@@ -45,7 +46,8 @@
     "shot:read": "node tools/screenshot-ascii.js",
     "shot:layout": "node tools/screenshot-layout.js",
     "shot:glyphs": "node tools/screenshot-glyphs.js",
-    "icon": "node tools/make-icon.js tools/icon-source.png --radius 48"
+    "icon": "node tools/make-icon.js tools/icon-source.png --radius 48",
+    "update:prepare": "node tools/prepare-update.js"
   },
   "build": {
     "appId": "com.local.electron-wallpaper",
