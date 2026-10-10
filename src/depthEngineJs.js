@@ -225,6 +225,13 @@ function armReleaseTimer() {
  * 成功 = 引擎就绪（会话懒加载，首张图才付加载成本）；失败返回原因，不抛异常。
  */
 async function probe(onnxModel) {
+  // 测试钩子：设 WP_NO_JS_DEPTH=1 时 JS 引擎探测直接判负（回落 Python），
+  // 用于 A/B 验证「原生模块常驻主进程是否拖死退出链」（2026-10-10 重启挂死排查）
+  if (process.env.WP_NO_JS_DEPTH) {
+    state.failed = true;
+    state.failReason = 'WP_NO_JS_DEPTH 测试钩子：JS 引擎禁用';
+    return { ok: false, reason: state.failReason };
+  }
   if (state.failed) return { ok: false, reason: state.failReason };
   if (!onnxModel || !fs.existsSync(onnxModel)) {
     state.failed = true;

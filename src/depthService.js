@@ -563,4 +563,20 @@ function status() {
   };
 }
 
-module.exports = { lookup, prefetch, configure, stats, status };
+/**
+ * 退出时释放深度引擎的进程内原生资源（r31 补，2026-10-10「重启挂死」根因修复）。
+ *
+ * r26 起 JS 引擎把 onnxruntime-node + sharp 两个原生模块加载进主进程（每次启动
+ * probe() 就 require），ONNX 会话还有「闲置 10 分钟」才释放的定时器 —— 退出链上
+ * 不主动释放的话，ORT/libvips 的原生线程池由 Chromium 终场阶段兜底回收，偶发收
+ * 不干净 → 主进程剩 1 线程永不退出 → relaunch 的新实例永远起不来（用户实锤）。
+ *
+ * session.release() 是异步的，这里 fire-and-forget + unref 定时器即可：目的只是
+ * 让原生池尽快进入可退出状态，硬保底由 main.js 的 taskkill 引信兜住。
+ */
+function shutdown() {
+  try { engineJs.close(); } catch (_) {}
+  log('深度引擎已释放（quit shutdown）');
+}
+
+module.exports = { lookup, prefetch, configure, stats, status, shutdown };

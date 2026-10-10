@@ -263,20 +263,79 @@ function toggleWindow() {
 }
 
 /**
+ * 退出保底引信：before-quit 时埋一个分离的 cmd，12 秒后若本进程还活着就
+ * `taskkill /F` 强杀。
+ *
+ * 为什么需要：2026-10-10「点重启没反应」实锤 —— will-quit 清理链全部走完后，
+ * Chromium 终场阶段偶发不收尾：辅助线程（含 Node fs 线程池）全退光，主进程
+ * 剩 1 个线程空转消息泵，永不退出 → relaunch 的新实例永远起不来。此状态下
+ * JS 定时器不可靠（线程池已亡），只有 OS 级外部进程能救。
+ *
+ * 正常退出时引信空响：对已死 PID taskkill 报错退出（输出丢弃），无害。
+ * 12 秒 > 正常退出（~2s）×6 倍余量；PID 12 秒内被复用的概率可忽略。
+ */
+let quitFuseArmed = false;
+function armQuitKillFuse() {
+  if (quitFuseArmed) return;
+  quitFuseArmed = true;
+  try {
+    const { spawn } = require('child_process');
+    const pid = process.pid;
+    // 用本应用自带的 electron.exe 以 node 模式跑延时自杀助手：
+    // ⚠️ 不用 cmd + taskkill —— 2026-10-10 实锤分离 cmd（stdio:ignore）里外部
+    //    exe 全部静默不执行（内建 echo 能跑）；node 助手走 execPath 绝对路径
+    //    + process.kill（=TerminateProcess），零 PATH 依赖必中。
+    // ⚠️ detached 与 windowsHide 不能同开（DETACHED_PROCESS 与 CREATE_NO_WINDOW
+    //    互斥，实测同开子进程起不来）；detached 本身无控制台无窗口
+    spawn(process.execPath,
+      ['-e', `setTimeout(()=>{try{process.kill(${pid})}catch(_){}},12000).unref()`],
+      { detached: true, stdio: 'ignore',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }).unref();
+    debugLog.dlog('lifecycle', `quit kill-fuse armed: 12s 后若未退出则强杀 PID ${pid}`);
+  } catch { /* 引信失败不影响正常退出流程 */ }
+}
+
+/**
+ * 重启拉起助手：分离的 node 子进程（本应用 electron.exe 以 ELECTRON_RUN_AS_NODE
+ * 模式跑），监视老进程 PID —— 确认死亡后再拉起新实例（最多等 15s，超时强杀）。
+ *
+ * 为什么不用 app.relaunch：r31 起 will-quit 末尾用 process.kill 硬退（绕开
+ * onnxruntime/sharp 的退出卸载挂死），而 relaunch 的新进程是 Electron 在正常
+ * 退出流程里 spawn 的，硬退会把它一起带走 —— 实测 2026-10-10「老实例退了，
+ * 新实例永远不来」。助手方案顺带根治「新旧实例抢单实例锁」：新实例只在老
+ * PID 确认死亡后才启动。助手全走 execPath 绝对路径 + process.kill，不碰
+ * PATH（分离 cmd 里外部 exe 静默失效的坑见 armQuitKillFuse 注释）。
+ */
+function spawnRelaunchHelper() {
+  try {
+    const { spawn } = require('child_process');
+    const pid = process.pid;
+    // 助手逻辑在 src/relaunchHelper.js（独立文件，避免多层引号拼脚本）：
+    // 监视老 PID → 死亡(或15s超时强杀)后以同 argv/cwd 拉起新实例
+    spawn(process.execPath,
+      [path.join(__dirname, 'relaunchHelper.js'), String(pid), process.cwd(),
+       process.execPath, ...process.argv.slice(1)],
+      { detached: true, stdio: 'ignore',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }).unref();
+    debugLog.dlog('lifecycle', `relaunch helper armed: 监视 PID ${pid}，死亡(或15s超时强杀)后拉起新实例`);
+  } catch { /* 助手失败不影响退出流程 */ }
+}
+
+/**
  * 重新启动本程序（托盘菜单 / 窗口菜单共用）。
  *
  * 改了主进程代码之后最省事的一步就是重启 —— 以前得「退出 → 再双击 VBS」两步，
  * 从托盘退出后桌面还停在最后一张，得手动找回去。
  *
- * 两个细节：
- *   ① `relaunch` 是「当前实例退出时再拉起新进程」，不会和单实例锁抢 —— 所以不用自己 sleep；
+ * 细节：
+ *   ① 拉起新实例交给 spawnRelaunchHelper（见其注释），不用 app.relaunch；
  *   ② 用 `app.quit()` 而不是 `app.exit(0)`：后者不发 will-quit，playback 就不会 flush，
  *      「记住上次播放位置」这一步会丢。quitting 置 true 是让「关窗口=藏托盘」别把退出流程拦下来。
  */
 function restartApp() {
   quitting = true;
-  // 带上原来的启动参数（比如 --hidden），重启后行为和手动重开一致
-  app.relaunch({ args: process.argv.slice(1) });
+  armQuitKillFuse();
+  spawnRelaunchHelper();
   app.quit();
 }
 
@@ -1952,6 +2011,24 @@ if (!gotLock) {
     slideshowBackupFile = path.join(app.getPath('userData'), 'slideshow-backup.ini');
     win32.configureSlideshowGuard(slideshowBackupFile);
 
+    // 测试钩子：N 毫秒后自动 quit（复现/回归「退出链挂死」用；不设环境变量零影响）
+    if (process.env.WP_QUIT_AFTER_MS) {
+      const ms = Number(process.env.WP_QUIT_AFTER_MS) || 20000;
+      setTimeout(() => {
+        debugLog.dlog('lifecycle', `WP_QUIT_AFTER_MS=${ms} 到点，触发 app.quit()`);
+        app.quit();
+      }, ms);
+    }
+    // 测试钩子：N 毫秒后自动 restartApp（验证「退出→助手拉起新实例」全链；
+    // 不设环境变量零影响）
+    if (process.env.WP_RESTART_AFTER_MS) {
+      const ms = Number(process.env.WP_RESTART_AFTER_MS) || 20000;
+      setTimeout(() => {
+        debugLog.dlog('lifecycle', `WP_RESTART_AFTER_MS=${ms} 到点，触发 restartApp()`);
+        restartApp();
+      }, ms);
+    }
+
     /*
      * 播放位置存档：跟配置文件放同一个目录，但**是独立文件**。
      * 它每次换图都要写（间隔可能只有几秒），而 config.json 是「配置」——
@@ -2139,6 +2216,7 @@ if (!gotLock) {
    */
   let anchorFlushed = false;
   app.on('before-quit', (event) => {
+    armQuitKillFuse();   // OS 级保底：退出卡死时 12s 后外部强杀（见函数注释）
     // 退出原因落盘：实例「安静消失」时分辨托盘退出 / window-all-closed / 异常
     // （2026-10-09 晚实例三连消失、事件日志无崩溃记录、dev.log 0 字节的排查盲区）
     try {
@@ -2164,13 +2242,40 @@ if (!gotLock) {
 
   // 释放 COM 接口 + CoUninitialize，避免留下悬挂的 out-of-proc 引用
   app.on('will-quit', () => {
+    // 逐步落盘（2026-10-10「点重启没反应」实锤本链有挂死点；原生调用阻塞时
+    // JS 定时器全不跑，只能靠顺序日志看走到哪一步）
+    const wl = (s) => debugLog.dlog('lifecycle', `will-quit: ${s}`);
+    wl('enter');
     stopFullscreenWatch();   // 停轮询（stop 内部会把舞台全部解冻）
+    wl('fullscreenWatch stopped');
     swipeWatch.stop();       // 停桌面手势轮询（54 轮追记五）
+    wl('swipeWatch stopped');
     liveStage.stop();   // 卸载舞台窗口（先脱离桌面树再销毁，不留残影）
+    wl('liveStage stopped');
     if (scheduler) scheduler.stop();
+    wl('scheduler stopped');
+    // r26 起 JS 深度引擎的原生模块（onnxruntime-node/sharp）常驻主进程，
+    // 退出必须主动释放会话与定时器，否则原生线程池由 Chromium 终场兜底回收
+    // 偶发不干净 → 进程永不退出 → relaunch 起不来（2026-10-10 重启挂死根因）
+    if (depthService) depthService.shutdown();
+    wl('depth engine released');
     tray.destroy();
+    wl('tray destroyed');
     globalShortcut.unregisterAll();       // 不注销的话热键会留给下一个实例（或失效占用）
+    wl('shortcuts unregistered');
     desktopWallpaper.release();
+    wl('desktopWallpaper released — will-quit done');
+    // r31 补：清理链全部完成后直接 TerminateProcess 自杀，跳过 Chromium 终场
+    // 阶段的原生模块卸载。r26 起 onnxruntime-node/sharp 常驻主进程，退出卸载
+    // 在 Windows 上有已知坑（microsoft/onnxruntime#24579 析构顺序 bug、
+    // oh-my-pi#1606 Windows 退出必挂）。实测 app.exit(0) 也逃不掉（它仍走
+    // 卸载路径，2026-10-10 实锤挂死）；process.kill 在 Windows 上就是
+    // TerminateProcess，不跑 atexit/析构，必死。will-quit 是最后一个生命
+    // 周期事件，playback flush 等在 before-quit 已完成，此处无副作用。
+    wl('process.kill(self) — skip Chromium finalization');
+    try { process.kill(process.pid); } catch (_) {}
+    // 杀不掉（理论不会）才落到 app.exit 兜底
+    app.exit(0);
   });
 
   app.on('window-all-closed', () => {
