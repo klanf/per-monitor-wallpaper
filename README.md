@@ -516,6 +516,7 @@ npm run dist:dir         # 只出 win-unpacked（验配置用，最快）
 
 几个容易踩的点：
 
+- **深度模型不在仓库里（新机器必读）**：~99MB 的 `models/depth-anything/depth_anything_v2_small.onnx` 被 gitignore，克隆后**必须先准备它**，否则 electron-builder 会静默跳过、打出没有深度视差功能的包（`打包exe.bat` 已加护栏，缺失即失败）。二选一：①从有模型的其他构建机拷到该路径；②`python tools/export_onnx.py <HF模型目录>` 现场导出（需 torch + transformers，源模型 depth-anything/Depth-Anything-V2-Small，Apache-2.0）。
 - 首次打包需要联网 —— electron-builder 会下载 nsis 等构建资源到 `%LOCALAPPDATA%\electron-builder\Cache`（约 40 MB，之后一直复用）。
 - electron-builder 每次打包都会先清掉 `dist/win-unpacked/` 和 `dist/win-unpacked.tmp/`（各 70~90 个文件）再重新解压，所以脚本在开跑前会先替它清好。
 - 若当前环境装了「一次删 50+ 个目标需人工确认」的保护层（例如 agent 会话），上面这两个目录会被**改名**到 `dist/_prev/` 而不是删除，脚本照常能出包 —— 确认新包没问题后把 `dist/_prev` 整个删掉即可。

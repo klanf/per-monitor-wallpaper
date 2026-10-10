@@ -4047,3 +4047,35 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
   盘上被清后 `test-scheduler` 崩溃（ENOENT），`npm run fixtures` 重新生成即恢复；
 - 绑定后闭环对拍：`pushProfile` → `applyChannelInfo` 尾部 `previewSignature` 变化
   → `loadPreviewChannel` 重取文件 → `els.empty.hidden = true` 空态自动收起。
+
+---
+
+## 第三十五轮：回答「新开发者克隆仓库能否一键打包」+ 主界面截图换回备份分支版
+
+### 现象
+
+- 用户问：换一个开发者，只用仓库里的代码和资源文件能完成打包吗？
+- 排查结论：**不能** —— ①`models/depth-anything/*.onnx`（~99MB）r26 起 gitignore 不进库，
+  且 ONNX 导出脚本从未提交过任何一棵树（落在仓外 depth-onnx-exp/），克隆后无模型也无导出工具；
+  ②electron-builder 对缺失的 extraResources **静默跳过不报错**（r34 实锤，113MB 假正常包），
+  新开发者会打出没有深度视差的包而毫不知情；③`打包exe.bat` 不带 `npm install`，
+  全新克隆直接 npm run dist 会因依赖缺失出假包。
+
+### 改动
+
+- `tools/export_onnx.py` 入库（自仓外 depth-onnx-exp/ 移植并收口）：
+  HF 模型目录支持 argv/环境变量 DEPTH_HF_MODEL_DIR 传参（默认本机历史路径），
+  产物直接落 `models/depth-anything/`（打包源路径），删 68~72 行不可达死代码，
+  测试图缺失时跳过比对（SKIP）而不是崩。
+- `打包exe.bat` 加两道护栏：`node_modules\electron\dist\electron.exe` 不存在时先
+  `npm install`（全新克隆自举）；ONNX 缺失时**打印获取方式并失败退出**
+  （拷贝或 `python tools\export_onnx.py <HF model dir>`），不再静默出假包。
+- README 打包章节补「深度模型不在仓库里（新机器必读）」条目。
+- `docs/界面-主界面.png` 换回备份分支 backup/master-premerge-20261010（6e9c074）的版本
+  （1920x1127 真实界面截图：双屏徽章+胶片条+番剧壁纸；live 重构时被换成 2133x1397 老图）。
+
+### 验证
+
+- 界面图：`git show 6e9c074:docs/界面-主界面.png` 导出目检确认后覆盖，两版本 byte 级 DIFFERENT（97871B vs 331203B）。
+- 打包链自举推演：新机器 clone → 双击 bat → npm install 自举 → 模型缺失即明确报错并给出两条获取路径；
+  模型就位后与 r34 流程一致（已实测出包 291MB + 冒烟全过）。

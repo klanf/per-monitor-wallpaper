@@ -24,6 +24,29 @@ if errorlevel 1 (
   endlocal & exit /b 1
 )
 
+REM ---- deps: fresh clones need node_modules (electron dist is restored by its installer) ----
+if not exist "node_modules\electron\dist\electron.exe" (
+  echo [INFO] installing dependencies ...
+  call npm install --no-audit --no-fund
+  if errorlevel 1 (
+    echo [FAILED] npm install failed.
+    pause
+    endlocal & exit /b 1
+  )
+)
+
+REM ---- depth model guard: electron-builder SKIPS missing extraResources silently,
+REM      which would ship an installer without the depth engine. Fail loudly here. ----
+if not exist "models\depth-anything\depth_anything_v2_small.onnx" (
+  echo [FAILED] missing model: models\depth-anything\depth_anything_v2_small.onnx
+  echo   The ~99MB ONNX is NOT in git. Get it either way:
+  echo     1. copy it from another build machine, or
+  echo     2. export it:  python tools\export_onnx.py ^<HF model dir^>
+  echo        (needs torch + transformers; see tools\export_onnx.py header)
+  pause
+  endlocal & exit /b 1
+)
+
 call npm run dist -- %*
 set "RC=%ERRORLEVEL%"
 
