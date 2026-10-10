@@ -1,6 +1,6 @@
 {
   "name": "electron-wallpaper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Windows 多显示器壁纸轮播器 —— 每块屏一套目录和节奏，随机顺序不重复，缩略图胶片条能当播放历史读",
   "main": "src/main.js",
@@ -36,6 +36,8 @@
     "fixtures": "node tools/make-fixtures.js",
     "restore-wallpaper": "node tools/restore-wallpaper.js",
     "dist": "electron-builder --win --x64",
+    "dist:portable": "electron-builder --win portable --x64",
+    "dist:dir": "electron-builder --win dir --x64",
     "verify:order": "node tools/verify-shuffle-order.js",
     "verify:cycle": "node tools/verify-monitor-cycle.js",
     "verify:tray": "node tools/verify-delete-hotkeys.js",
@@ -61,16 +63,23 @@
       "node_modules/sharp/**",
       "node_modules/@img/**"
     ],
+    "extraResources": [
+      {
+        "from": "models/depth-anything",
+        "to": "models/depth-anything",
+        "filter": [
+          "*.onnx"
+        ]
+      }
+    ],
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
           "arch": [
             "x64"
           ]

@@ -1934,8 +1934,13 @@ if (!gotLock) {
     // 用 depthPython / depthWorkerScript / depthModelDir。不填则按
     // 「覆盖 → 打包布局 → 本机开发布局」自动探测，详见 depthService.resolveRuntime。
     debugLog.init(path.join(app.getPath('userData'), 'logs'));
+    // 打包后 __dirname 在 resources\app.asar\src 里，而 extraResources（模型等）
+    // 落在 resources\ 平级目录 —— appRoot 取 resources\，布局才和 depthService
+    // 的三级解析（models\depth-anything）对上。开发态保持仓库根不变。
+    let depthAppRoot = path.join(__dirname, '..');
+    if (app.isPackaged && depthAppRoot.endsWith('app.asar')) depthAppRoot = path.dirname(depthAppRoot);
     depthService.configure({
-      appRoot: path.join(__dirname, '..'),
+      appRoot: depthAppRoot,
       cacheDir: store.get().depthCacheDir || path.join(app.getPath('userData'), 'depth-cache'),
       onnxModel: store.get().depthOnnxModel,
       python: store.get().depthPython,

@@ -326,10 +326,9 @@
 
 ### 使用打包版本
 
-发行产物有两个：
+发行产物（r27 起默认只出安装包，免安装版按需 `npm run dist:portable`）：
 
-- `壁纸切换器-Setup-<版本>.exe` —— NSIS 安装版，可自选安装目录
-- `壁纸切换器-<版本>-portable.exe` —— 免安装版
+- `壁纸切换器-Setup-<版本>.exe` —— NSIS 安装版，可自选安装目录；内置深度视差 JS 引擎与模型，**零 Python 依赖**
 
 首次运行安装版时，Windows SmartScreen 可能提示「未知发布者」，原因是安装包未购买代码签名证书。选择「更多信息 → 仍要运行」即可。
 
@@ -387,18 +386,15 @@ npm run app:eval -- "return (await wp.listChannels()).channels.map(c => c.index)
 
 ### 打包发行版
 
-双击项目根目录的 `打包exe.bat`，或在命令行执行：
+双击项目根目录的 `打包exe.bat`，或在命令行执行（r27 起构建链是**纯 npm/electron-builder，全程无 Python**）：
 
 ```bash
-python tools/build-exe.py              # 安装版 + 免安装版
-python tools/build-exe.py --portable   # 只出免安装版（最快）
-python tools/build-exe.py --setup      # 只出安装版
-python tools/build-exe.py --dir        # 只出 win-unpacked（验配置用，最快）
-python tools/build-exe.py --zip        # 打完顺手压一个 zip 便于分发
-python tools/build-exe.py --open       # 打完打开 dist 目录
+npm run dist             # NSIS 安装包（默认产物）
+npm run dist:portable    # 免安装单文件（按需）
+npm run dist:dir         # 只出 win-unpacked（验配置用，最快）
 ```
 
-脚本按顺序做四件事：**前置检查**（node / electron-builder / `assets/icon.ico` / 目标程序没被占用）→ **清掉 dist/ 里的旧产物** → **调 electron-builder** → **校验产物并列出清单**（大小 + 时间）。完整日志落在 `dist/build-<时间戳>.log`。
+产物落在 `dist/`：`壁纸切换器-Setup-<版本>.exe`（安装包）。构建配置在 `package.json` 的 `build` 字段：深度模型 ONNX（~99MB）经 `extraResources` 进 `resources/models/depth-anything/`，原生模块（koffi / sharp / onnxruntime-node）经 `asarUnpack` 解包，语言包只保留 zh-CN / en-US。构建全程不依赖 Python；`tools/build-exe.py` 只是历史辅助脚本，不再是打包链路的一部分。
 
 几个容易踩的点：
 
