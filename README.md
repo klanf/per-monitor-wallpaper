@@ -12,9 +12,10 @@
 ▶ **[视频演示（Bilibili）](https://www.bilibili.com/video/BV1i9Yi6mE9H/)** —— 一分钟看懂它长什么样、怎么用
 
 <p align="center">
-  <img src="docs/深度视差-原图.png" width="260" alt="静态原图"/><img src="docs/深度视差-演示.webp" width="260" alt="深度视差动效"/>
+  <img src="docs/深度视差-原图.png" width="42%" alt="静态原图"/>&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/深度视差-演示.webp" width="42%" alt="深度视差动效"/><br/>
+  <b>左：一张普通图片　→　右：开启动效后 —— 任意图片都能生成 Live2D 般的 2.5D 立体动效</b>
 </p>
-<p align="center"><b>左边是你的一张普通图片，右边是开启动效后的桌面 —— 任意图片都能这样"活"起来</b></p>
 
 ![主界面](docs/界面-主界面.png)
 
@@ -259,9 +260,10 @@
 给静态壁纸加 3D 感：应用按需为当前图片生成**深度图**（画面里每个像素离镜头的远近），播放时前后景按深度差分层移动，鼠标或镜头轨迹变化时壁纸呈现立体视差。
 
 <p align="center">
-  <img src="docs/深度视差-原图.png" width="240" alt="静态原图"/><img src="docs/深度视差-演示.webp" width="240" alt="深度视差实拍"/>
+  <img src="docs/深度视差-原图.png" width="42%" alt="静态原图"/>&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/深度视差-演示.webp" width="42%" alt="深度视差动效"/><br/>
+  <i>左：静态原图　→　右：深度视差动效（内置深度引擎对这张图现场推理合成的演示）</i>
 </p>
-<p align="center"><i>桌面实测录屏：左静态原图 → 右开启深度视差后的桌面（左上角为性能监控）</i></p>
 
 **深度图生成（内置引擎，零依赖）**
 
