@@ -39,11 +39,32 @@ const CACHE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;   // 2GB
 const EVICT_SWEEP_MIN_MS = 5 * 60 * 1000;           // 扫描节流：至多 5 分钟一次
 const EVICT_TARGET = 0.9;                           // 超限后清到 90%，避免临界抖动
 
+/* ---- 运行时路径解析（r25）----
+ * 三样外部依赖（Python / worker 脚本 / 深度模型）按序探测，第一个存在的胜出：
+ *   1. 配置覆盖（config.depthPython / depthWorkerScript / depthModelDir）
+ *   2. 打包布局（appRoot 内：depth-env\python.exe、depth_worker.py、models\depth-anything）
+ *   3. 本机开发布局（legacy 写死路径 —— 老机器升级上来不破坏现状）
+ * 全找不到 → configure 时就置 disabled + 给出精确原因（不用等 worker 连挂 3 次）。
+ */
+const LEGACY_PATHS = {
+  python: 'F:\\miniconda3\\python.exe',
+  modelDir: 'D:\\workbuddy\\tools\\MoyuFloat\\wallpaper\\model',
+};
+
+/** 返回候选里第一个真实存在的路径；都没有返回 '' */
+function firstExisting(candidates) {
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  return '';
+}
+
 const state = {
   enabled: true,
-  python: 'F:\\miniconda3\\python.exe',
-  workerScript: path.join(__dirname, '..', 'tools', 'depth_worker.py'),
-  modelDir: 'D:\\workbuddy\\tools\\MoyuFloat\\wallpaper\\model',
+  appRoot: null,               // 打包布局的基准目录（main configure 传入；缺省 = 仓库根）
+  python: '',
+  workerScript: '',
+  modelDir: '',
   cacheDir: null,
   cacheLimitBytes: CACHE_LIMIT_BYTES,
   onReady: null,
@@ -61,6 +82,44 @@ const state = {
   disabledReason: '',
   stats: { hits: 0, misses: 0, generated: 0, failed: 0, dropped: 0 },
 };
+
+/**
+ * 解析三样外部依赖的实际路径，写入 state；全部探测结果记进返回值
+ * （status() 直接用）。覆盖项即使不存在也原样采用 —— 用户显式指定的路径
+ * 找不到时要在 disabledReason 里如实说，而不是悄悄换一个。
+ */
+function resolveRuntime() {
+  const appRoot = state.appRoot || path.join(__dirname, '..');
+  const res = {
+    python: [
+      state.overrides && state.overrides.python,
+      path.join(appRoot, 'depth-env', 'python.exe'),
+      LEGACY_PATHS.python,
+    ],
+    workerScript: [
+      state.overrides && state.overrides.workerScript,
+      path.join(appRoot, 'depth_worker.py'),
+      path.join(__dirname, '..', 'tools', 'depth_worker.py'),
+    ],
+    modelDir: [
+      state.overrides && state.overrides.modelDir,
+      path.join(appRoot, 'models', 'depth-anything'),
+      LEGACY_PATHS.modelDir,
+    ],
+  };
+  const out = {};
+  for (const k of Object.keys(res)) {
+    const [override, ...rest] = res[k];
+    // 显式覆盖不存在也原样采用（disabledReason 里如实报告）；
+    // 没覆盖才按候选序探测，全找不到时落最后一个候选（legacy 路径，
+    // 状态行/原因里能看到它指哪 —— 比空串更有诊断价值）
+    out[k] = (override && String(override)) || firstExisting(rest) || rest[rest.length - 1] || '';
+  }
+  state.python = out.python;
+  state.workerScript = out.workerScript;
+  state.modelDir = out.modelDir;
+  return out;
+}
 
 function log(...args) {
   console.log('[depth]', ...args);
@@ -173,6 +232,15 @@ function spawnWorker() {
     if (state.enabled) {
       state.enabled = false;
       state.disabledReason = `worker 连续失败 ${state.workerFails} 次，深度功能已降级`;
+      log(state.disabledReason);
+    }
+    return;
+  }
+  // 运行中环境消失（用户删了 env / 换了盘）：立刻降级并说清原因，别空转重试
+  if (!fs.existsSync(state.python) || !fs.existsSync(state.workerScript)) {
+    if (state.enabled) {
+      state.enabled = false;
+      state.disabledReason = `运行环境消失：python=${state.python} worker=${state.workerScript}`;
       log(state.disabledReason);
     }
     return;
@@ -325,9 +393,16 @@ function lookup(entryPath) {
 }
 
 function configure(patch) {
-  for (const k of ['python', 'workerScript', 'modelDir', 'cacheDir', 'cacheLimitBytes', 'onReady']) {
-    if (patch && patch[k] !== undefined) state[k] = patch[k];
+  for (const k of ['python', 'workerScript', 'modelDir', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot']) {
+    if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
+  // 覆盖项单独记档（空串=没覆盖），resolveRuntime 按覆盖→打包布局→legacy 探测
+  state.overrides = {
+    python: (patch && patch.python) || '',
+    workerScript: (patch && patch.workerScript) || '',
+    modelDir: (patch && patch.modelDir) || '',
+  };
+  resolveRuntime();
   if (state.cacheDir) {
     try { fs.mkdirSync(state.cacheDir, { recursive: true }); } catch (err) {
       state.enabled = false;
@@ -335,6 +410,25 @@ function configure(patch) {
       log(state.disabledReason);
     }
     scheduleEvictSweep();   // 启动时也查一次存量（上次退出前超了的话在这收尾）
+  }
+  // 可用性检测（r25）：三样依赖缺哪样就在启动时置降级 + 精确原因，
+  // 不用等 worker 连挂 3 次才静默失效；设置页把这段原因直接显示出来。
+  // 先重新武装（configure 支持重入：改路径重配能救回来；运行中连挂降级
+  // 仍由 workerFails 闸把守，不会被这里洗白 —— 那个闸看的是计数不是本开关）。
+  if (!state.disabledReason.startsWith('缓存目录建不了')) {
+    state.enabled = true;
+    state.disabledReason = '';
+    const missing = [];
+    if (!fs.existsSync(state.python)) missing.push(`Python 解释器（${state.python}）`);
+    if (!fs.existsSync(state.workerScript)) missing.push(`worker 脚本（${state.workerScript}）`);
+    if (!fs.existsSync(path.join(state.modelDir, 'model.safetensors'))) missing.push(`深度模型（${state.modelDir}）`);
+    if (missing.length) {
+      state.enabled = false;
+      state.disabledReason = `缺少 ${missing.join('、')}`;
+      log('深度功能不可用 ——', state.disabledReason);
+    } else {
+      log('深度功能就绪: python=', state.python, ' model=', state.modelDir);
+    }
   }
 }
 
@@ -344,4 +438,17 @@ function stats() {
     cacheLimitMB: Math.round(state.cacheLimitBytes / 1048576) };
 }
 
-module.exports = { lookup, prefetch, configure, stats };
+/** 设置页的可用性面板（r25）：三样依赖的解析结果与存在性 + 运行态统计 */
+function status() {
+  return {
+    ...stats(),
+    python: state.python,
+    workerScript: state.workerScript,
+    modelDir: state.modelDir,
+    pythonFound: Boolean(state.python) && fs.existsSync(state.python),
+    workerFound: Boolean(state.workerScript) && fs.existsSync(state.workerScript),
+    modelFound: Boolean(state.modelDir) && fs.existsSync(path.join(state.modelDir, 'model.safetensors')),
+  };
+}
+
+module.exports = { lookup, prefetch, configure, stats, status };

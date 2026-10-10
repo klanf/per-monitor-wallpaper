@@ -177,6 +177,9 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('depth:ready', (_event, payload) => cb(payload));
   },
 
+  /** 深度视差可用性（r25）：Python/worker/模型三件套存在性 + 运行态（设置页状态行） */
+  depthStatus: () => ipcRenderer.invoke('depth:status'),
+
   /** stage 渲染端诊断日志 → 主进程落 live-debug.log（VBS 丢 stdout 的兜底） */
   stageLog: (msg) => {
     ipcRenderer.send('stage:log', String(msg).slice(0, 500));

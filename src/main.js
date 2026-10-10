@@ -1414,6 +1414,11 @@ function registerIpc() {
     try { return depthService.lookup(imagePath); } catch { return null; }
   });
 
+  // 深度视差可用性（r25）：设置页状态行用 —— Python/worker/模型三件套的存在性
+  ipcMain.handle('depth:status', () => {
+    try { return depthService.status(); } catch { return { enabled: false, disabledReason: 'status 查询失败' }; }
+  });
+
   // ---- 频道 ----
 
   ipcMain.handle('channels:list', () => {
@@ -1925,11 +1930,14 @@ if (!gotLock) {
 
     // 深度视差（按需生成 + 集中缓存，fail-soft 降级）：缓存目录可配置
     // （config.depthCacheDir，想放 F 盘就写 "F:\\壁纸\\.depth-cache"）；
-    // Python/模型目录同理（depthPython / depthModelDir）。默认值见 depthService.js。
+    // Python/worker/模型目录同理（depthPython / depthWorkerScript / depthModelDir）。
+    // 不填则按「打包布局 → 本机开发布局」自动探测（r25），详见 depthService.resolveRuntime。
     debugLog.init(path.join(app.getPath('userData'), 'logs'));
     depthService.configure({
+      appRoot: path.join(__dirname, '..'),
       cacheDir: store.get().depthCacheDir || path.join(app.getPath('userData'), 'depth-cache'),
       python: store.get().depthPython,
+      workerScript: store.get().depthWorkerScript,
       modelDir: store.get().depthModelDir,
       onReady: (imagePath) => {
         // 现场升级：正在显示这张图的舞台立刻从 2D 切视差

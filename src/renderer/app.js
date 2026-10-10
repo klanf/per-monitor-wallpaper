@@ -1339,6 +1339,27 @@ function resolvedDepth(chId) {
   return cfg.depthParallax !== false;
 }
 
+/**
+ * 深度生成可用性状态行（r25）：Python/worker/模型三件套任一缺失 → 给出原因
+ * 与后果（视差自动回退普通平移缩放）。启动与切到「外观」页时各查一次。
+ */
+async function refreshDepthStatus() {
+  const el = document.getElementById('depth-status');
+  if (!el || !window.wp.depthStatus) return;
+  try {
+    const s = await window.wp.depthStatus();
+    if (s.enabled) {
+      el.textContent = '深度生成：就绪 ✓';
+      el.title = `python: ${s.python}\nworker: ${s.workerScript}\nmodel: ${s.modelDir}`;
+    } else {
+      el.textContent = `深度生成不可用：${s.disabledReason || '依赖缺失'}（视差自动回退普通平移缩放）`;
+      el.title = '';
+    }
+  } catch (_) {
+    el.textContent = '';
+  }
+}
+
 function albumOf(id) {
   return state.albums.find((a) => a.id === id) || null;
 }
@@ -2340,6 +2361,7 @@ function bindSettings() {
   $('settings-tabs').addEventListener('click', (event) => {
     const btn = event.target.closest('.settings-tab');
     if (!btn) return;
+    if (btn.dataset.tab === 'look') refreshDepthStatus();
     selectSettingsTab(btn.dataset.tab, { save: true, scrollTop: true });
   });
 
@@ -3487,6 +3509,7 @@ async function init() {
   bindSettings();
   bindEvents();
   pokeBars();
+  refreshDepthStatus();   // 深度生成三件套的状态行（r25）
 
   await refreshChannelInfo();
   await refreshQuickFolders();
