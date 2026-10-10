@@ -53,3 +53,8 @@ __pycache__/
 # 深度视差素材模型（ISNet 176MB / LaMa 200MB+，下载脚本见 CHANGELOG 第八轮）
 tools/models/*.onnx
 tools/models/*.pt
+
+# 深度模型（r26）：ONNX 99MB 不进版本库。JS 引擎按
+# 「覆盖 → <appRoot>/models/depth-anything/depth_anything_v2_small.onnx → legacy」探测，
+# 开发机放一份即可；打包时作为 extraResource/下载项提供（与 depth-env 同策略）。
+models/

@@ -56,6 +56,11 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/**",
+      "node_modules/sharp/**",
+      "node_modules/@img/**"
+    ],
     "win": {
       "target": [
         {
@@ -95,7 +100,9 @@
   },
   "dependencies": {
     "exifr": "^7.1.3",
-    "koffi": "^3.2.1"
+    "koffi": "^3.2.1",
+    "onnxruntime-node": "^1.30.0",
+    "sharp": "^0.35.5"
   },
   "author": {
     "name": "electron-wallpaper",

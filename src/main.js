@@ -1930,12 +1930,14 @@ if (!gotLock) {
 
     // 深度视差（按需生成 + 集中缓存，fail-soft 降级）：缓存目录可配置
     // （config.depthCacheDir，想放 F 盘就写 "F:\\壁纸\\.depth-cache"）；
-    // Python/worker/模型目录同理（depthPython / depthWorkerScript / depthModelDir）。
-    // 不填则按「打包布局 → 本机开发布局」自动探测（r25），详见 depthService.resolveRuntime。
+    // JS 引擎（r26 默认）的 ONNX 模型可配 depthOnnxModel；Python 回落链
+    // 用 depthPython / depthWorkerScript / depthModelDir。不填则按
+    // 「覆盖 → 打包布局 → 本机开发布局」自动探测，详见 depthService.resolveRuntime。
     debugLog.init(path.join(app.getPath('userData'), 'logs'));
     depthService.configure({
       appRoot: path.join(__dirname, '..'),
       cacheDir: store.get().depthCacheDir || path.join(app.getPath('userData'), 'depth-cache'),
+      onnxModel: store.get().depthOnnxModel,
       python: store.get().depthPython,
       workerScript: store.get().depthWorkerScript,
       modelDir: store.get().depthModelDir,

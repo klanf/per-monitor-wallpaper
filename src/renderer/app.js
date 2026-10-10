@@ -1349,8 +1349,11 @@ async function refreshDepthStatus() {
   try {
     const s = await window.wp.depthStatus();
     if (s.enabled) {
-      el.textContent = '深度生成：就绪 ✓';
-      el.title = `python: ${s.python}\nworker: ${s.workerScript}\nmodel: ${s.modelDir}`;
+      const engineName = s.engine === 'js' ? 'JS·ONNX' : s.engine === 'python' ? 'Python' : (s.engine || '—');
+      el.textContent = `深度生成：就绪 ✓（引擎 ${engineName}）`;
+      el.title = s.engine === 'js'
+        ? `onnx: ${s.onnxModel}\n（零 Python 依赖，onnxruntime CPU 推理）`
+        : `python: ${s.python}\nworker: ${s.workerScript}\nmodel: ${s.modelDir}`;
     } else {
       el.textContent = `深度生成不可用：${s.disabledReason || '依赖缺失'}（视差自动回退普通平移缩放）`;
       el.title = '';
