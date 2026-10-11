@@ -329,10 +329,53 @@ async function fetchOnce(entry, ms) {
 
 async function fetchBitmap(entry) {
   try {
-    return await createImageBitmap(await fetchOnce(entry, 8000));
+    return await decodeClamped(await fetchOnce(entry, 8000));
   } catch (err) {
     slog('取图超时/失败，重开一次请求 ——', String(entry.path).split(/[\\/]/).pop(), err.message);
-    return await createImageBitmap(await fetchOnce(entry, 8000));
+    return await decodeClamped(await fetchOnce(entry, 8000));
+  }
+}
+
+/* ---- 纹理降采样（r35）----
+ * 画布（canvasSize）和深度 GL 层都只显示到本屏物理分辨率，原图再大也是白解码
+ * 白上传：8K 位图 = 132MB 内存 + 132MB 纹理上传，4K 屏上 3/4 是白费；GL 采样
+ * 没有 mipmap，超大纹理硬缩小看反而出摩尔纹。这里在解码后把位图钳到
+ * 「本屏 cover/contain 恰好铺满 × 1.05」：
+ *   · 1.0 覆盖本屏；0.05 余量给 Ken Burns（最大 1.045）；
+ *   · 深度 GL 流模式整图可见，遗留相机路径在默认 amp(0.07) 下放大 1.12 ——
+ *     属「显示端放大」，钳制不改变它（来源过大时今天就已在被 GPU 缩小）。
+ * 只缩不放：s ≥ 1（小图/已是屏幕级）原样返回，绝不拿插值硬放大。
+ * 深度图（≤1024²）走同一入口，天然落在「不放大」分支，精度无损。
+ * 失败兜底：resize 抛异常就用原图，2D/GL 两条路都吃过这条链，不能因省内存砸显示。
+ */
+const FIT_HEADROOM = 1.05;
+
+function stageTargetScale(bw, bh) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(1, Math.round(window.innerWidth * dpr));
+  const H = Math.max(1, Math.round(window.innerHeight * dpr));
+  const fit = (cfg.fit === 'contain' ? Math.min(W / bw, H / bh) : Math.max(W / bw, H / bh));
+  return fit * FIT_HEADROOM;
+}
+
+async function decodeClamped(blob) {
+  const bmp = await createImageBitmap(blob);
+  const s = stageTargetScale(bmp.width, bmp.height);
+  if (s >= 1) return bmp;   // 屏幕级以下：原样（含 contain 下的小图）
+  try {
+    const from = `${bmp.width}×${bmp.height}`;
+    const small = await createImageBitmap(bmp, {
+      resizeWidth: Math.max(1, Math.round(bmp.width * s)),
+      resizeHeight: Math.max(1, Math.round(bmp.height * s)),
+      resizeQuality: 'high',
+    });
+    bmp.close();
+    slog(`纹理降采样: ${from} → ${small.width}×${small.height}`
+      + `（本屏 ${Math.round(window.innerWidth * (window.devicePixelRatio || 1))}×${Math.round(window.innerHeight * (window.devicePixelRatio || 1))}）`);
+    return small;
+  } catch (err) {
+    slog('纹理降采样失败，用原图 ——', err.message);
+    return bmp;
   }
 }
 
