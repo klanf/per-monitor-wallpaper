@@ -244,11 +244,12 @@
       </div>
 
       <div class="field unified-only">
-        <label class="field-label">图片填充方式 <span class="info-dot" tabindex="0" data-tip="铺满裁切：填满整块屏，超出部分裁掉。完整显示：整张图完整可见，核心外用模糊虚化补满（开启深度视差时同样生效，视差在完整图像内运动）。镜像延展：整张图完整可见，核心外用镜像对称的画面补满。后两种在比例和屏幕不一致的图上差别最明显。"></span></label>
+        <label class="field-label">图片填充方式 <span class="info-dot" tabindex="0" data-tip="铺满裁切：填满整块屏，超出部分裁掉。完整显示：整张图完整可见，核心外用模糊虚化补满。镜像延展：整张图完整可见，核心外用镜像对称的画面补满。拼接填充：竖图配宽屏（或横图配竖屏）时，自动取相簿里相邻的图拼成 N 联铺满整屏，每格各自带深度视差；比例接近时自动退回单图。后三种在比例和屏幕不一致的图上差别最明显。"></span></label>
         <div class="seg" id="cfg-fit">
           <button data-value="cover" class="seg-item" title="填满整块屏，超出部分裁掉">铺满裁切</button>
           <button data-value="contain" class="seg-item" title="整张图完整可见，核心外用模糊虚化补满">完整显示</button>
           <button data-value="mirror" class="seg-item" title="整张图完整可见，核心外用镜像对称画面补满">镜像延展</button>
+          <button data-value="collage" class="seg-item" title="取相簿相邻的图拼成 N 联铺满整屏，格数按图片比例自动算">拼接填充</button>
         </div>
         <label class="check" style="margin-top:6px"><input type="checkbox" id="cfg-crop-pan"><span>鼠标平移裁切画面（铺满裁切且图片有溢出时生效，停手自动回中）</span></label>
       </div>

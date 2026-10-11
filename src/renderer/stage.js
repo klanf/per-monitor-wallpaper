@@ -110,6 +110,11 @@ const ken = { start: 0 };      // Ken Burns 相位（永不重置 —— 重置�
 /** 裁切平移（r37）：平滑后的窗口偏移，x/y ∈ [-0.5, 0.5]，0 = 居中。
  *  鼠标活动期间目标值跟随鼠标，停手 2.5s（与视差镜头的 mouseUntil 同源）后缓回 0。 */
 const pan = { x: 0, y: 0, dirty: false };
+
+/** 拼接填充（r38）：2D 拼接显示期间留存格位（位图+深度位图），
+ *  depth:ready 把缺的格补齐后整体升级 GL。GL 直接上屏时置 active=false。 */
+const collage = { active: false, n: 1, slots: [] };
+let myChannelIndex = 0;        // 本频道当前 index（tick/applyChannels 更新）——拼格取邻居用
 let activeVideo = null;        // 当前在播的 <video>（视频壁纸时非空，图片/网页壁纸为 null）
 let particleFx = null;         // 粒子层句柄（particles.js，init 时绑定 #particles）
 
@@ -343,6 +348,119 @@ function drawMirrorFill(ctx, W, H, src, sw, sh) {
       ctx.drawImage(src, 0, 0, sw, sh, 0, 0, cw, ch);
       ctx.restore();
     }
+  }
+}
+
+/* ------------------------------------------------------ 拼接填充（r38）----
+ * 竖图配宽屏（或横图配竖屏）时，取相簿里**相邻的图**拼成 N 联铺满整屏：
+ * 中心格 = 当前要显示的这张（右键删除/胶片条/进度的语义都不变），两侧 = 播放
+ * 顺序里的前后邻居（顺序持久化保证跨重启稳定）。格数按「屏幕比例 ÷ 中心图
+ * 比例」四舍五入自动算（1 格=退化成普通单图，竖屏配竖图自动不用拼）。
+ * 拼好的图在管线里就是一张宽图：镜头/过渡/降采样全部复用，每格深度图按同样
+ * 几何并排拼成宽深度图——三块面板各自立体、镜头同步运动。
+ * 深度没生成的格先以 0.5 灰填平坦（shader 里 d-0.5=0 无视差），depth:ready
+ * 补齐后整体从 2D 升级 GL（tryCollageUpgrade）。
+ */
+
+/** 把格位数组拼成两块屏幕大画布（图 + 深度）。深度缺的格填 0.5 灰=平坦。 */
+function composeCollageCanvases(slots, W, H) {
+  const imgCanvas = document.createElement('canvas');
+  imgCanvas.width = W;
+  imgCanvas.height = H;
+  const ictx = imgCanvas.getContext('2d');
+  const depCanvas = document.createElement('canvas');
+  depCanvas.width = W;
+  depCanvas.height = H;
+  const dctx = depCanvas.getContext('2d');
+  const n = slots.length;
+  const sw = W / n;
+  let allReady = true;
+  for (let k = 0; k < n; k += 1) {
+    const s = slots[k];
+    const r = coverRect(sw, H, s.bmp.width, s.bmp.height);
+    ictx.drawImage(s.bmp, r.x + k * sw, r.y, r.w, r.h);
+    if (s.depBmp) {
+      const dr = coverRect(sw, H, s.depBmp.width, s.depBmp.height);
+      dctx.drawImage(s.depBmp, dr.x + k * sw, dr.y, dr.w, dr.h);
+    } else {
+      allReady = false;
+      dctx.fillStyle = '#808080';
+      dctx.fillRect(k * sw, 0, sw, H);
+    }
+  }
+  return { imgCanvas, depCanvas, allReady };
+}
+
+/** 拼接帧构建：中心图先行解码定格数 → 邻居条目 → 并行取图+查深度 → 拼画布。
+ *  返回 {n:1, bmpSrc} = 退化单图（调用方走普通单图路径）；null = 构建失败。 */
+async function buildCollageFrame(entry, token) {
+  const { w: W, h: H } = canvasSize(layers.A.canvas);
+  let centerBmp;
+  try {
+    centerBmp = await fetchBitmap(entry);
+  } catch (err) {
+    slog('拼接: 中心图取图失败 ——', err.message);
+    return null;
+  }
+  if (token !== animToken) {
+    try { centerBmp.close(); } catch (_) { /* 已关 */ }
+    return null;
+  }
+  const n = Math.max(1, Math.min(4, Math.round((W / H) / (centerBmp.width / centerBmp.height))));
+  if (n <= 1) return { n: 1, bmpSrc: centerBmp, w: W, h: H };
+
+  // 邻居条目（主进程已跳过视频/网页；左右不够格用中心图兜底，绝不留黑格）
+  let nb = { center: null, left: [], right: [] };
+  try {
+    nb = await window.wp.channelNeighbors(myChannel, myChannelIndex, Math.ceil(n / 2));
+  } catch (_) { /* IPC 失败：全用中心图兜底 */ }
+  const centerIdx = Math.floor((n - 1) / 2);
+  const paths = new Array(n).fill(null);
+  paths[centerIdx] = entry;
+  for (let k = 1; k <= centerIdx; k += 1) paths[centerIdx - k] = nb.left[k - 1] || entry;
+  for (let k = 1; k + centerIdx < n; k += 1) paths[centerIdx + k] = nb.right[k - 1] || entry;
+
+  // 并行：每格取图 + 查深度（depthFor miss 返回 null 且主进程已入队后台生成）
+  const slots = await Promise.all(paths.map(async (p, k) => {
+    const sameCenter = !p || p.path === entry.path;
+    let bmp = centerBmp;
+    if (!sameCenter) {
+      try { bmp = await fetchBitmap(p); } catch (_) { bmp = centerBmp; }
+    }
+    let depBmp = null;
+    let depPath = null;
+    try { depPath = await window.wp.depthFor((p || entry).path); } catch (_) { /* 查询失败按无深度 */ }
+    if (depPath) {
+      try { depBmp = await fetchBitmap({ path: depPath }); } catch (_) { depBmp = null; }
+    }
+    return { path: (p || entry).path, bmp, depBmp, isCenter: sameCenter };
+  }));
+  if (token !== animToken) {
+    for (const s of slots) {
+      if (!s.isCenter) { try { s.bmp.close(); } catch (_) { /* 已关 */ } }
+      try { s.depBmp?.close(); } catch (_) { /* 已关 */ }
+    }
+    try { centerBmp.close(); } catch (_) { /* 已关 */ }
+    return null;
+  }
+  const comp = composeCollageCanvases(slots, W, H);
+  const readyN = slots.filter((s) => s.depBmp).length;
+  slog(`拼接: n=${n} 深度 ${readyN}/${n}${comp.allReady ? '（齐，直接 GL）' : '（缺格先 2D，ready 后升级）'}`);
+  return { n, slots, ...comp, aspect: W / H, w: W, h: H };
+}
+
+/** 2D 拼接上屏：逐格 cover 画进层画布（等价 drawSource 的拼贴版） */
+function paintCollage(layer, col) {
+  const { w: W, h: H } = canvasSize(layer.canvas);
+  const ctx = layer.ctx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.filter = 'none';
+  ctx.clearRect(0, 0, W, H);
+  const sw = W / col.n;
+  for (let k = 0; k < col.n; k += 1) {
+    const bmp = col.slots[k].bmp;
+    const r = coverRect(sw, H, bmp.width, bmp.height);
+    ctx.drawImage(bmp, r.x + k * sw, r.y, r.w, r.h);
   }
 }
 
@@ -912,6 +1030,7 @@ function glTick(now) {
 /** 2D 内容要上屏了：把视差层淡出（或直接取消进行中的 GL 过渡），绝不盖住新内容 */
 function glFadeOutIfAny() {
   if (!glActive) return;
+  collage.active = false;   // GL（含拼接）退场后是新 2D 内容，升级链失效
   if (glState.anim) {   // 打断进行中的 GL 过渡，纹理全部释放
     glFreeLayer(glState.anim.out !== glState.cur ? glState.anim.out : null);
     glFreeLayer(glState.anim.in);
@@ -961,6 +1080,38 @@ async function glShowFrame(entry, outgoingPath, token) {
   } catch (err) {
     try { slog('gl: 异常，回退 2D ——', err && err.message); } catch (_) { /* 忽略 */ }
     console.warn('[stage] glShowFrame 异常:', err);
+    return { ok: false };
+  }
+}
+
+/** 拼接版 GL 上屏（r38）：画布已在外部拼好，纹理直接从 canvas 建（texImage2D 收 canvas）。
+ *  出场底复用规则与 glShowFrame 一致：上一帧是 GL（单图或上一次拼接）就复用它的纹理，
+ *  都没有就纯淡入盖在 2D 上。拼接画布恰好铺满屏幕 → aspect==canvas → shader 走 cover 全幅。 */
+async function glShowFrameCollage(col, token) {
+  try {
+    glInit();
+    if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return { ok: false }; }
+    const inLayer = {
+      imgTex: glMakeTex(0, col.imgCanvas),
+      depTex: glMakeTex(1, col.depCanvas),
+      aspect: col.aspect,
+      _bmp: null,
+      imgPath: 'collage@' + String(currentEntry ? currentEntry.path : ''),
+    };
+    if (token !== animToken) { glFreeLayer(inLayer); return { ok: false }; }
+    let outLayer = glState.cur || null;
+    if (glState.anim) {   // 打断进行中的升级/过渡：旧的出场层直接释放
+      glFreeLayer(glState.anim.out !== glState.cur ? glState.anim.out : null);
+      glFreeLayer(glState.anim.in);
+      glState.anim = null;
+    }
+    glState.anim = { t0: performance.now(), duration: Math.max(0, cfg.duration || 0), out: outLayer, in: inLayer };
+    glState.cur = null;
+    glActive = true;
+    everRendered = true;
+    return { ok: true, layer: inLayer };
+  } catch (err) {
+    try { slog('gl: 拼接异常，回退 2D ——', err && err.message); } catch (_) { /* 忽略 */ }
     return { ok: false };
   }
 }
@@ -1153,6 +1304,7 @@ async function showFrame(entry, dir, animate) {
   currentDir = dir >= 0 ? 1 : -1;
   const token = ++animToken;
   const kind = kindOf(entry);
+  collage.active = false;   // 新帧默认不再是 2D 拼接（只有拼接 2D 分支会置回 true）
 
   const incomingKey = active === 'A' ? 'B' : 'A';
   if (!showFrame._logged) {
@@ -1173,6 +1325,36 @@ async function showFrame(entry, dir, animate) {
   }
 
   if (kind === 'image') {
+    // ── 拼接填充（r38）：先试拼 N 联（各格深度顺带入队），拼不起来退单图 ──
+    let prefetched = null;
+    if (cfg.depthEnabled && cfg.fit === 'collage' && typeof window.wp.channelNeighbors === 'function') {
+      const col = await buildCollageFrame(entry, token);
+      if (col && col.n > 1) {
+        if (col.depCanvas) {
+          const gl = await glShowFrameCollage(col, token);
+          if (gl.ok) {
+            hideIframe(incoming);
+            hideIframe(outgoing);
+            dropLayerBmp(incoming);
+            dropLayerBmp(outgoing);
+            collage.active = false;              // GL 全屏接管：不再等升级
+            setLayer(incoming.root, REST, 1, 'px');
+            setLayer(outgoing.root, REST, 0, 'px');
+            active = incomingKey;
+            ensureRaf();
+            return;
+          }
+        }
+        // 2D 拼接上屏（部分格深度未就绪 / GL 失败）—— 留存格位等 depth:ready 升级
+        glFadeOutIfAny();
+        collage.active = true;
+        collage.n = col.n;
+        collage.slots = col.slots;
+        finish2D(incoming, outgoing, col.imgCanvas, col.w, col.h, 'image', animate, incomingKey, { collage: col });
+        return;
+      }
+      if (col && col.n === 1) prefetched = col.bmpSrc;   // 退化单图：中心位图已解码，直接用
+    }
     // ── 深度视差：查 sidecar（命中→GL 路径；未命中→主进程入队后台生成，本帧 2D）──
     if (cfg.depthEnabled && typeof window.wp.depthFor === 'function') {
       let depthPath = null;
@@ -1188,6 +1370,7 @@ async function showFrame(entry, dir, animate) {
           // 现画，吃的是 GL 层自带的 _bmp，不是这两个槽位）
           dropLayerBmp(incoming);
           dropLayerBmp(outgoing);
+          if (prefetched) { try { prefetched.close(); } catch (_) { /* 已关 */ } }   // r38：退化单图的预解码位图不再需要
           // contain（r36）：GL 只画完整核心，核心外的模糊底由 2D 层提供 ——
           // 这里必须把 2D 层按新图画好垫在 GL 下面。有过渡时底图随 GL 核心一起
           // 交叉淡入（bgFade，见 glTick），硬切会穿帮。
@@ -1220,12 +1403,14 @@ async function showFrame(entry, dir, animate) {
       }
     }
     glFadeOutIfAny();   // 这张图没深度（或 GL 接管失败）→ 2D 上屏，视差层让路
-    let bmp;
-    try {
-      bmp = await fetchBitmap(entry);
-    } catch (err) {
-      console.warn('[stage] 取图失败:', entry.path, err.message);
-      return;   // 调度器已把死图摘掉，下一帧会带新图来
+    let bmp = prefetched;   // 拼接退化单图时中心位图已解码（r38）
+    if (!bmp) {
+      try {
+        bmp = await fetchBitmap(entry);
+      } catch (err) {
+        console.warn('[stage] 取图失败:', entry.path, err.message);
+        return;   // 调度器已把死图摘掉，下一帧会带新图来
+      }
     }
     if (token !== animToken) { bmp.close(); return; }   // 等待期间又被切走了
     src = bmp; sw = bmp.width; sh = bmp.height;
@@ -1258,15 +1443,25 @@ async function showFrame(entry, dir, animate) {
     activeVideo = null;
   }
 
+  finish2D(incoming, outgoing, src, sw, sh, kind, animate, incomingKey);
+}
+
+/** 2D 上屏 + 过渡收尾（r38 从 showFrame 抽出：普通单图 / 拼接画布 / 视频同一条链）。
+ *  src 可为 ImageBitmap / <video> / 拼接画布（canvas 没有 close，位图留存只认有 close 的）。 */
+function finish2D(incoming, outgoing, src, sw, sh, kind, animate, incomingKey, opts = {}) {
   // ── 上屏（网页壁纸没有 canvas 内容，iframe 自己就是内容）──
   // 槽位旧位图先清：incoming 马上换新内容，outgoing 即将隐退不再重画
   dropLayerBmp(incoming);
   dropLayerBmp(outgoing);
-  if (kind === 'image') {
+  if (kind === 'image' && opts.collage) {
+    paintCollage(incoming, opts.collage);              // 拼接：逐格 cover 画进层画布
+    everRendered = true;
+    pan.x = 0; pan.y = 0; pan.dirty = false;           // 拼接无溢出，归中兜底
+  } else if (kind === 'image') {
     drawSource(incoming, src, sw, sh);
     everRendered = true;                               // 解冻自愈标记：这一路出过画面了
     // r37：位图留在层上供裁切平移重画（r35 已把位图钳到屏幕级，两层常驻内存可控）
-    incoming.bmp = src;
+    if (typeof src.close === 'function') incoming.bmp = src;
     pan.x = 0; pan.y = 0; pan.dirty = false;           // 新图从居中起滑
   } else if (kind === 'video') {
     drawSource(incoming, src, sw, sh);                 // 先画上首帧，之后 rAF 接管
@@ -1434,6 +1629,7 @@ async function applyChannels(list) {
   if (!myChannel) { currentEntry = null; return; }
   const ch = channels.find((c) => c.id === myChannel);
   if (!ch || !ch.current) { currentEntry = null; return; }
+  myChannelIndex = ch.index || 0;   // 拼接取邻居用（tick 未到前先对齐一次）
   // 只在「当前帧变了」时重画 —— channels:changed 很频繁（改配置也会发），
   // 路径没变就什么都不做，避免把正在进行的过渡打断
   if (!currentEntry || currentEntry.path !== ch.current) {
@@ -1530,6 +1726,45 @@ async function init() {
   // ⚠️ 不能因 glState.anim 直接放弃：上一张视差的退场淡出（~900ms）和本张的
   // depth:ready（~1s）几乎同时到期，抢先把升级 return 掉这张图就永远停在 2D
   // —— 真机表现恰好是「隔一张才有视差」。改为等退场走完再重试（2026-10-09）。
+  window.wp.onDepthReady((payload) => {
+    tryDepthUpgrade(payload);
+    tryCollageUpgrade(payload);   // 拼接模式：缺的格被补齐后整体升级 GL（r38）
+  });
+
+  /** 拼接升级（r38）：2D 拼接显示期间，任一格 depth:ready 都重查一遍——
+   *  全部格就绪 → 用留存的格位图重拼两块画布 → GL 上屏。镜像 tryDepthUpgrade
+   *  的守卫：过渡中不抢（等退场重试）、await 期间起过渡就放弃（下一拍自然 GL）。 */
+  async function tryCollageUpgrade(payload, attempt = 0) {
+    if (!collage.active || !currentEntry || frozen) return;
+    if (!cfg.depthEnabled || cfg.fit !== 'collage') return;
+    if (!collage.slots.some((s) => s.path === payload.path)) return;   // 别的图/别的屏的 ready
+    if (anim) {   // 2D 过渡进行中：等它走完再升（同 tryDepthUpgrade 的退场等待）
+      if (attempt < 40) setTimeout(() => tryCollageUpgrade(payload, attempt + 1), 250);
+      return;
+    }
+    if (glActive || (glState.anim && glState.anim.in)) return;         // 已在 GL / 升级淡入进行中
+    let missing = 0;
+    for (const s of collage.slots) {
+      if (s.depBmp) continue;
+      let dp = null;
+      try { dp = await window.wp.depthFor(s.path); } catch (_) { /* 仍缺 */ }
+      if (!dp) { missing += 1; continue; }
+      try { s.depBmp = await fetchBitmap({ path: dp }); } catch (_) { missing += 1; }
+    }
+    if (missing > 0 || glState.anim && glState.anim.in) return;        // 还缺 / await 期间被抢
+    const { w: W, h: H } = canvasSize(layers.A.canvas);
+    const comp = composeCollageCanvases(collage.slots, W, H);
+    if (!comp.allReady) return;
+    const gl = await glShowFrameCollage({ ...comp, aspect: W / H, n: collage.n }, animToken);
+    if (gl.ok) {
+      collage.active = false;
+      const cur2D = layers[active];
+      dropLayerBmp(cur2D);
+      setLayer(cur2D.root, REST, 1, 'px');
+      slog('拼接: 升级完成', String(currentEntry.path).split(/[\\/]/).pop());
+      ensureRaf();
+    }
+  }
   async function tryDepthUpgrade(payload, attempt = 0) {
     if (!payload || !currentEntry || payload.path !== currentEntry.path) return;
     if (frozen) return;
@@ -1563,7 +1798,6 @@ async function init() {
     ensureRaf();
     slog('upgrade: 升级完成', payload.path.split(/[\\/]/).pop());
   }
-  window.wp.onDepthReady(tryDepthUpgrade);
   window.wp.onChannelsChanged(async (payload) => {
     await applyChannels(payload && payload.channels);
   });
@@ -1580,6 +1814,7 @@ async function init() {
       console.log(`[stage] 收到首个 tick: id=${payload && payload.id} myChannel=${myChannel} frozen=${frozen}`);
     }
     if (!payload || payload.id !== myChannel) return;   // 每块 stage 只听自己频道
+    myChannelIndex = payload.index || 0;                // 拼接取邻居用（r38）
     if (frozen) return;   // 暂停：留在当前帧，新图等恢复后下一拍再上
     if (payload.entry) {
       if (cfg.particles === 'random') {   // 随机粒子：每次换图重抽一种（手动翻页也走 tick）

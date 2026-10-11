@@ -151,7 +151,7 @@ const DEFAULTS = {
     hideOnPaused: false,     // 暂停时把舞台窗口整个藏起来（默认关）
   },
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
-  fit: 'cover',            // cover（铺满裁切）| contain（完整显示·模糊底）| mirror（完整显示·镜像延展）
+  fit: 'cover',            // cover（铺满裁切）| contain（完整显示·模糊底）| mirror（完整显示·镜像延展）| collage（拼接填充）
 
   /**
    * 随机模式下，避开「体积与当前这张相同」的候选。
@@ -524,8 +524,9 @@ function resolveProfile(config, monitorId) {
     interval: clampInterval(merged.interval),
     duration: clampDuration(merged.duration),
     animation: ANIMATIONS.has(merged.animation) ? merged.animation : 'slide',
-    // fit：cover（铺满裁切）/ contain（完整显示·模糊底）/ mirror（完整显示·镜像延展）
-    fit: merged.fit === 'contain' || merged.fit === 'mirror' ? merged.fit : 'cover',
+    // fit：cover（铺满裁切）/ contain（完整显示·模糊底）/ mirror（完整显示·镜像延展）/
+    //      collage（拼接填充：非同比例图按相簿邻居拼 N 联铺满，格数自动算、1 格退化单图）
+    fit: ['contain', 'mirror', 'collage'].includes(merged.fit) ? merged.fit : 'cover',
     recursive: toBool(merged.recursive),
     shuffle: toBool(merged.shuffle),
     // 鼠标平移裁切：不写 = 默认开（只有显式 false 才关）

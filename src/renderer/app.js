@@ -1598,9 +1598,9 @@ function cardHtml(ch) {
       </div>
       <div class="mc-block">
         <label class="field-label">填充方式</label>
-        <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示'], ['mirror', '镜像延展']])}</div>
+        <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示'], ['mirror', '镜像延展'], ['collage', '拼接填充']])}</div>
         <label class="check"><input type="checkbox" data-field="cropPan"${p.cropPan !== false ? ' checked' : ''}><span>鼠标平移裁切画面</span></label>
-        <div class="field-hint">铺满裁切且图片有溢出时，鼠标往哪边移画面就往哪边让，停手自动回中。</div>
+        <div class="field-hint">铺满裁切且图片有溢出时，鼠标往哪边移画面就往哪边让，停手自动回中。拼接填充=取相簿相邻的图拼 N 联铺满（竖图配宽屏时 3 联），格数按比例自动算。</div>
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
       <label class="check"><input type="checkbox" data-field="pauseOnFullscreen"${p.pauseOnFullscreen !== false ? ' checked' : ''}><span>本屏被全屏窗口盖住时暂停（玩游戏的那块屏可以单独关掉，壁纸照常动）</span></label>

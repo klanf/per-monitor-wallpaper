@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('wp', {
   // ---- 频道 ----
   listChannels: () => ipcRenderer.invoke('channels:list'),
   channelFiles: (id) => ipcRenderer.invoke('channel:files', id),
+  channelNeighbors: (id, index, span) => ipcRenderer.invoke('channel:neighbors', id, index, span),
   channelCommand: (id, command, payload) => ipcRenderer.invoke('channel:command', id, command, payload),
   applyChannel: (id) => ipcRenderer.invoke('channel:apply', id),
   rebuildChannels: (forgetScanCache = false) => ipcRenderer.invoke('channels:rebuild', forgetScanCache),
