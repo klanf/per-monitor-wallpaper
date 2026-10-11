@@ -1598,7 +1598,7 @@ function cardHtml(ch) {
       </div>
       <div class="mc-block">
         <label class="field-label">填充方式</label>
-        <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示']])}</div>
+        <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示'], ['mirror', '镜像延展']])}</div>
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
       <label class="check"><input type="checkbox" data-field="pauseOnFullscreen"${p.pauseOnFullscreen !== false ? ' checked' : ''}><span>本屏被全屏窗口盖住时暂停（玩游戏的那块屏可以单独关掉，壁纸照常动）</span></label>

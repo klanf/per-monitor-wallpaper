@@ -302,9 +302,38 @@ function drawSource(layer, src, sw, sh) {
     ctx.filter = 'none';
     const core = containRect(W, H, sw, sh);
     ctx.drawImage(src, core.x, core.y, core.w, core.h);
+  } else if (cfg.fit === 'mirror') {
+    // 完整核心 + 镜像延展补满（r36）：以 contain 核心为原胞向四周镜像平铺，
+    // 奇数格翻转 —— 与 GL 侧 texMirror 同一套数学，两条路径观感一致。
+    drawMirrorFill(ctx, W, H, src, sw, sh);
   } else {
     const r = coverRect(W, H, sw, sh);
     ctx.drawImage(src, r.x, r.y, r.w, r.h);
+  }
+}
+
+/**
+ * 镜像延展填充（r36，fit=mirror 的 2D 实现）：
+ * 核心（contain 矩形）画原图，四周按国际象棋镜像规则平铺 ——
+ * 偶数格正、奇数格翻。多画一圈出界的格子，省得算精确边界。
+ */
+function drawMirrorFill(ctx, W, H, src, sw, sh) {
+  const core = containRect(W, H, sw, sh);
+  const cw = Math.max(1, core.w);
+  const ch = Math.max(1, core.h);
+  const i0 = Math.floor(-core.x / cw) - 1;
+  const j0 = Math.floor(-core.y / ch) - 1;
+  for (let j = j0; core.y + j * ch < H + ch; j += 1) {
+    for (let i = i0; core.x + i * cw < W + cw; i += 1) {
+      const fx = (i % 2 === 0) ? 1 : -1;
+      const fy = (j % 2 === 0) ? 1 : -1;
+      ctx.save();
+      ctx.translate(core.x + i * cw, core.y + j * ch);
+      if (fx < 0) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
+      if (fy < 0) { ctx.translate(0, ch); ctx.scale(1, -1); }
+      ctx.drawImage(src, 0, 0, sw, sh, 0, 0, cw, ch);
+      ctx.restore();
+    }
   }
 }
 
@@ -354,7 +383,9 @@ function stageTargetScale(bw, bh) {
   const dpr = window.devicePixelRatio || 1;
   const W = Math.max(1, Math.round(window.innerWidth * dpr));
   const H = Math.max(1, Math.round(window.innerHeight * dpr));
-  const fit = (cfg.fit === 'contain' ? Math.min(W / bw, H / bh) : Math.max(W / bw, H / bh));
+  // mirror 与 contain 同取「完整可见」的缩放口径（核心 = contain 矩形）
+  const containLike = cfg.fit === 'contain' || cfg.fit === 'mirror';
+  const fit = (containLike ? Math.min(W / bw, H / bh) : Math.max(W / bw, H / bh));
   return fit * FIT_HEADROOM;
 }
 
@@ -492,6 +523,8 @@ uniform float uFlowHeight;  // 视差强度主旋钮（cfg.flowHeight，DepthSta
 uniform float uFlowQ;       // POM 步进质量 0.15~1（cfg.flowQuality，0.5=CLI 默认；低=省 GPU）
 uniform float uFlowFocus;   // 对焦点（focus：0=视差绕 z=1 面，Orbital 0.30/Dolly 0.35）
 uniform float uFlowZoom;    // 图像缩放（zoom：1=满幅，Orbital 0.98/Dolly 0.95 留露边余量）
+uniform float uFit;         // 填充：0=cover（铺满裁切）1=contain（核心外透明，透出 2D 模糊底）2=mirror（核心外镜像延展）
+uniform vec4  uCore;        // contain/mirror 的核心矩形（屏幕像素，xy=左上角顶为 0，zw=宽高）——每层按自己宽高比现算
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -555,8 +588,31 @@ void main() {
   if (uImgAspect > canvasAspect) crop.x = canvasAspect / uImgAspect;
   else                           crop.y = uImgAspect / canvasAspect;
 
-  // ---- DepthFlow POM 模式：无 margin（靠镜像重复兜边，与原版观感一致）----
+  // ---- DepthFlow POM 模式 ----
+  // contain/mirror（r36）：整图完整映射进核心矩形，视差在核心内进行；
+  //   contain —— 核心外输出 alpha 0，透出下层 2D 的模糊底（同一次 showFrame 画的）；
+  //   mirror  —— 核心外按 texMirror 镜像平铺（与 2D drawMirrorFill 同一套数学）。
+  // 位移 off 是图像空间量：核心把整图等比装进去，位移语义与 cover 完全一致。
   if (uFlow > 0.5 && uHasDepth > 0.5) {
+    if (uFit > 0.5) {
+      vec2 rel = (uv01 * uCanvas - uCore.xy) / uCore.zw;   // 核心相对坐标（uv01 已翻成顶为 0）
+      if (rel.x < 0.0 || rel.x > 1.0 || rel.y < 0.0 || rel.y > 1.0) {
+        if (uFit < 1.5) { gl_FragColor = vec4(0.0); return; }
+        rel = 1.0 - abs(1.0 - mod(rel, 2.0));              // 镜像平铺
+      }
+      vec2 g0 = (rel - 0.5) * 2.0 * vec2(uImgAspect, 1.0);
+      vec3 col = flowSample(g0, uFlowOff, uImgAspect);
+      // contain 核心边缘 1.5px 羽化：核心内容随视差移动、外圈模糊底静止，
+      // 硬边会闪出一条锯齿缝
+      float aEdge = 1.0;
+      if (uFit < 1.5) {
+        vec2 bpx = min(rel, 1.0 - rel) * uCore.zw;
+        aEdge = clamp(min(bpx.x, bpx.y) / 1.5, 0.0, 1.0);
+      }
+      gl_FragColor = vec4(col, uAlpha * aEdge);
+      return;
+    }
+    // cover（r35 之前的行为原样）
     vec2 off = uFlowOff * crop;   // 屏幕位移 → 图像 gluv 空间（cover 裁切同比缩放）
     vec2 g0 = (vec2(0.5) + (uv01 - 0.5) * crop - 0.5) * 2.0 * vec2(uImgAspect, 1.0);
     gl_FragColor = vec4(flowSample(g0, off, uImgAspect), uAlpha);
@@ -641,7 +697,8 @@ function glInit() {
     const U = {};
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
-      'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom']) U[n] = gl.getUniformLocation(prog, n);
+      'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
+      'uFit', 'uCore']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
@@ -795,6 +852,18 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uFlowFocus, flowP.focus);
   gl.uniform1f(glState.U.uFlowZoom, flowP.zoom);
   gl.uniform1f(glState.U.uFlowQ, Math.min(1, Math.max(0.15, cfg.flowQuality || 0.5)));
+  // 填充方式（r36）：contain/mirror 的核心矩形按**本层**图像宽高比现算（两层各自不同），
+  // 与 2D containRect 同一套数学 —— GL 核心必须和下层 2D 画的完整核心逐像素对齐
+  if ((cfg.fit === 'contain' || cfg.fit === 'mirror') && !Array.isArray(cam)) {
+    const ca = w / h;
+    let cw2, ch2;
+    if (L.aspect > ca) { cw2 = w; ch2 = w / L.aspect; } else { ch2 = h; cw2 = h * L.aspect; }
+    gl.uniform1f(glState.U.uFit, cfg.fit === 'mirror' ? 2 : 1);
+    gl.uniform4f(glState.U.uCore, (w - cw2) / 2, (h - ch2) / 2, cw2, ch2);
+  } else {
+    gl.uniform1f(glState.U.uFit, 0);
+    gl.uniform4f(glState.U.uCore, 0, 0, w, h);
+  }
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -811,6 +880,8 @@ function glTick(now) {
   if (glState.anim) {
     const p = Math.min(1, (now - glState.anim.t0) / Math.max(1, glState.anim.duration));
     const e = easeCubicBezier(p);
+    // contain 的 2D 模糊底随 GL 核心同步淡入（bgFade 由 showFrame 挂上）
+    if (glState.anim.bgFade) setLayer(glState.anim.bgFade.root, REST, e, 'px');
     if (glState.anim.out) glDrawLayer(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
     if (glState.anim.in) {
       gl.enable(gl.BLEND);
@@ -818,6 +889,7 @@ function glTick(now) {
       glDrawLayer(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
     }
     if (p >= 1) {
+      if (glState.anim.bgFade) setLayer(glState.anim.bgFade.root, REST, 1, 'px');
       glFreeLayer(glState.anim.out);
       glState.cur = glState.anim.in;
       glState.anim = null;
@@ -1061,21 +1133,31 @@ async function showFrame(entry, dir, animate) {
         if (gl.ok) {
           hideIframe(incoming);
           hideIframe(outgoing);
-          // 2D 垫底（仅无过渡的启动/重显场景）：GL 万一没画出来（纹理流卡死、
-          // glTick 没跑），桌面也不至于黑屏 —— GL 内容与垫底相同，淡入叠上去无感知。
-          // 真实过渡（animate=true）仍由 GL 全权做交叉淡入，不垫底以免硬切穿帮。
-          if (!animate && gl.bmp) {
+          // contain（r36）：GL 只画完整核心，核心外的模糊底由 2D 层提供 ——
+          // 这里必须把 2D 层按新图画好垫在 GL 下面。有过渡时底图随 GL 核心一起
+          // 交叉淡入（bgFade，见 glTick），硬切会穿帮。
+          const need2DBg = cfg.fit === 'contain';
+          if (gl.bmp && (!animate || need2DBg)) {
             try {
               drawSource(incoming, gl.bmp, gl.bmp.width, gl.bmp.height);
               everRendered = true;
             } catch (_) { /* 垫底失败不致命 */ }
-            try { gl.bmp.close(); } catch (_) { /* 已关 */ }
-            gl.bmp = null;
-            if (gl.layer) gl.layer._bmp = null;
+            if (!animate) {           // 垫底位图用完即弃；contain 过渡还要靠 GL 层带走
+              try { gl.bmp.close(); } catch (_) { /* 已关 */ }
+              gl.bmp = null;
+              if (gl.layer) gl.layer._bmp = null;
+            }
           }
-          // GL 在管内容：2D 层钉到终态（垫底图留在 GL 层下面被盖住）
-          setLayer(incoming.root, REST, 1, 'px');
-          setLayer(outgoing.root, REST, 0, 'px');
+          // GL 在管内容：cover/mirror 的 2D 层钉到终态（被 GL 全屏盖住）；
+          // contain 的 incoming 2D 是模糊底，随动画淡入（outgoing 保持可见垫在下面）
+          if (need2DBg && animate && glState.anim) {
+            glState.anim.bgFade = { root: incoming.root };
+            setLayer(incoming.root, REST, 0, 'px');
+            setLayer(outgoing.root, REST, 1, 'px');
+          } else {
+            setLayer(incoming.root, REST, 1, 'px');
+            setLayer(outgoing.root, REST, 0, 'px');
+          }
           active = incomingKey;
           ensureRaf();
           return;
@@ -1181,7 +1263,24 @@ function applyChannelConfig() {
   const p = profileOf(myChannel);
   if (p.animation) cfg.animation = p.animation;
   if (Number.isFinite(p.duration)) cfg.duration = p.duration;
-  if (p.fit) cfg.fit = p.fit;
+  // 填充方式（r36）：运行中切换要当场收拾 2D 垫底层 —— GL 每帧读 uFit 立即生效，
+  // 切到 contain 的瞬间核心外就透明了，底下没画模糊底就是一条黑缝；
+  // 离开 contain（回 cover / 切 mirror）则把 2D 层藏掉（mirror 由 GL 全屏自绘）
+  if (p.fit && p.fit !== cfg.fit) {
+    cfg.fit = p.fit;
+    if (glActive && glState.cur && glState.cur._bmp) {
+      const cur2D = layers[active];
+      if (cfg.fit === 'contain') {
+        try {
+          const b = glState.cur._bmp;
+          drawSource(cur2D, b, b.width, b.height);
+          setLayer(cur2D.root, REST, 1, 'px');
+        } catch (_) { /* 补画失败不致命：下一拍 showFrame 会重新垫 */ }
+      } else {
+        setLayer(cur2D.root, REST, 0, 'px');
+      }
+    }
+  }
   if (Number.isFinite(p.fpsCap)) cfg.fpsCap = p.fpsCap;
   // Ken Burns 开关（profile 不写 = 默认开）
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);

@@ -244,10 +244,11 @@
       </div>
 
       <div class="field unified-only">
-        <label class="field-label">图片填充方式</label>
+        <label class="field-label">图片填充方式 <span class="info-dot" tabindex="0" data-tip="铺满裁切：填满整块屏，超出部分裁掉。完整显示：整张图完整可见，核心外用模糊虚化补满（开启深度视差时同样生效，视差在完整图像内运动）。镜像延展：整张图完整可见，核心外用镜像对称的画面补满。后两种在比例和屏幕不一致的图上差别最明显。"></span></label>
         <div class="seg" id="cfg-fit">
-          <button data-value="cover" class="seg-item">铺满裁切</button>
-          <button data-value="contain" class="seg-item">完整显示</button>
+          <button data-value="cover" class="seg-item" title="填满整块屏，超出部分裁掉">铺满裁切</button>
+          <button data-value="contain" class="seg-item" title="整张图完整可见，核心外用模糊虚化补满">完整显示</button>
+          <button data-value="mirror" class="seg-item" title="整张图完整可见，核心外用镜像对称画面补满">镜像延展</button>
         </div>
       </div>
 

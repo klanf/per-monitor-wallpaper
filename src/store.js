@@ -151,7 +151,7 @@ const DEFAULTS = {
     hideOnPaused: false,     // 暂停时把舞台窗口整个藏起来（默认关）
   },
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
-  fit: 'cover',            // cover | contain
+  fit: 'cover',            // cover（铺满裁切）| contain（完整显示·模糊底）| mirror（完整显示·镜像延展）
 
   /**
    * 随机模式下，避开「体积与当前这张相同」的候选。
@@ -523,7 +523,8 @@ function resolveProfile(config, monitorId) {
     interval: clampInterval(merged.interval),
     duration: clampDuration(merged.duration),
     animation: ANIMATIONS.has(merged.animation) ? merged.animation : 'slide',
-    fit: merged.fit === 'contain' ? 'contain' : 'cover',
+    // fit：cover（铺满裁切）/ contain（完整显示·模糊底）/ mirror（完整显示·镜像延展）
+    fit: merged.fit === 'contain' || merged.fit === 'mirror' ? merged.fit : 'cover',
     recursive: toBool(merged.recursive),
     shuffle: toBool(merged.shuffle),
     folder: legacyFolder(merged.albumId),
