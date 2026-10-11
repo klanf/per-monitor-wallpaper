@@ -1599,6 +1599,8 @@ function cardHtml(ch) {
       <div class="mc-block">
         <label class="field-label">填充方式</label>
         <div class="seg" data-seg="fit">${segHtml('fit', p.fit, [['cover', '铺满裁切'], ['contain', '完整显示'], ['mirror', '镜像延展']])}</div>
+        <label class="check"><input type="checkbox" data-field="cropPan"${p.cropPan !== false ? ' checked' : ''}><span>鼠标平移裁切画面</span></label>
+        <div class="field-hint">铺满裁切且图片有溢出时，鼠标往哪边移画面就往哪边让，停手自动回中。</div>
       </div>
       <label class="check"><input type="checkbox" data-field="recursive"${p.recursive ? ' checked' : ''}><span>包含子文件夹</span></label>
       <label class="check"><input type="checkbox" data-field="pauseOnFullscreen"${p.pauseOnFullscreen !== false ? ' checked' : ''}><span>本屏被全屏窗口盖住时暂停（玩游戏的那块屏可以单独关掉，壁纸照常动）</span></label>
@@ -1686,6 +1688,7 @@ async function copyMonitorProfile() {
     animation: src.profile.animation,
     duration: src.profile.duration,
     fit: src.profile.fit,
+    cropPan: src.profile.cropPan,
     particles: ov.particles !== undefined ? ov.particles : null,
     particleCount: ov.particleCount !== undefined ? ov.particleCount : null,
     flowStyle: ov.flowStyle !== undefined ? ov.flowStyle : null,
@@ -2448,6 +2451,7 @@ function applyConfigToUI() {
 
   $('cfg-animation').value = c.animation;
   setSegment('cfg-fit', c.fit);
+  $('cfg-crop-pan').checked = c.cropPan !== false;
   setSegment('cfg-shuffle', c.shuffle ? 'random' : 'order');
   setSegment('cfg-mode', c.perMonitor ? 'per-monitor' : 'unified');
 
@@ -2637,6 +2641,11 @@ function bindSettings() {
     setSegment('cfg-fit', item.dataset.value);
     save({ fit: item.dataset.value });
     applyFit();
+  });
+
+  $('cfg-crop-pan').addEventListener('change', async (e) => {
+    await save({ cropPan: e.target.checked });
+    toast(e.target.checked ? '已开启鼠标平移裁切' : '已关闭鼠标平移裁切');
   });
 
   $('cfg-shuffle').addEventListener('click', (e) => {

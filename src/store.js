@@ -272,6 +272,7 @@ const PROFILE_KEYS = [
   'breathPeriod',              // 呼吸缩放周期 ms（不写 = 渲染端默认 6000；收紧 2000~15000）
   'breathAmplitude',           // 呼吸缩放幅度 %（不写 = 渲染端默认 2，即 ±2%；收紧 0.5~5）
   'particles',                 // 舞台粒子特效：rain/sakura/.../random（不写 = 关；白名单收紧在渲染端 particles.js）
+  'cropPan',                   // 鼠标平移裁切（r37，不写 = 默认开；只对铺满裁切且图片有溢出时生效）
   'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
   'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
   'particlePool',              // 粒子随机池（r21）：random 时只抽池内种类；空数组 = 全部参与
@@ -527,6 +528,8 @@ function resolveProfile(config, monitorId) {
     fit: merged.fit === 'contain' || merged.fit === 'mirror' ? merged.fit : 'cover',
     recursive: toBool(merged.recursive),
     shuffle: toBool(merged.shuffle),
+    // 鼠标平移裁切：不写 = 默认开（只有显式 false 才关）
+    cropPan: merged.cropPan !== false,
     folder: legacyFolder(merged.albumId),
     // 单屏是否被本程序接管；总开关 applyToSystem 仍然是一票否决
     enabled: (override && override.enabled === false) ? false : Boolean(config.applyToSystem),

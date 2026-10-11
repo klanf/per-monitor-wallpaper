@@ -93,6 +93,7 @@ const cfg = {
   flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
   flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
+  cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
 };
 
 const layers = {
@@ -106,6 +107,9 @@ let anim = null;               // { t0, duration, incoming, outgoing, v }
 let rafId = 0;
 let lastPaint = 0;             // fpsCap 时间闸门
 const ken = { start: 0 };      // Ken Burns 相位（永不重置 —— 重置就是跳变）
+/** 裁切平移（r37）：平滑后的窗口偏移，x/y ∈ [-0.5, 0.5]，0 = 居中。
+ *  鼠标活动期间目标值跟随鼠标，停手 2.5s（与视差镜头的 mouseUntil 同源）后缓回 0。 */
+const pan = { x: 0, y: 0, dirty: false };
 let activeVideo = null;        // 当前在播的 <video>（视频壁纸时非空，图片/网页壁纸为 null）
 let particleFx = null;         // 粒子层句柄（particles.js，init 时绑定 #particles）
 
@@ -285,7 +289,7 @@ function paintLayer(layer, bmp) {
  * 通用绘制：src 可为 ImageBitmap（静态图，画一次就完）或 <video>（视频壁纸，
  * rAF 每帧重画拿最新帧）。sw/sh = 源宽高（videoWidth/videoHeight）。
  */
-function drawSource(layer, src, sw, sh) {
+function drawSource(layer, src, sw, sh, panPos) {
   const { w: W, h: H } = canvasSize(layer.canvas);
   const ctx = layer.ctx;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -308,7 +312,12 @@ function drawSource(layer, src, sw, sh) {
     drawMirrorFill(ctx, W, H, src, sw, sh);
   } else {
     const r = coverRect(W, H, sw, sh);
-    ctx.drawImage(src, r.x, r.y, r.w, r.h);
+    // 裁切平移（r37）：pan.x/y ∈ [-0.5, 0.5]，0 = 居中 —— 溢出方向上把裁切窗口
+    // 滑向鼠标所指的那一侧。竖版图在横屏溢出在纵向（y 起作用），横版图在竖屏
+    // 溢出在横向（x 起作用）；无溢出的轴 (W-r.w)=0 天然不动。
+    const px = panPos ? (W - r.w) * (panPos.x + 0.5) : r.x;
+    const py = panPos ? (H - r.h) * (panPos.y + 0.5) : r.y;
+    ctx.drawImage(src, px, py, r.w, r.h);
   }
 }
 
@@ -995,6 +1004,47 @@ function kenTick(now) {
   layer.canvas.style.transform = `scale(${s.toFixed(5)})`;
 }
 
+/** 关掉层上留存的解码位图（裁切平移用的那份；close 两次无害，仍兜 try） */
+function dropLayerBmp(layer) {
+  if (layer && layer.bmp) {
+    try { layer.bmp.close(); } catch (_) { /* 已关 */ }
+    layer.bmp = null;
+  }
+}
+
+/**
+ * 裁切平移（r37，小红车同款）：铺满裁切的图溢出屏幕的部分，跟着鼠标滑动露出。
+ * 语义与深度视差的鼠标接管完全同源：mousemove 喂 glState.mouse/mouseUntil（2.5s），
+ * 活动期间目标值=鼠标位置，停手缓回居中；插值系数 0.12/0.03 对齐 glCam 的权重节奏。
+ * 只对 2D 铺满路径生效 —— GL 在管时鼠标属于视差镜头，contain/mirror 没有溢出可滑。
+ */
+function panTick(now) {
+  if (!cfg.cropPan || cfg.fit !== 'cover' || glActive) return;
+  if (!currentEntry || kindOf(currentEntry) !== 'image') return;
+  const layer = layers[active];
+  if (!layer || !layer.bmp) return;
+  const live = now < glState.mouseUntil;
+  const tx = live ? (glState.mouse[0] + 1) / 2 - 0.5 : 0;
+  const ty = live ? (glState.mouse[1] + 1) / 2 - 0.5 : 0;
+  const k = live ? 0.12 : 0.03;
+  pan.x += (tx - pan.x) * k;
+  pan.y += (ty - pan.y) * k;
+  if (Math.abs(pan.x) < 0.0005 && Math.abs(pan.y) < 0.0005) {
+    if (!pan.dirty) return;
+    pan.x = 0;
+    pan.y = 0;
+    pan.dirty = false;          // 归中落地：最后画一次居中帧，之后不再重画
+  } else {
+    pan.dirty = true;
+  }
+  const b = layer.bmp;
+  try {
+    drawSource(layer, b, b.width, b.height, pan);
+  } catch (err) {
+    dropLayerBmp(layer);        // 位图已被关（理论不会）：止损，下次换图恢复
+  }
+}
+
 /** 应用时段滤镜：#tod 罩色温 + .layer 根上写 filter（去饱和/压暗） */
 function applyTod(mode) {
   const m = TOD_FILTERS[mode] ? mode : '';
@@ -1044,6 +1094,7 @@ function ensureRaf() {
       animTick(now);
       kenTick(now);
       glTick(now);
+      panTick(now);
       // 视频壁纸：每帧把 <video> 的当前画面画进活动层（过渡动画是 root 的
       // CSS 样式，与 canvas 内容正交，两者并行不冲突）
       if (activeVideo && currentEntry && kindOf(currentEntry) === 'video') {
@@ -1133,6 +1184,10 @@ async function showFrame(entry, dir, animate) {
         if (gl.ok) {
           hideIframe(incoming);
           hideIframe(outgoing);
+          // GL 接管后 2D 层不可见：位图留存没有意义（contain 的模糊底由下面
+          // 现画，吃的是 GL 层自带的 _bmp，不是这两个槽位）
+          dropLayerBmp(incoming);
+          dropLayerBmp(outgoing);
           // contain（r36）：GL 只画完整核心，核心外的模糊底由 2D 层提供 ——
           // 这里必须把 2D 层按新图画好垫在 GL 下面。有过渡时底图随 GL 核心一起
           // 交叉淡入（bgFade，见 glTick），硬切会穿帮。
@@ -1204,10 +1259,15 @@ async function showFrame(entry, dir, animate) {
   }
 
   // ── 上屏（网页壁纸没有 canvas 内容，iframe 自己就是内容）──
+  // 槽位旧位图先清：incoming 马上换新内容，outgoing 即将隐退不再重画
+  dropLayerBmp(incoming);
+  dropLayerBmp(outgoing);
   if (kind === 'image') {
     drawSource(incoming, src, sw, sh);
     everRendered = true;                               // 解冻自愈标记：这一路出过画面了
-    src.close();                                       // 关键：立即释放解码位图
+    // r37：位图留在层上供裁切平移重画（r35 已把位图钳到屏幕级，两层常驻内存可控）
+    incoming.bmp = src;
+    pan.x = 0; pan.y = 0; pan.dirty = false;           // 新图从居中起滑
   } else if (kind === 'video') {
     drawSource(incoming, src, sw, sh);                 // 先画上首帧，之后 rAF 接管
     everRendered = true;
@@ -1275,6 +1335,7 @@ function applyChannelConfig() {
           const b = glState.cur._bmp;
           drawSource(cur2D, b, b.width, b.height);
           setLayer(cur2D.root, REST, 1, 'px');
+          cur2D.bmp = b;   // 交给裁切平移接着用（所有权与 GL 层共享，双 close 无害）
         } catch (_) { /* 补画失败不致命：下一拍 showFrame 会重新垫 */ }
       } else {
         setLayer(cur2D.root, REST, 0, 'px');
@@ -1282,6 +1343,8 @@ function applyChannelConfig() {
     }
   }
   if (Number.isFinite(p.fpsCap)) cfg.fpsCap = p.fpsCap;
+  // 裁切平移开关（r37，profile 不写 = 默认开）
+  if (p.cropPan !== undefined) cfg.cropPan = Boolean(p.cropPan);
   // Ken Burns 开关（profile 不写 = 默认开）
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
   // 深度视差（profile 不写 = 默认开 —— 用户要求「所有壁纸自动有视差」）
