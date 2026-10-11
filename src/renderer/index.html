@@ -16,10 +16,16 @@
 
 <div id="empty" class="empty">
   <div class="empty-card">
-    <div class="empty-title">还没有图片目录</div>
-    <div class="empty-sub">选一个目录，它会扫描里面的图片并按间隔自动轮播；开启「每屏独立」后，每台显示器可以各用一套目录和节奏</div>
-    <button class="btn primary lg" id="empty-pick">选择图片目录</button>
-    <div class="empty-hint">支持的格式：jpg · png · webp · avif · gif · bmp · tiff</div>
+    <div class="empty-title" id="empty-title">还没有图片目录</div>
+    <div class="empty-sub" id="empty-sub">选一个目录，它会扫描里面的图片并按间隔自动轮播；开启「每屏独立」后，每台显示器可以各用一套目录和节奏</div>
+    <div class="empty-actions">
+      <!-- 按钮显隐由 app.js 的 renderEmptyState 按空态成因决定：
+           没绑相簿 → 主推选目录（自动建相簿并绑屏）；绑了相簿但没图 → 主推重新扫描 / 打开相簿管理 -->
+      <button class="btn primary lg" id="empty-pick">选择图片目录</button>
+      <button class="btn lg" id="empty-rescan" hidden>重新扫描</button>
+      <button class="btn lg" id="empty-albums" hidden>打开相簿管理</button>
+    </div>
+    <div class="empty-hint" id="empty-hint">支持的格式：jpg · png · webp · avif · gif · bmp · tiff</div>
   </div>
 </div>
 

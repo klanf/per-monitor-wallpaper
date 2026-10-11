@@ -27,6 +27,10 @@ const layers = {
 const els = {
   stage: $('stage'),
   empty: $('empty'),
+  emptyTitle: $('empty-title'),
+  emptySub: $('empty-sub'),
+  emptyRescan: $('empty-rescan'),
+  emptyAlbums: $('empty-albums'),
   folderLabel: $('folder-label'),
   previewBadges: $('preview-badges'),
   hudTitle: $('hud-title'),
@@ -999,6 +1003,80 @@ function loadPreviewChannel() {
   return loadingChain;
 }
 
+/* ------------------------------------------------------------ 空态分诊（r33） */
+
+/**
+ * 「画面上没有图」不止一种成因，各有各的出路：
+ *   no-channel        连预览目标都没有（一台显示器都没认出来）→ 引导选目录
+ *   no-album          这块屏没绑相簿 → 选目录（folder:pick 会建相簿并绑屏）
+ *   album-missing     绑的相簿已被删除 → 重建或去相簿页看看
+ *   album-no-dirs     相簿在，但一个目录都没加 → 往相簿里加目录
+ *   album-dirs-off    目录都在但全被停用 → 去相簿页重新启用
+ *   album-empty       有启用的目录，但扫描结果 0 张 → 图被移走/没同步完/格式
+ *                     不支持/目录失效，主推重新扫描 + 相簿管理
+ *
+ * 旧版把这五种情况全部渲染成「还没有图片目录」引导页 —— 对前两种是对的，
+ * 对后三种是误导：用户相簿本来配得好好的，看着这句只会去重新选文件夹，
+ * 白白丢掉相簿上已经调好的节奏和动画（r33 用户实报）。
+ */
+function emptyStateInfo() {
+  const ch = channelById(state.previewId);
+  if (!state.previewId || !ch) return { kind: 'no-channel' };
+  const albumId = ch.profile && ch.profile.albumId;
+  if (!albumId) return { kind: 'no-album', ch };
+  const album = albumOf(albumId);
+  if (!album) return { kind: 'album-missing', ch, albumId };
+  const folders = album.folders || [];
+  const enabled = folders.filter((f) => f.enabled !== false);
+  if (!folders.length) return { kind: 'album-no-dirs', ch, album };
+  if (!enabled.length) return { kind: 'album-dirs-off', ch, album };
+  return { kind: 'album-empty', ch, album, dirs: enabled };
+}
+
+/** 按空态成因改写标题/说明/按钮组（空态遮罩显示期间随时可重入） */
+function renderEmptyState() {
+  const info = emptyStateInfo();
+  const t = els.emptyTitle;
+  const s = els.emptySub;
+  if (!t || !s) return;
+
+  if (info.kind === 'no-channel') {
+    t.textContent = '还没有图片目录';
+    s.textContent = '选一个目录，它会扫描里面的图片并按间隔自动轮播；开启「每屏独立」后，每台显示器可以各用一套目录和节奏';
+    els.emptyRescan.hidden = true;
+    els.emptyAlbums.hidden = true;
+  } else if (info.kind === 'no-album') {
+    t.textContent = `「${channelName(info.ch)}」还没有绑定相簿`;
+    s.textContent = '选一个目录，会自动建相簿并绑到这块屏；也可以先去相簿管理里建好，再到设置里绑定。';
+    els.emptyRescan.hidden = true;
+    els.emptyAlbums.hidden = false;
+  } else if (info.kind === 'album-missing') {
+    t.textContent = '绑定的相簿已被删除';
+    s.textContent = '这块屏还挂着已删除的相簿，所以没有图可播。选一个目录会新建相簿并绑过来，或去相簿管理里重新绑定。';
+    els.emptyRescan.hidden = true;
+    els.emptyAlbums.hidden = false;
+  } else if (info.kind === 'album-no-dirs') {
+    t.textContent = `相簿「${info.album.name}」还没有目录`;
+    s.textContent = '选一个目录会直接加进这个相簿（节奏、动画这些设置都保留），也可以去相簿管理里添加。';
+    els.emptyRescan.hidden = true;
+    els.emptyAlbums.hidden = false;
+  } else if (info.kind === 'album-dirs-off') {
+    t.textContent = `相簿「${info.album.name}」的目录都已停用`;
+    s.textContent = '相簿里的目录全被停用了，重新启用后就能继续轮播。';
+    els.emptyRescan.hidden = true;
+    els.emptyAlbums.hidden = false;
+  } else {
+    // album-empty：目录在、图没有 —— 把几种常见成因交代清楚，别让用户只会重选文件夹
+    const where = state.perMonitor ? `「${channelName(info.ch)}」的相簿` : '相簿';
+    t.textContent = `相簿「${info.album.name}」里没有找到图片`;
+    s.textContent = `${where}配置的是：${info.dirs.map((f) => f.path).join('、')}`
+      + '。常见原因：目录里的图片被移走或删除了；文件还在同步中；目录下没有支持的格式；目录路径已失效（盘没挂上）。'
+      + '图片放回目录后点「重新扫描」即可，相簿设置不会丢。';
+    els.emptyRescan.hidden = false;
+    els.emptyAlbums.hidden = false;
+  }
+}
+
 async function doLoadPreviewChannel() {
   const id = state.previewId;
   // 主进程要拿这个决定全局热键作用于哪块屏（窗口藏在托盘里时它自己看不到预览状态）
@@ -1008,6 +1086,7 @@ async function doLoadPreviewChannel() {
     state.index = 0;
     state.loadedSignature = 'none';
     els.empty.hidden = false;
+    renderEmptyState();
     filmReset();
     updateHud();
     return;
@@ -1037,6 +1116,7 @@ async function doLoadPreviewChannel() {
 
   if (!state.files.length) {
     els.empty.hidden = false;
+    renderEmptyState();
     setLayerEmpty();
     updateHud();
     updatePlayIcon();
@@ -1669,6 +1749,9 @@ async function refreshAlbums() {
    */
   renderCards();
   updateBadges();
+  // 空态分诊也吃相簿列表：频道先到、相簿后到的半拍里，会先把「绑定的相簿已被
+  // 删除」误报出来 —— 列表一就位立刻重判，别等下一次频道推送才自愈（r33）
+  if (!els.empty.hidden) renderEmptyState();
 }
 
 /** 统一模式的相簿下拉与卡片里的下拉共用这一份选项 */
@@ -3008,17 +3091,24 @@ function bindSettings() {
   });
 
   // ---- 每屏卡片（事件委托，卡片会整体重绘）----
-  // r21：胶囊行 —— 点胶囊切换编辑对象；「复制到全部屏」一键对齐
+  // r21：胶囊行 —— 点胶囊切换编辑对象；「复制到全部屏」一键对齐。
+  // r33：预览跟着编辑对象走 —— 设置里点谁，主窗口预览就切到谁。以前只切编辑
+  // 卡不切预览，用户看着显示器 1 的画面去调显示器 2 的参数，改了什么都感知不到
+  // （只能再去顶栏点一遍徽章，两处状态还常常对不上）。setPreview 对同 id 是
+  // no-op，反复点同一枚胶囊不会重载频道。
   els.monitorChips.addEventListener('click', async (e) => {
     if (e.target.closest('#btn-monitor-copy')) { await copyMonitorProfile(); return; }
     const chip = e.target.closest('.mchip[data-mid]');
-    if (!chip || chip.dataset.mid === state.editMonitorId) return;
-    state.editMonitorId = chip.dataset.mid;
-    // 记住上次编辑的显示器（r24）：重开设置面板停在原来那张卡。UI_ONLY 键不惊动调度器。
-    window.wp.setConfig({ settingsEditMonitor: state.editMonitorId })
-      .then((c) => { state.config = c; })
-      .catch(() => {});
-    renderCards();
+    if (!chip) return;
+    if (chip.dataset.mid !== state.editMonitorId) {
+      state.editMonitorId = chip.dataset.mid;
+      // 记住上次编辑的显示器（r24）：重开设置面板停在原来那张卡。UI_ONLY 键不惊动调度器。
+      window.wp.setConfig({ settingsEditMonitor: state.editMonitorId })
+        .then((c) => { state.config = c; })
+        .catch(() => {});
+      renderCards();
+    }
+    await setPreview(state.editMonitorId);
   });
 
   els.monitorCards.addEventListener('input', (e) => {
@@ -3274,6 +3364,10 @@ function bindEvents() {
     const folder = await window.wp.pickFolder(state.previewId);
     if (folder) toast(`已把「${baseName(folder)}」加入相簿`);
   });
+  // 空态分诊按钮（r33）：重新扫描复用顶栏那条链路（含签名置空强制重载）；
+  // 相簿管理直接开页 —— 相簿页里能建/删相簿、加目录、启停目录、重新绑定。
+  $('empty-rescan').addEventListener('click', () => { $('btn-rescan').click(); });
+  $('empty-albums').addEventListener('click', () => { $('btn-albums').click(); });
   $('btn-rescan').addEventListener('click', async () => {
     if (!state.previewId) { $('btn-albums').click(); return; }
     const result = await window.wp.channelCommand(state.previewId, 'rescan');

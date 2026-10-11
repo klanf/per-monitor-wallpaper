@@ -309,6 +309,7 @@ body.idle { cursor: none; }
 .empty-card { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 32px; }
 .empty-title { font-size: 20px; font-weight: 500; }
 .empty-sub { color: var(--text-dim); max-width: 380px; line-height: 1.6; }
+.empty-actions { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; }
 .empty-hint { color: var(--text-faint); font-size: 11.5px; margin-top: 6px; }
 
 /* ---------------------------------------------------------------- 设置面板 */

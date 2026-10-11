@@ -13,18 +13,22 @@
  *   - 缓存键 = sha1(路径|mtimeMs|size)：图换了内容缓存自动失效，改名/移动视为新图。
  *     集中存放（不进相簿目录）—— 相簿在 Syncthing 同步范围内，sidecar 散落进去
  *     会把 2.4GB 垃圾同步到别的机器。
- *   - worker 是常驻 Python 进程（模型只加载一次），单并发队列，单张失败不带走进程。
+ *   - JS 引擎（r26 默认）跑在**worker 线程**（r33）：onnxruntime-node 的
+ *     session.run/loadModel 是同步原生调用，留在主进程会把右键菜单/删除确认/
+ *     调度器定时器全部卡住（实锤 4.5s），worker 里随便卡都波及不到主进程；
+ *     任务超时直接 terminate 线程（推理硬取消），空闲 release 会话、线程热复用。
+ *   - Python worker 是常驻子进程（模型只加载一次），单并发队列，单张失败不带走进程。
  *     空闲 10 分钟杀掉省显存（3070 Ti 还要跑 ComfyUI），下次 miss 自动重拉。
  *   - 全链路 fail-soft：Python 不存在 / 模型缺失 / worker 连挂 3 次 → 功能静默降级
  *     （lookup 永远返回 null，壁纸照常播 2D），绝不影响壁纸主业务。
  */
 
 const { spawn } = require('node:child_process');
+const { Worker } = require('node:worker_threads');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const debugLog = require('./debugLog');
-const engineJs = require('./depthEngineJs');
 
 const QUEUE_MAX = 64;             // 队列上限，满了丢弃（下次 miss 会再入队）
 const IDLE_KILL_MS = 10 * 60 * 1000;
@@ -87,6 +91,13 @@ const state = {
   lastEvictSweep: 0,
   disabledReason: '',
   stats: { hits: 0, misses: 0, generated: 0, failed: 0, dropped: 0 },
+  // JS 引擎 worker 线程（r33）：推理全部发生在这个线程里，主进程只收发消息
+  wt: null,                    // Worker 实例；null = 没拉起（下次派活时再拉）
+  wtSeq: 0,                    // 消息序号发号器
+  wtJobSeq: 0,                 // 在途任务的 seq（回执对账；对不上 = 迟到的旧回执）
+  wtWaiter: null,              // 在途任务的 resolve 钩子（job-result 到达时兑现）
+  probeSeq: 0,                 // 在途探测的 seq
+  probeWaiter: null,           // 在途探测的 resolve 钩子
 };
 
 /**
@@ -168,17 +179,110 @@ function finishSuccess(job) {
   }
 }
 
+/* ---- JS 引擎 worker 线程（r33）---- */
+
+/** 拉起深度引擎线程（幂等）；消息分发与异常退出兜底都挂在这里 */
+function spawnJsWorker() {
+  if (state.wt) return state.wt;
+  const w = new Worker(path.join(__dirname, 'depthEngineWorker.js'));
+  w.on('message', (msg) => {
+    if (!msg || typeof msg.type !== 'string') return;
+    if (msg.type === 'probe-result') {
+      // seq 对账：快速连发 configure 时旧探测会被新探测取代，旧回执直接丢弃
+      if (msg.seq === state.probeSeq && state.probeWaiter) {
+        const r = state.probeWaiter;
+        state.probeWaiter = null;
+        r(msg);
+      }
+    } else if (msg.type === 'job-result') {
+      if (msg.seq === state.wtJobSeq && state.wtWaiter) {
+        const r = state.wtWaiter;
+        state.wtWaiter = null;
+        r(msg);
+      }
+    }
+  });
+  w.on('error', (err) => onJsWorkerGone(`error: ${err.message}`));
+  w.on('exit', (code) => {
+    if (state.wt === w) onJsWorkerGone(`exit code=${code}`);
+  });
+  state.wt = w;
+  return w;
+}
+
+/** 线程死了（异常/退出）：把所有在途 promise 落定成失败，busy/currentJob 交给调用方收拾 */
+function onJsWorkerGone(why) {
+  if (!state.wt) return;
+  state.wt = null;
+  log('深度引擎线程退出:', why);
+  const probe = state.probeWaiter;
+  state.probeWaiter = null;
+  if (probe) probe({ seq: state.probeSeq, ok: false, reason: `深度引擎线程异常退出（${why}）` });
+  const waiter = state.wtWaiter;
+  state.wtWaiter = null;
+  if (waiter) waiter({ seq: state.wtJobSeq, ok: false, error: `深度引擎线程异常退出（${why}）` });
+}
+
+/** 硬终止线程（推理不可协作取消，超时/退出时用）；在途 promise 全部落定为失败 */
+function terminateJsWorker(why) {
+  const w = state.wt;
+  if (!w) return;
+  state.wt = null;
+  const probe = state.probeWaiter;
+  state.probeWaiter = null;
+  if (probe) probe({ seq: state.probeSeq, ok: false, reason: `深度引擎线程被终止（${why}）` });
+  const waiter = state.wtWaiter;
+  state.wtWaiter = null;
+  if (waiter) waiter({ seq: state.wtJobSeq, ok: false, error: `深度引擎线程被终止（${why}）` });
+  try { w.terminate(); } catch (_) { /* 已死 */ }
+}
+
+/** 探测 JS 引擎（在 worker 线程里 require ort/sharp + 查模型）；20s 超时判负 */
+function probeJs(onnxModel) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      state.probeWaiter = null;
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      terminateJsWorker('probe-timeout');
+      finish({ ok: false, reason: 'JS 引擎线程探测超时（20s）' });
+    }, 20000);
+    if (timer.unref) timer.unref();
+    try {
+      // 已有在途探测（快速连发 configure）：先落定为「被取代」，让前一个
+      // configure 的 .then 不去误切 Python 引擎 —— 引擎归属由最后一次 configure 决定
+      if (state.probeWaiter) {
+        const prev = state.probeWaiter;
+        state.probeWaiter = null;
+        prev({ seq: state.probeSeq, ok: false, superseded: true, reason: 'probe 被更新的探测取代' });
+      }
+      const w = spawnJsWorker();
+      const seq = ++state.wtSeq;
+      state.probeSeq = seq;
+      state.probeWaiter = finish;
+      w.postMessage({ type: 'probe', seq, onnxModel });
+    } catch (err) {
+      finish({ ok: false, reason: `深度引擎线程拉起失败: ${err.message}` });
+    }
+  });
+}
+
 /**
- * JS 引擎跑单（r26 方案 B）：进程内异步推理，无常驻子进程。
- * 失败计数独立于 Python 的 workerFails；连败 3 次且 Python 依赖在位则切引擎
- * （单向切换 —— 切回 JS 只能靠重启/重配，避免两条链互相踢皮球循环降级）。
+ * JS 引擎跑单（r33 起经 worker 线程）：主进程 postMessage 后只等结果，
+ * sharp 预处理 / ORT 推理 / dilate 全部阻塞在 worker 自己的事件循环里。
+ * 超时处理从「放弃等待」升级成「terminate 线程」—— 旧版超时后主进程其实
+ * 还在替 ORT 背着同步推理跑，线程版是真正的硬取消。
  */
 async function runJsJob(job) {
-  const startedAt = Date.now();
   clearTimeout(state.jobTimer);
   state.jobTimer = setTimeout(() => {
-    // ORT 推理无法取消：只放弃等待，迟到结果由 currentJob 比对丢弃
-    log('JS 任务超时放弃:', path.basename(job.path));
+    log('JS 任务超时，终止引擎线程:', path.basename(job.path));
+    terminateJsWorker('job-timeout');
     state.stats.failed += 1;
     state.jsFails += 1;
     state.busy = false;
@@ -188,8 +292,13 @@ async function runJsJob(job) {
   }, JOB_TIMEOUT_MS);
   if (state.jobTimer.unref) state.jobTimer.unref();
   try {
-    await engineJs.generate(job);
+    const w = spawnJsWorker();
+    const seq = ++state.wtSeq;
+    state.wtJobSeq = seq;
+    w.postMessage({ type: 'generate', seq, onnxModel: state.onnxModel, depthDevice: state.depthDevice, job });
+    const res = await new Promise((resolve) => { state.wtWaiter = resolve; });
     if (state.currentJob !== job) return;   // 超时/换引擎后被放弃的迟到结果
+    if (!res || !res.ok) throw new Error((res && res.error) || '深度引擎线程返回失败');
     state.jsFails = 0;
     clearTimeout(state.jobTimer);
     state.currentJob = null;
@@ -364,8 +473,12 @@ function spawnWorker() {
 
 function killWorker(why) {
   if (state.engine === 'js') {
-    // JS 引擎没有子进程可杀：闲置时释放 ONNX 会话省内存（与 Python 的 idle kill 对齐）
-    engineJs.close();
+    // 闲时释放（与 Python 的 idle kill 对齐）：给线程发 release 关掉 ONNX 会话省
+    // 显存，线程本身留着热复用（ort/sharp 已加载，下个任务不用重付启动成本）。
+    // 线程已死就顺手清掉引用；jobTimer 无活可超时，一并清。
+    if (state.wt) {
+      try { state.wt.postMessage({ type: 'release' }); } catch (_) { terminateJsWorker('idle-post-failed'); }
+    }
     state.busy = false;
     state.currentJob = null;
     clearTimeout(state.jobTimer);
@@ -482,8 +595,11 @@ function configure(patch) {
   for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot', 'depthDevice']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
-  // 设备偏好转发给 JS 引擎（'cpu'=强制 CPU；缺省/其他=gpu）——放探测前，首建会话即生效
-  try { engineJs.configure({ depthDevice: state.depthDevice }); } catch (_) {}
+  // 设备偏好落 state（r33 起随每个任务下发到引擎线程；引擎线程存活时这里
+  // 同步推一条 configure —— 让「切换设备」立刻释放旧会话，下张按新设备重建）
+  if (state.wt && state.engine === 'js') {
+    try { state.wt.postMessage({ type: 'configure', depthDevice: state.depthDevice }); } catch (_) { /* 死线程下次派活会重拉 */ }
+  }
   // 覆盖项单独记档（空串=没覆盖），resolveRuntime 按覆盖→打包布局→legacy 探测
   state.overrides = {
     python: (patch && patch.python) || '',
@@ -503,24 +619,23 @@ function configure(patch) {
   if (state.disabledReason.startsWith('缓存目录建不了')) return;
 
   // ── 引擎选择（r26）：JS（onnxruntime-node，零 Python 依赖）优先 ──
-  // 探测是异步的（require 原生模块有 IO），期间 engine='probing'，pump 攒队列不派活。
+  // r33 起探测也在引擎线程里做（require ort/sharp 有 IO，更不该占主进程）；
+  // 探测是异步的，期间 engine='probing'，pump 攒队列不派活。
   // JS 不可用 → 回落 Python worker 三件套检查（r25 逻辑原样）。
   state.engine = 'probing';
   state.enabled = true;
   state.disabledReason = '';
-  engineJs.probe(state.onnxModel).then((r) => {
+  probeJs(state.onnxModel).then((r) => {
+    if (r && r.superseded) return;   // 已被更新的 configure 接管，别在这里改引擎归属
     if (r.ok) {
       state.engine = 'js';
       state.enabled = true;
       state.disabledReason = '';
-      log('深度功能就绪 [engine=js] onnx=', state.onnxModel);
+      log('深度功能就绪 [engine=js·worker] onnx=', state.onnxModel);
     } else {
       applyPythonAvailability(r.reason);
     }
     pump();   // 探测期间攒下的队列现在派活
-  }).catch((err) => {
-    applyPythonAvailability(`JS 引擎探测异常: ${err.message}`);
-    pump();
   });
 }
 
@@ -549,12 +664,12 @@ function stats() {
     cacheLimitMB: Math.round(state.cacheLimitBytes / 1048576) };
 }
 
-/** 设置页的可用性面板（r25；r26 加引擎/ONNX 模型字段）：依赖解析结果 + 运行态统计 */
+/** 设置页的可用性面板（r25；r26 加引擎/ONNX 模型字段；r33 device 改读本进程偏好） */
 function status() {
   return {
     ...stats(),
     engine: state.engine,
-    device: state.engine === 'js' && engineJs.device ? engineJs.device() : undefined,
+    device: state.engine === 'js' ? (state.depthDevice === 'cpu' ? 'cpu' : 'gpu') : undefined,
     python: state.python,
     workerScript: state.workerScript,
     modelDir: state.modelDir,
@@ -567,18 +682,17 @@ function status() {
 }
 
 /**
- * 退出时释放深度引擎的进程内原生资源（r31 补，2026-10-10「重启挂死」根因修复）。
+ * 退出时收掉深度引擎（r33 重写）。
  *
- * r26 起 JS 引擎把 onnxruntime-node + sharp 两个原生模块加载进主进程（每次启动
- * probe() 就 require），ONNX 会话还有「闲置 10 分钟」才释放的定时器 —— 退出链上
- * 不主动释放的话，ORT/libvips 的原生线程池由 Chromium 终场阶段兜底回收，偶发收
- * 不干净 → 主进程剩 1 线程永不退出 → relaunch 的新实例永远起不来（用户实锤）。
+ * r26~r32：JS 引擎把 onnxruntime-node + sharp 加载进**主进程**，退出时 ORT/libvips
+ * 的原生线程池收不干净（Windows 已知坑，microsoft/onnxruntime#24579），Chromium
+ * 终场挂死 threads=1 → `app.relaunch` 永不触发，靠 main.js 的 taskkill 引信硬保底。
  *
- * session.release() 是异步的，这里 fire-and-forget + unref 定时器即可：目的只是
- * 让原生池尽快进入可退出状态，硬保底由 main.js 的 taskkill 引信兜住。
+ * r33 起原生模块只存在于引擎线程里：terminate 直接杀线程，原生资源随线程消失，
+ * 不经过 Chromium 的卸载路径 —— 退出挂死的根因整体消失。taskkill 引信保留当保险。
  */
 function shutdown() {
-  try { engineJs.close(); } catch (_) {}
+  terminateJsWorker('quit');
   log('深度引擎已释放（quit shutdown）');
 }
 
