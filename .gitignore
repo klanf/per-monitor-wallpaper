@@ -58,3 +58,9 @@ tools/models/*.pt
 # 「覆盖 → <appRoot>/models/depth-anything/depth_anything_v2_small.onnx → legacy」探测，
 # 开发机放一份即可；打包时作为 extraResource/下载项提供（与 depth-env 同策略）。
 models/
+
+# 引导安装器构建产物（r39）：bootstrap.nsi 由模板渲染、build-log 是编译日志
+tools/bootstrap-installer/build/
+
+# 引导安装器构建产物（r39）：bootstrap.nsi 由模板渲染、build-log 是编译日志
+tools/bootstrap-installer/build/

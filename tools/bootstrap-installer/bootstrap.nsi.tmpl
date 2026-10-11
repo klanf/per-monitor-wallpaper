@@ -1,0 +1,195 @@
+; 壁纸切换器 · 引导安装器模板（r39）
+; 由 tools/build-bootstrap.js 渲染（@TAG@/@VERSION@/@INIURL@/@OUTFILE@/@ICON@/@SKIPRUN@），
+; 再用 electron-builder 缓存里的 makensis 编译。产物 = 新用户的唯一下载入口：
+;   下载 bootstrap.ini（本版本分片清单，扁平 ini 免 JSON 解析）
+;   → 逐片下载（NSISdl，失败回落系统 curl.exe）→ 逐片尺寸校验
+;   → copy /b 合并 → certutil 全包 SHA-256 比对 → 拉起主安装器向导
+; 敏感步骤全部依赖 Windows 系统二进制（certutil/copy/curl），引导器只当壳。
+
+Unicode true
+ManifestDPIAware true
+
+!define APP_VER  "@VERSION@"
+!define TAG      "@TAG@"
+!define INI_URL  "@INIURL@"
+!define SKIPRUN  @SKIPRUN@
+
+Name "壁纸切换器 引导安装器"
+OutFile "@OUTFILE@"
+Icon "@ICON@"
+Caption "壁纸切换器 v${APP_VER} 安装引导"
+BrandingText " "
+
+InstallDir "$TEMP\wp-bootstrap"
+RequestExecutionLevel user
+SilentInstall normal
+
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+
+Var /GLOBAL WorkDir
+Var /GLOBAL IniPath
+Var /GLOBAL Parts
+Var /GLOBAL WholeSha
+Var /GLOBAL WholeSize
+Var /GLOBAL K
+Var /GLOBAL Url
+Var /GLOBAL Expect
+Var /GLOBAL PartPath
+Var /GLOBAL PartSize
+Var /GLOBAL Got
+Var /GLOBAL Rc
+Var /GLOBAL Out
+Var /GLOBAL MergeSrc
+Var /GLOBAL SetupPath
+Var /GLOBAL HashFile
+
+Page instfiles
+
+; ---- 工具：certutil 算 SHA-256 并与期望值比对（findstr 命中=0 通过）----
+!macro VerifySha FILE EXPECT LABEL
+  nsExec::ExecToStack 'certutil -hashfile "${FILE}" SHA256'
+  Pop $Rc
+  Pop $Out
+  StrCpy $HashFile "${FILE}.hash.txt"
+  FileOpen $R1 "$HashFile" w
+  FileWrite $R1 "$Out"
+  FileClose $R1
+  nsExec::ExecToStack 'cmd /c findstr /i /c:"${EXPECT}" "$HashFile"'
+  Pop $Rc
+  Pop $Out
+  ${If} $Rc != 0
+    DetailPrint "${LABEL} SHA-256 校验失败！"
+    DetailPrint "（期望 ${EXPECT}）文件可能已损坏，请重新运行引导器。"
+    MessageBox MB_ICONSTOP "${LABEL} 校验失败（SHA-256 不匹配）。\n文件可能损坏，请重新运行本引导器重试。" /SD IDOK
+    Abort
+  ${EndIf}
+  DetailPrint "${LABEL} 校验通过 ✓"
+!macroend
+
+; ---- 工具：三级下载链（r39 真机定案）----
+; NSISdl 不跟随重定向、对 gitee 附件（302→foruda.gitee.com CDN）不可用，退为末位；
+; 主力 = 系统 curl.exe（Win10 1803+ 自带，跟随重定向）；兜底 = PowerShell IWR。
+!macro DownloadFile URL OUT LABEL
+  StrCpy $Rc 901
+  ${If} ${FileExists} "$SYSDIR\curl.exe"
+    DetailPrint "${LABEL}：curl 下载…"
+    nsExec::ExecToLog '"$SYSDIR\curl.exe" -L --fail --silent --show-error -o "${OUT}" "${URL}"'
+    Pop $Rc
+  ${EndIf}
+  ${If} $Rc != 0
+    DetailPrint "${LABEL}：curl 不可用/失败（$Rc），改用 PowerShell…"
+    FileOpen $R1 "$WorkDir\dl.ps1" w
+    FileWrite $R1 "param($Url, $OutFile)$\r$\n[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12$\r$\nInvoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing$\r$\n"
+    FileClose $R1
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$WorkDir\dl.ps1" "${URL}" "${OUT}"'
+    Pop $Rc
+  ${EndIf}
+  ${If} $Rc != 0
+    DetailPrint "${LABEL}：PowerShell 失败（$Rc），改用 NSISdl（仅 HTTP）…"
+    NSISdl::download /TIMEOUT=30000 "${URL}" "${OUT}"
+    Pop $Rc
+    ${If} $Rc != "ok"
+      StrCpy $Rc 902
+    ${EndIf}
+  ${EndIf}
+  Delete "$WorkDir\dl.ps1"
+!macroend
+
+Section "main"
+  SetDetailsView show
+  DetailPrint "壁纸切换器 v${APP_VER} 安装引导"
+  StrCpy $WorkDir "$TEMP\wp-bootstrap"
+  CreateDirectory "$WorkDir"
+  StrCpy $IniPath "$WorkDir\bootstrap.ini"
+  Delete "$IniPath"
+
+  ; ── 1. 引导清单 ──
+  DetailPrint "获取版本清单…"
+  !insertmacro DownloadFile "${INI_URL}" "$IniPath" "清单"
+  ${If} $Rc != 0
+    DetailPrint "版本清单下载失败。"
+    MessageBox MB_ICONSTOP "下载版本清单失败（网络问题？）。\n请检查网络后重新运行本引导器。" /SD IDOK
+    Abort
+  ${EndIf}
+  ReadINIStr $Parts "$IniPath" "bootstrap" "parts"
+  ReadINIStr $WholeSha "$IniPath" "bootstrap" "sha256"
+  ReadINIStr $WholeSize "$IniPath" "bootstrap" "size"
+  ${If} $Parts == ""
+    MessageBox MB_ICONSTOP "版本清单内容异常，请重新运行本引导器。" /SD IDOK
+    Abort
+  ${EndIf}
+  DetailPrint "版本 v${APP_VER}，共 $Parts 个分片"
+
+  ; ── 2. 逐片下载 + 尺寸校验 ──
+  ${For} $K 1 $Parts
+    ReadINIStr $Url "$IniPath" "part$K" "url"
+    ReadINIStr $PartSize "$IniPath" "part$K" "size"
+    ReadINIStr $Expect "$IniPath" "part$K" "sha256"
+    StrCpy $PartPath "$WorkDir\wp-part$K.bin"
+    DetailPrint "下载分片 $K/$Parts…"
+    !insertmacro DownloadFile "$Url" "$PartPath" "分片 $K"
+    ${If} $Rc != 0
+      DetailPrint "分片 $K 下载失败。"
+      MessageBox MB_ICONSTOP "分片 $K/$Parts 下载失败（网络问题？）。\n请检查网络后重新运行本引导器。" /SD IDOK
+      Abort
+    ${EndIf}
+    ${GetSize} "$WorkDir" "/M=wp-part$K.bin /S=0B" $Got $R1 $R2
+    ${If} $Got != $PartSize
+      DetailPrint "分片 $K 大小不符（$Got / $PartSize）。"
+      MessageBox MB_ICONSTOP "分片 $K/$Parts 下载不完整，请重新运行本引导器。" /SD IDOK
+      Abort
+    ${EndIf}
+    !insertmacro VerifySha "$PartPath" "$Expect" "分片 $K"
+  ${Next}
+
+  ; ── 3. 合并 ──
+  DetailPrint "合并分片…"
+  ; ⚠️ copy 的多文件连接语法是 "p1"+"p2"+"p3"（每个路径各自带引号）——
+  ; 整串包一对引号会被 cmd 当成单个文件名（r39 真机翻车：分片合并失败）
+  StrCpy $MergeSrc ""
+  ${For} $K 1 $Parts
+    StrCpy $MergeSrc "$MergeSrc+$\"$WorkDir\wp-part$K.bin$\""
+  ${Next}
+  StrCpy $MergeSrc "$MergeSrc" "" 1   ; 去掉开头的 +
+  StrCpy $SetupPath "$WorkDir\wp-setup.exe"
+  Delete "$SetupPath"
+  nsExec::ExecToLog 'cmd /c copy /b $MergeSrc "$SetupPath"'
+  Pop $Rc
+  ${If} $Rc != 0
+    DetailPrint "合并失败（$Rc）。"
+    MessageBox MB_ICONSTOP "分片合并失败，请重新运行本引导器。" /SD IDOK
+    Abort
+  ${EndIf}
+
+  ; ── 4. 整包校验 ──
+  DetailPrint "校验完整安装包（SHA-256，约几秒）…"
+  ${GetSize} "$WorkDir" "/M=wp-setup.exe /S=0B" $Got $R1 $R2
+  ${If} $Got != $WholeSize
+    DetailPrint "安装包大小不符（$Got / $WholeSize）。"
+    MessageBox MB_ICONSTOP "合并结果不完整，请重新运行本引导器。" /SD IDOK
+    Abort
+  ${EndIf}
+  !insertmacro VerifySha "$SetupPath" "$WholeSha" "完整安装包"
+
+  ; ── 5. 拉起主安装器（新用户会看到正常的安装向导）──
+  DetailPrint "启动安装向导…"
+  Delete "$WorkDir\hash.txt"
+  !if ${SKIPRUN} == 1
+    DetailPrint "（测试模式：跳过安装器启动）"
+  !else
+    ExecWait '"$SetupPath"'
+  !endif
+
+  ; ── 6. 清理（分片与合并产物不再需要）──
+  DetailPrint "清理临时文件…"
+  ${For} $K 1 $Parts
+    Delete "$WorkDir\wp-part$K.bin"
+    Delete "$WorkDir\wp-part$K.bin.hash.txt"
+  ${Next}
+  Delete "$SetupPath"
+  Delete "$SetupPath.hash.txt"
+  Delete "$IniPath"
+  RMDir "$WorkDir"
+  DetailPrint "完成！"
+SectionEnd

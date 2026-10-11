@@ -123,16 +123,44 @@ async function main() {
     const manifestPath = path.join(outputDir, 'update-manifest.json');
     await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
 
+    // 引导安装器清单（r39）：NSIS 原生可读的扁平 ini，引导器下载它来拿到
+    // 每个分片的名字/大小/哈希，避免在 NSIS 里解析 JSON。URL 预编码好
+    //（分片名含中文），NSIS 侧拿来即用；base 直指本版本 tag 的附件区。
+    const tag = `v${PKG.version}`;
+    const base = `https://gitee.com/klanf/per-monitor-wallpaper/releases/download/${tag}/`;
+    const enc = encodeURIComponent;
+    const iniLines = [
+      '[bootstrap]',
+      `version=${PKG.version}`,
+      `installer=${result.parts[0].name.replace(/\.part\d{3}$/, '')}`,
+      `size=${result.size}`,
+      `sha256=${result.sha256}`,
+      `parts=${result.parts.length}`,
+      `base=${base}`,
+    ];
+    result.parts.forEach((part, i) => {
+      iniLines.push(`[part${i + 1}]`);
+      iniLines.push(`name=${part.name}`);
+      iniLines.push(`url=${base}${enc(part.name)}`);
+      iniLines.push(`size=${part.size}`);
+      iniLines.push(`sha256=${part.sha256}`);
+    });
+    // ⚠️ 带 UTF-8 BOM 写 ini：Unicode NSIS 的 ReadINIStr 靠 BOM 识别 UTF-8，
+    // 否则含中文的 name 字段会按 ANSI(GBK) 读成乱码（url 字段是纯 ASCII 的
+    // %xx 编码，下载不受影响；name 只用于诊断展示，但乱码会误导排查）
+    await fsp.writeFile(path.join(outputDir, 'bootstrap.ini'), `\ufeff${iniLines.join('\r\n')}\r\n`, { encoding: 'utf8', flag: 'wx' });
+
     // 再从磁盘复核一遍，避免写盘异常或脚本改动让清单和成品脱节。
     for (const part of result.parts) {
       const actual = await hashFile(path.join(outputDir, part.name));
       if (actual !== part.sha256) throw new Error(`写盘后校验失败：${part.name}`);
     }
 
-    console.log(`\n完成：${result.parts.length} 个分片 + update-manifest.json`);
+    console.log(`\n完成：${result.parts.length} 个分片 + update-manifest.json + bootstrap.ini`);
     console.log(`整包 SHA-256  ${result.sha256}`);
     console.log(`\n请创建 Gitee Release v${PKG.version}，上传该目录里的全部文件。`);
     console.log('不要上传 RAR 分卷；客户端需要这里生成的原始 .partNNN 文件。');
+    console.log(`新用户入口 = tools/bootstrap-installer 产出的引导安装器（build-bootstrap.js 构建，tag=${tag}）。`);
   } catch (err) {
     await fsp.rm(outputDir, { recursive: true, force: true }).catch(() => {});
     throw err;
