@@ -48,7 +48,9 @@
     "shot:layout": "node tools/screenshot-layout.js",
     "shot:glyphs": "node tools/screenshot-glyphs.js",
     "icon": "node tools/make-icon.js tools/icon-source.png --radius 48",
-    "update:prepare": "node tools/prepare-update.js"
+    "update:prepare": "node tools/prepare-update.js",
+    "build:bootstrap": "node tools/build-bootstrap.js",
+    "test:bootstrap": "node tools/test-bootstrap.js && node tools/test-bootstrap-gitee.js"
   },
   "build": {
     "appId": "com.local.electron-wallpaper",
