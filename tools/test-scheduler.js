@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const { Store, resolveProfile, DEFAULTS, SETTINGS_TABS } = require('../src/store');
 const { MonitorScheduler, UNIFIED_ID } = require('../src/scheduler');
+const { ShuffleOrders } = require('../src/shuffleOrders');
 
 const RED = path.resolve(__dirname, 'fixtures/monitor-A-red.bmp');
 const GREEN = path.resolve(__dirname, 'fixtures/monitor-B-green.bmp');
@@ -1197,6 +1198,87 @@ async function main() {
     await scheduler.step(ch, 1);
     check('动态关掉：翻页照旧写（老行为不变）', writes.length === writesBefore + 4,
       `写入数 → ${writes.length}`);
+  }
+
+  // ============================================================ §30 =====
+  /* ================= 30. 顺序持久化（r34）：重启不再重新洗牌 ================= */
+  console.log('\n===== 30. 顺序持久化：跨实例同顺序 / 重扫重洗 / 未变不写盘 =====');
+  {
+    const dirO = path.join(tmpDir, 'dirO');
+    fs.mkdirSync(dirO);
+    for (let i = 1; i <= 40; i += 1) {
+      fs.copyFileSync(i % 2 ? RED : GREEN, path.join(dirO, `o-${String(i).padStart(2, '0')}.bmp`));
+    }
+    const albumO = singleFolderAlbum('O', dirO);
+    const storeO = new Store(path.join(tmpDir, 'config-o.json'));
+    storeO.set({
+      albumId: albumO.id,
+      albums: [albumO],
+      perMonitor: false,        // 统一模式：一条 UNIFIED_ID 频道，断言简单
+      shuffle: true,
+      interval: 1,
+      applyToSystem: false,
+      applyOnStart: false,
+    });
+
+    const fakeDeps = (writeLog) => ({
+      store: storeO,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: [FAKE_MONITORS[0]] }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async (imagePath) => {
+        writeLog.push(path.basename(imagePath));
+        return { ok: true, method: 'test' };
+      },
+    });
+
+    const ordersFile = path.join(tmpDir, 'shuffle-orders.json');
+    const ordersA = new ShuffleOrders(ordersFile, { debounceMs: 0 });
+    const writesA = [];
+    const schedA = new MonitorScheduler({ ...fakeDeps(writesA), orders: ordersA });
+    await schedA.rebuild('test');
+    const order1 = schedA.channels.get(UNIFIED_ID).files.map((f) => path.basename(f.path));
+    check('随机模式生成 40 张的顺序', order1.length === 40, `实际 ${order1.length}`);
+    ordersA.flush();
+    check('顺序已落盘（json 文件存在）', fs.existsSync(ordersFile));
+    const saved1 = JSON.parse(fs.readFileSync(ordersFile, 'utf8')).channels[UNIFIED_ID];
+    check('落盘内容与内存顺序一致', saved1 && saved1.paths.length === 40
+      && path.basename(saved1.paths[0]) === order1[0] && path.basename(saved1.paths[39]) === order1[39]);
+    schedA.stop();
+
+    // 「第二次启动」：从磁盘重新 load（真实路径），顺序必须原样恢复
+    const ordersB = new ShuffleOrders(ordersFile, { debounceMs: 0 });
+    const schedB = new MonitorScheduler({ ...fakeDeps([]), orders: ordersB });
+    await schedB.rebuild('test');
+    const order2 = schedB.channels.get(UNIFIED_ID).files.map((f) => path.basename(f.path));
+    check('重启后顺序与上次完全一致', JSON.stringify(order2) === JSON.stringify(order1));
+    check('重启恢复走的是复用路径（内容没变不再写盘）', ordersB.dirty === false);
+    ordersB.flush();
+
+    // 「重新扫描」= 用户主动要求重洗
+    await schedB.rescan(UNIFIED_ID);
+    const order3 = schedB.channels.get(UNIFIED_ID).files.map((f) => path.basename(f.path));
+    check('rescan 后顺序改变（重新洗牌）', JSON.stringify(order3) !== JSON.stringify(order2));
+    ordersB.flush();
+    const saved3 = JSON.parse(fs.readFileSync(ordersFile, 'utf8')).channels[UNIFIED_ID];
+    check('重洗后的新顺序已落盘', saved3 && path.basename(saved3.paths[0]) === order3[0]);
+
+    // 「走完一轮」= 重洗一次（_startNextRound），且新顺序同样持久化
+    const chB = schedB.channels.get(UNIFIED_ID);
+    const roundsBefore = chB.rounds || 0;
+    await schedB._startNextRound(chB);
+    const order4 = chB.files.map((f) => path.basename(f.path));
+    check('走完一轮触发重洗', JSON.stringify(order4) !== JSON.stringify(order3));
+    check('轮次计数 +1', chB.rounds === roundsBefore + 1, `${roundsBefore} → ${chB.rounds}`);
+    schedB.stop();
+    const saved4 = JSON.parse(fs.readFileSync(ordersFile, 'utf8')).channels[UNIFIED_ID];
+    check('新一轮的顺序已落盘', saved4 && path.basename(saved4.paths[0]) === order4[0]);
+    const ordersC = new ShuffleOrders(ordersFile, { debounceMs: 0 });
+    const schedC = new MonitorScheduler({ ...fakeDeps([]), orders: ordersC });
+    await schedC.rebuild('test');
+    const order5 = schedC.channels.get(UNIFIED_ID).files.map((f) => path.basename(f.path));
+    check('再下一次重启接着走完一轮后的顺序', JSON.stringify(order5) === JSON.stringify(order4));
+    schedC.stop();
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

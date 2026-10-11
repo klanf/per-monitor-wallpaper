@@ -48,6 +48,7 @@ const desktopWallpaper = require('./desktopWallpaper');
 const slideshowGuard = require('./slideshowGuard');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
 const { PlaybackState } = require('./playbackState');
+const { ShuffleOrders } = require('./shuffleOrders');
 const { UpdateService } = require('./updater');
 
 const CACHE_DIR = path.join(os.tmpdir(), 'electron-wallpaper-cache');
@@ -116,6 +117,8 @@ const depthService = require('./depthService');
 const debugLog = require('./debugLog');
 /** 播放位置的磁盘存档（跨进程重启「接着上次那张播」，见 playbackState.js） */
 let playback = null;
+/** 轮播顺序的磁盘存档（r34：重启不再重新洗牌，见 shuffleOrders.js） */
+let ordersStore = null;
 let quitting = false;
 let hideNoticeShown = false;
 let updater = null;
@@ -2120,6 +2123,9 @@ if (!gotLock) {
      * 高频状态混进配置会让 diff 全是噪声，也容易跟用户手改配置撞车。
      */
     playback = new PlaybackState(path.join(app.getPath('userData'), 'playback.json'));
+    // 轮播顺序存档（r34）：重启不再重新洗牌 —— 同一份顺序接着播，深度缓存的
+    // 预取路径也就和上次一致。只在「走完一轮 / 换相簿 / 重扫」才重写。
+    ordersStore = new ShuffleOrders(path.join(app.getPath('userData'), 'shuffle-orders.json'));
 
     // 缩略图缓存目录可配置（用户想把缓存放到别的盘就用 thumbCacheDir）
     thumbnails.configure({
@@ -2185,6 +2191,7 @@ if (!gotLock) {
       store,
       cacheDir: CACHE_DIR,
       playback,
+      orders: ordersStore,   // r34：顺序持久化（构造时水合，stop 时 flush）
       // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
       isLiveDegraded: () => liveStage.isDegraded(),
       // 暂停感知：被冻结（全屏/挂机）的显示器不推进轮播（2026-10-09，

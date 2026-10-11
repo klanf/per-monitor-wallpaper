@@ -96,7 +96,7 @@ class MonitorScheduler {
    *        失效时降频写自动放开（degraded-fallback），显示职责交回系统壁纸。
    *        不传按「从未失效」处理 —— 单测里也能注入来验证这条兜底。
    */
-  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, isLiveDegraded, isPaused }) {
+  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, orders, isLiveDegraded, isPaused }) {
     this.store = store;
     this.cacheDir = cacheDir;
     this.enumerate = enumerate;
@@ -105,6 +105,9 @@ class MonitorScheduler {
     this.writeWallpaper = writeWallpaper
       || ((imagePath, cacheDir, options) => win32.setWallpaper(imagePath, cacheDir, options));
     this.playback = playback || null;
+    // 顺序持久化（r34）：跨重启保留每频道的列表顺序（shuffleOrders.js）。
+    // 不注入（单测多数场景）= 维持旧行为：每次启动重新洗。
+    this.ordersStore = orders || null;
     this.isLiveDegraded = isLiveDegraded || (() => false);
     this.isPaused = isPaused || (() => false);   // 显示器被冻结（全屏/挂机）时不推进轮播
 
@@ -123,6 +126,13 @@ class MonitorScheduler {
     this.playedAlbum = new Map();
     /** 每个频道的列表顺序（随机模式下跨 rebuild 保留，只有走完一轮才重排） */
     this.orders = new Map();
+    // r34：把磁盘存档里上次的顺序水合进内存 —— 重启后 _orderFor 直接按上次的
+    // 顺序复用，不再重新洗。相簿变了 / 切了播放模式时 saved 会被 _orderFor 判废。
+    if (this.ordersStore) {
+      for (const [id, rec] of Object.entries(this.ordersStore.all())) {
+        this.orders.set(id, { albumId: rec.albumId, shuffle: Boolean(rec.shuffle), paths: rec.paths.slice() });
+      }
+    }
     /** 每个频道走完了几轮 —— 每走完一轮重洗一次，这个数只增不减 */
     this.rounds = new Map();
     /**
@@ -392,8 +402,8 @@ class MonitorScheduler {
   /**
    * 从磁盘存档里恢复「上次停在哪张」。
    *
-   * 为什么**先按路径找**：随机模式下列表顺序每次启动都会重洗（见 _orderFor），
-   * 序号对不上号 —— 只有路径能找回「就是这张」。
+   * 为什么**先按路径找**：万一顺序对不上号（存档损坏 / orders 被手动删了导致
+   * 重洗），序号就没了意义 —— 只有路径能找回「就是这张」。
    * 路径找不到（图被删了、改了名）才退回序号，并对齐到当前列表范围内：
    * 少几张也不至于甩回第一张。
    *
@@ -539,6 +549,17 @@ class MonitorScheduler {
   }
 
   /**
+   * 顺序有变 → 交给磁盘存档（shuffleOrders.set 内部有内容比对：顺序没变
+   * 就不标脏不写盘，所以 rebuild 原样重放内存顺序时这里是零成本）。
+   */
+  _persistOrder(id) {
+    if (!this.ordersStore) return;
+    const rec = this.orders.get(id);
+    if (rec) this.ordersStore.set(id, { albumId: rec.albumId, shuffle: rec.shuffle, paths: rec.paths });
+    else this.ordersStore.forget(id);
+  }
+
+  /**
    * 算出这个频道这一轮的**文件顺序** —— 随机模式的「随机」只作用在这里。
    *
    * 把列表本身摆成一个随机顺序，之后播放就是顺着列表走（见 _advance）。
@@ -546,8 +567,9 @@ class MonitorScheduler {
    * 「上一张」永远在左边一格。（不是「每次随机挑一个索引跳过去」——
    * 那样胶片条的位置会乱飞，历史无从追踪。）
    *
-   * 顺序跨 rebuild 保留（`this.orders`）：改个间隔、调个动画时长不会把刚熟悉起来的
-   * 顺序打乱。只有换相簿、切「按名称 / 随机」、重新扫描、或**走完一轮**才会重排。
+   * 顺序跨 rebuild 保留（`this.orders`），r34 起还跨重启保留（`ordersStore` 落盘）：
+   * 改个间隔、调个动画时长、甚至关机重开，顺序都是上一次那份。只有换相簿、
+   * 切「按名称 / 随机」、重新扫描、或**走完一轮**才会重排。
    * 相簿内加目录 / 删目录**不**触发重排：现有路径原位保留，新目录的图接在末尾 ——
    * 「往相簿里补一批图」不该把正在看的顺序搅乱。
    *
@@ -564,6 +586,7 @@ class MonitorScheduler {
 
     if (!shuffled) {
       this.orders.set(id, { albumId, shuffle: false, paths: list.map((f) => f.path) });
+      this._persistOrder(id);
       return list;
     }
 
@@ -577,11 +600,13 @@ class MonitorScheduler {
       // 相簿里新增的接在后面（顺序不重排，用户刚丢进来的图在末尾）
       for (const f of list) if (byPath.has(f.path)) out.push(f);
       this.orders.set(id, { albumId, shuffle: true, paths: out.map((f) => f.path) });
+      this._persistOrder(id);
       return out;
     }
 
     await this._shuffleFiles(list, profile.skipSizeTwin !== false);
     this.orders.set(id, { albumId, shuffle: true, paths: list.map((f) => f.path) });
+    this._persistOrder(id);
     return list;
   }
 
@@ -613,6 +638,7 @@ class MonitorScheduler {
     ch.rounds = (ch.rounds || 0) + 1;
     this.rounds.set(ch.id, ch.rounds);
     this.orders.set(ch.id, { albumId: ch.profile.albumId, shuffle: true, paths: ch.files.map((f) => f.path) });
+    this._persistOrder(ch.id);
   }
 
   /**
@@ -1151,9 +1177,11 @@ class MonitorScheduler {
     if (id) {
       this.orders.delete(id);          // 重新扫描 = 重新洗牌，别把旧顺序按回去
       this.rounds.delete(id);
+      this._persistOrder(id);          // r34：磁盘上的旧顺序一并作废
     } else {
       this.orders.clear();
       this.rounds.clear();
+      if (this.ordersStore) this.ordersStore.clear();
     }
     await this.rebuild('rescan');
   }
@@ -1167,6 +1195,7 @@ class MonitorScheduler {
     this.channels.clear();
     // 退出前把最后那张的位置落盘 —— 否则「刚换完图就关程序」会丢掉这一步
     if (this.playback) this.playback.flush();
+    if (this.ordersStore) this.ordersStore.flush();   // r34：顺序存档同样兜底
   }
 
   /* ------------------------------------------------------------ 查询 */
