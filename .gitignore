@@ -54,9 +54,9 @@ __pycache__/
 tools/models/*.onnx
 tools/models/*.pt
 
-# 深度模型（r26）：ONNX 99MB 不进版本库。JS 引擎按
-# 「覆盖 → <appRoot>/models/depth-anything/depth_anything_v2_small.onnx → legacy」探测，
-# 开发机放一份即可；打包时作为 extraResource/下载项提供（与 depth-env 同策略）。
+# 深度模型：DA3-SMALL ONNX 约 101MB，不进版本库。JS 引擎默认探测
+# <appRoot>/models/depth-anything/da3_small.onnx，并保留 V2 自定义模型兼容；
+# 发布构建只通过 extraResources 带 da3_small.onnx。
 models/
 
 # 引导安装器构建产物（r39）：bootstrap.nsi 由模板渲染、build-log 是编译日志

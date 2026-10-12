@@ -802,4 +802,7 @@ npm run dist:dir       # 只出 win-unpacked（验配置用，最快）
 
 [MIT](https://opensource.org/licenses/MIT)，完整文本见 [LICENSE](LICENSE)。
 
+发行包的深度视差功能包含由官方 `DA3-SMALL` 权重自行导出的单图深度 ONNX；
+模型归属与 Apache-2.0 许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 `assets/` 下的应用图标由本项目作者自行生成，随仓库一并分发。生成所用的源图未打进仓库（见 `.gitignore` 里的 `tools/icon-source.png`）—— 如需换成自己的图标，把一张正方形 PNG（≥ 256×256）放到该路径后执行 `npm run icon` 即可，会同时重写 `assets/icon.ico` 与 `assets/icon.png`。

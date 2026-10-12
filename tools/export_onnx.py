@@ -1,178 +1,265 @@
 # -*- coding: utf-8 -*-
+r"""Export the official Depth Anything 3 Small checkpoint to depth-only ONNX.
+
+Runtime output:
+  models/depth-anything/da3_small.onnx
+
+The released app does not need Python or PyTorch. They are build-time tools only.
+The exporter intentionally keeps only the single-view DINOv2 + DualDPT depth path;
+camera pose, confidence/ray, sky and Gaussian branches are not part of the graph.
+
+Example:
+  python tools/export_onnx.py --source C:\src\Depth-Anything-3
+
+If --model-dir is omitted, the official depth-anything/DA3-SMALL checkpoint is
+downloaded through huggingface_hub into its normal user cache.
 """
-export_onnx.py —— 把 HF 格式的 Depth-Anything V2 Small 导出为 ONNX，供打包进发布包。
+from __future__ import annotations
 
-为什么仓库里没有现成的 ONNX：~99MB 的模型权重不进 git（.gitignore 的 models/），
-新机器打包前需要二选一：
-  ①从有模型的其他构建机拷贝 models/depth-anything/depth_anything_v2_small.onnx；
-  ②本脚本现场导出（需要 torch + transformers + onnxruntime + pillow + numpy）。
-
-用法:
-  python tools/export_onnx.py [HF模型目录]
-  省略参数时读环境变量 DEPTH_HF_MODEL_DIR，再缺省用本机的历史路径。
-  HF 模型目录需含 Depth-Anything V2 Small 的 safetensors + preprocessor_config.json
-  （huggingface.co/depth-anything/Depth-Anything-V2-Small，Apache-2.0）。
-
-产物:
-  models/depth-anything/depth_anything_v2_small.onnx（打包 extraResources 的源）
-  ref/  —— 每张测试图: input.npy、torch_depth.npy、ort_depth.npy + 对比指标
-
-流程: 加载 HF 模型 → torch.onnx.export（opset 17，动态 H/W）→ onnxruntime 回载，
-与 torch 原始输出做数值对比（corr≥0.999 且 maxdiff≤0.02 才算 PASS）。
-"""
+import argparse
+import hashlib
+import json
 import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 
-import numpy as np
-
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_MODEL_DIR = r'D:\workbuddy\tools\MoyuFloat\wallpaper\model'
-OUT_ONNX = os.path.join(REPO_ROOT, 'models', 'depth-anything', 'depth_anything_v2_small.onnx')
-REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ref')
-TESTS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), t) for t in ('test_a.jpg', 'test_b.jpg')]
-
-os.environ['HF_HUB_OFFLINE'] = '1'
+OFFICIAL_MODEL_ID = "depth-anything/DA3-SMALL"
+MODEL_NAME = "da3-small"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUT = REPO_ROOT / "models" / "depth-anything" / "da3_small.onnx"
 
 
-def metrics(a, b):
-    """a,b: [H,W] float。min-max 归一后算相关系数 / 最大绝对差 / 平均绝对差。"""
-    a = a.astype(np.float64)
-    b = b.astype(np.float64)
-    a = (a - a.min()) / max(1e-9, a.max() - a.min())
-    b = (b - b.min()) / max(1e-9, b.max() - b.min())
-    corr = float(np.corrcoef(a.ravel(), b.ravel())[0, 1])
-    return corr, float(np.abs(a - b).max()), float(np.abs(a - b).mean())
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=Path(os.environ["DA3_SOURCE_DIR"]) if os.environ.get("DA3_SOURCE_DIR") else None,
+        help="Official Depth-Anything-3 checkout (or set DA3_SOURCE_DIR)",
+    )
+    parser.add_argument("--model-dir", type=Path, help="Directory containing official model.safetensors")
+    parser.add_argument("--model-id", default=OFFICIAL_MODEL_ID)
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--size", type=int, default=518)
+    parser.add_argument("--opset", type=int, default=18)
+    parser.add_argument("--no-validate", dest="validate", action="store_false")
+    parser.set_defaults(validate=True)
+    return parser.parse_args()
 
 
-def main():
-    model_dir = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('DEPTH_HF_MODEL_DIR') or DEFAULT_MODEL_DIR
-    if not os.path.isdir(model_dir):
-        print(f'FATAL 找不到 HF 模型目录: {model_dir}（可传参或设 DEPTH_HF_MODEL_DIR）')
-        sys.exit(1)
+def source_root(path: Path | None) -> Path:
+    if path is None:
+        raise SystemExit("FATAL: pass --source pointing to the official Depth-Anything-3 checkout")
+    path = path.resolve()
+    if not (path / "src" / "depth_anything_3" / "model" / "da3.py").is_file():
+        raise SystemExit(f"FATAL: not an official Depth-Anything-3 source tree: {path}")
+    return path
+
+
+def checkpoint_dir(path: Path | None, model_id: str) -> Path:
+    if path is not None:
+        resolved = path.resolve()
+    else:
+        from huggingface_hub import snapshot_download
+
+        print(f"[1/5] Download official checkpoint {model_id}", flush=True)
+        resolved = Path(
+            snapshot_download(
+                repo_id=model_id,
+                allow_patterns=["config.json", "model.safetensors", "README.md"],
+            )
+        )
+    if not (resolved / "model.safetensors").is_file():
+        raise SystemExit(f"FATAL: model.safetensors not found under {resolved}")
+    return resolved
+
+
+def patch_position_getter() -> None:
+    """torch.cartesian_prod has no ONNX symbolic; meshgrid is exactly equivalent."""
+    import torch
+    from depth_anything_3.model.dinov2.layers.rope import PositionGetter
+
+    def _call(self, batch_size, height, width, device):
+        key = (height, width)
+        if key not in self.position_cache:
+            y = torch.arange(height, device=device)
+            x = torch.arange(width, device=device)
+            yy, xx = torch.meshgrid(y, x, indexing="ij")
+            self.position_cache[key] = torch.stack((yy.reshape(-1), xx.reshape(-1)), dim=-1)
+        cached = self.position_cache[key]
+        return cached.view(1, height * width, 2).expand(batch_size, -1, -1).clone()
+
+    PositionGetter.__call__ = _call
+
+
+def load_official_net(source: Path, weights: Path):
+    sys.path.insert(0, str(source / "src"))
+    import torch
+    from safetensors.torch import load_file
+    from depth_anything_3.cfg import create_object, load_config
+    from depth_anything_3.registry import MODEL_REGISTRY
+
+    patch_position_getter()
+    net = create_object(load_config(MODEL_REGISTRY[MODEL_NAME])).eval()
+    state = load_file(str(weights / "model.safetensors"), device="cpu")
+    # Official Hub saves the public DepthAnything3 wrapper, whose only child is `model`.
+    if state and all(key.startswith("model.") for key in state):
+        state = {key[len("model.") :]: value for key, value in state.items()}
+    missing, unexpected = net.load_state_dict(state, strict=False)
+    # The current official main branch expanded unused auxiliary ray-head levels
+    # after the published DA3-SMALL checkpoint. They are not connected to the
+    # exported `depth` tensor; no main-depth weight is allowed to be missing.
+    allowed_missing = {
+        f"head.scratch.output_conv2_aux.{idx}.2.{kind}"
+        for idx in (1, 2, 3)
+        for kind in ("weight", "bias")
+    }
+    disallowed_missing = [key for key in missing if key not in allowed_missing]
+    if disallowed_missing or unexpected:
+        raise RuntimeError(
+            "official checkpoint mismatch: "
+            f"missing={disallowed_missing[:8]} unexpected={unexpected[:8]}"
+        )
+    if missing:
+        print(f"      ignored unused auxiliary-head keys: {missing}", flush=True)
+    return net.to(torch.device("cpu"))
+
+
+def depth_wrapper(net):
+    import torch
+    import torch.nn as nn
+
+    class DepthOnly(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.net = model
+
+        def forward(self, image: torch.Tensor) -> torch.Tensor:
+            # (B,3,518,518) -> one independent view (B,S=1,3,518,518).
+            x = image.unsqueeze(1)
+            feats, _ = self.net.backbone(
+                x, cam_token=None, export_feat_layers=[], ref_view_strategy="middle"
+            )
+            out = self.net._process_depth_head(feats, image.shape[-2], image.shape[-1])
+            depth = out["depth"]
+            if depth.dim() == 4:
+                depth = depth[:, 0]
+            return depth.float()
+
+    return DepthOnly(net).eval()
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def source_commit(source: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def validate(wrapper, output: Path, size: int) -> dict[str, object]:
+    import numpy as np
+    import onnxruntime as ort
+    import torch
+
+    generator = torch.Generator(device="cpu").manual_seed(20261012)
+    sample = torch.randn((1, 3, size, size), generator=generator, dtype=torch.float32)
+    with torch.inference_mode():
+        torch_depth = wrapper(sample).cpu().numpy()
+
+    session = ort.InferenceSession(str(output), providers=["CPUExecutionProvider"])
+    ort_depth = session.run(["depth"], {"image": sample.numpy()})[0]
+    if torch_depth.shape != ort_depth.shape:
+        raise RuntimeError(f"shape mismatch: torch={torch_depth.shape}, onnx={ort_depth.shape}")
+    delta = np.abs(torch_depth - ort_depth)
+    relative_mean = float(delta.mean() / (np.abs(torch_depth).mean() + 1e-6))
+    corr = float(np.corrcoef(torch_depth.ravel(), ort_depth.ravel())[0, 1])
+    result = {
+        "shape": list(ort_depth.shape),
+        "max_abs": float(delta.max()),
+        "mean_abs": float(delta.mean()),
+        "relative_mean": relative_mean,
+        "correlation": corr,
+        "providers": session.get_providers(),
+    }
+    if relative_mean > 1e-2 or corr < 0.999:
+        raise RuntimeError(f"PyTorch/ONNX parity failed: {result}")
+    return result
+
+
+def main() -> None:
+    args = parse_args()
+    if args.size != 518:
+        raise SystemExit("FATAL: the released DA3 graph is fixed to the native 518x518 grid")
+    if args.opset != 18:
+        raise SystemExit("FATAL: the released DA3 graph is pinned to ONNX opset 18")
+
+    source = source_root(args.source)
+    weights = checkpoint_dir(args.model_dir, args.model_id)
+    print(f"[2/5] Load source={source} checkpoint={weights}", flush=True)
+    started = time.time()
+    net = load_official_net(source, weights)
+    wrapper = depth_wrapper(net)
+    print(f"      loaded in {time.time() - started:.1f}s", flush=True)
 
     import torch
-    from transformers import AutoModelForDepthEstimation, AutoImageProcessor
 
-    print('[1/3] 加载 HF 模型 ...', flush=True)
-    t0 = time.time()
-    model = AutoModelForDepthEstimation.from_pretrained(model_dir).eval()
-    proc = AutoImageProcessor.from_pretrained(model_dir)
-    print(f'      done {time.time() - t0:.1f}s', flush=True)
-
-    print('[2/3] torch.onnx.export (opset 17, 动态 H/W) ...', flush=True)
-    t0 = time.time()
-
-    # ⚠️ HF 原版 head 的 interpolate 用 int(patch_height*patch_size) 当 size，
-    #    trace 时写成常量 → 动态导出失效（输出钉死 518x518，2026-10-10 实锤）。
-    #    head_in_index 选中的特征在 8×patch 分辨率（实测 3 种尺寸 ratio 恒=8.0），
-    #    故 size=(ph*14,pw*14) 等价于 scale_factor=14/8 —— 写死 8 有注释背书，
-    #    导出后验证步骤有输出形状断言兜底。
-    import torch.nn.functional as F
-    from transformers.models.depth_anything.modeling_depth_anything import DepthAnythingDepthEstimationHead
-
-    def _export_forward(self, hidden_states, patch_height, patch_width):
-        hidden_states = hidden_states[self.head_in_index]
-        predicted_depth = self.conv1(hidden_states)
-        predicted_depth = F.interpolate(
-            predicted_depth, scale_factor=float(self.patch_size) / 8.0,
-            mode='bilinear', align_corners=True,
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    temp_out = args.out.with_suffix(".onnx.tmp")
+    dummy = torch.randn(1, 3, args.size, args.size, dtype=torch.float32)
+    print("[3/5] Export depth-only ONNX (opset 18, fixed 518x518)", flush=True)
+    started = time.time()
+    with torch.inference_mode():
+        torch.onnx.export(
+            wrapper,
+            (dummy,),
+            str(temp_out),
+            input_names=["image"],
+            output_names=["depth"],
+            dynamic_axes={"image": {0: "batch"}, "depth": {0: "batch"}},
+            opset_version=args.opset,
+            do_constant_folding=True,
+            dynamo=False,
         )
-        predicted_depth = self.conv2(predicted_depth)
-        predicted_depth = self.activation1(predicted_depth)
-        predicted_depth = self.conv3(predicted_depth)
-        predicted_depth = self.activation2(predicted_depth) * self.max_depth
-        return predicted_depth.squeeze(dim=1)
+    os.replace(temp_out, args.out)
+    print(f"      {args.out.stat().st_size / 1e6:.1f} MB in {time.time() - started:.1f}s", flush=True)
 
-    DepthAnythingDepthEstimationHead.forward = _export_forward
-
-    class Wrap(torch.nn.Module):
-        """只取 predicted_depth，返回 [B,H,W]（输入分辨率）。"""
-
-        def __init__(self, m):
-            super().__init__()
-            self.m = m
-
-        def forward(self, pixel_values):
-            out = self.m(pixel_values=pixel_values)
-            return out.predicted_depth
-
-    os.makedirs(os.path.dirname(OUT_ONNX), exist_ok=True)
-    dummy = torch.randn(1, 3, 518, 518)
-    torch.onnx.export(
-        Wrap(model), dummy, OUT_ONNX,
-        input_names=['pixel_values'], output_names=['predicted_depth'],
-        dynamic_axes={'pixel_values': {2: 'H', 3: 'W'}, 'predicted_depth': {1: 'H', 2: 'W'}},
-        opset_version=17, dynamo=False, do_constant_folding=True,
-    )
-    print(f'      done {time.time() - t0:.1f}s  size={os.path.getsize(OUT_ONNX) / 1e6:.1f}MB', flush=True)
-
-    print('[3/3] onnxruntime 回载验证 ...', flush=True)
-    import onnxruntime as ort
-    # CUDA EP 需要 cublasLt64_12/cudnn9 —— torch 自带同款 DLL（worker 同款方案）
-    try:
-        _tlib = os.path.join(os.path.dirname(torch.__file__), 'lib')
-        if os.path.isdir(_tlib):
-            os.add_dll_directory(_tlib)
-    except Exception:  # noqa: BLE001
-        pass
-    dev = 'cuda' if 'CUDAExecutionProvider' in ort.get_available_providers() else 'cpu'
-    sess = ort.InferenceSession(OUT_ONNX, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-    print(f'      providers={sess.get_providers()}', flush=True)
-    os.makedirs(REF_DIR, exist_ok=True)
-
-    for path in TESTS:
-        from PIL import Image
-        if not os.path.exists(path):
-            print(f'      跳过（缺测试图 {path}，不影响导出本身）')
-            continue
-        name = os.path.splitext(os.path.basename(path))[0]
-        im = Image.open(path).convert('RGB')
-        t0 = time.time()
-        inputs = proc(images=im, return_tensors='pt')
-        px = inputs['pixel_values']
-        print(f'      {name}: img={im.size} -> input={tuple(px.shape)}', flush=True)
-        with torch.no_grad():
-            t_depth = model(pixel_values=px).predicted_depth[0].float().numpy()
-        t_torch = time.time() - t0
-        t0 = time.time()
-        o_depth = sess.run(None, {'pixel_values': px.numpy()})[0]
-        if o_depth.ndim == 4 and o_depth.shape[0] == 1:
-            o_depth = o_depth[0]
-        if o_depth.ndim == 3 and o_depth.shape[0] == 1 and t_depth.ndim == 2:
-            o_depth = o_depth[0]   # 去 batch 维
-        if tuple(o_depth.shape) != tuple(t_depth.shape):
-            raise RuntimeError(f'ONNX 输出形状 {o_depth.shape} != torch {t_depth.shape} —— 动态导出失效')
-        t_ort = time.time() - t0
-        corr, mx, mean = metrics(t_depth, o_depth)
-        print(f'      torch {t_torch:.2f}s / ort-{dev} {t_ort:.2f}s | corr={corr:.6f} maxdiff={mx:.6f} meandiff={mean:.6f}', flush=True)
-        np.save(os.path.join(REF_DIR, f'{name}.input.npy'), px.numpy())
-        np.save(os.path.join(REF_DIR, f'{name}.torch_depth.npy'), t_depth)
-        np.save(os.path.join(REF_DIR, f'{name}.ort_depth.npy'), o_depth)
-
-    ok = True
-    verified = 0
-    for path in TESTS:
-        name = os.path.splitext(os.path.basename(path))[0]
-        tfile = os.path.join(REF_DIR, f'{name}.torch_depth.npy')
-        if not os.path.exists(tfile):
-            continue
-        verified += 1
-        t = np.load(tfile)
-        o = np.load(os.path.join(REF_DIR, f'{name}.ort_depth.npy'))
-        corr, mx, _ = metrics(t, o)
-        if corr < 0.999 or mx > 0.02:
-            ok = False
-            print(f'      FAIL {name}: corr={corr:.6f} maxdiff={mx:.6f}')
-    if verified == 0:
-        print('EXPORT_VERIFY=SKIP（无测试图可比对，形状断言未触发即视为导出成功）')
+    parity = None
+    if args.validate:
+        print("[4/5] Validate PyTorch against ONNX Runtime", flush=True)
+        parity = validate(wrapper, args.out, args.size)
+        print(f"      PASS {parity}", flush=True)
     else:
-        print('EXPORT_VERIFY=' + ('PASS' if ok else 'FAIL'), flush=True)
+        print("[4/5] Validation skipped by request", flush=True)
+
+    digest = sha256(args.out)
+    manifest = {
+        "model": args.model_id,
+        "source_commit": source_commit(source),
+        "input": {"name": "image", "shape": ["batch", 3, args.size, args.size]},
+        "output": {"name": "depth"},
+        "opset": args.opset,
+        "sha256": digest,
+        "bytes": args.out.stat().st_size,
+        "parity": parity,
+    }
+    args.out.with_suffix(".onnx.sha256").write_text(f"{digest}  {args.out.name}\n", encoding="ascii")
+    args.out.with_suffix(".onnx.validation.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"[5/5] SHA-256 {digest}", flush=True)
 
 
-if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:  # noqa: BLE001
-        print(f'FATAL {type(e).__name__}: {e}', flush=True)
-        sys.exit(1)
+if __name__ == "__main__":
+    main()

@@ -31,9 +31,37 @@ function check(label, ok, detail = '') {
 }
 check.skip = (label, detail) => check(label, null, detail);
 
-const MODEL = path.join(ROOT, 'models', 'depth-anything', 'depth_anything_v2_small.onnx');
+const DA3_MODEL = path.join(ROOT, 'models', 'depth-anything', 'da3_small.onnx');
+const V2_MODEL = path.join(ROOT, 'models', 'depth-anything', 'depth_anything_v2_small.onnx');
+const MODEL = fs.existsSync(DA3_MODEL) ? DA3_MODEL : V2_MODEL;
 
 async function main() {
+  console.log('── ⓪ DA3/V2 契约、letterbox 与深度方向');
+  {
+    const engine = require(path.join(ROOT, 'src', 'depthEngineJs'));
+    const t = engine.__test;
+    const da3 = t.detectModelContract({
+      inputNames: ['image'], outputNames: ['depth'],
+      inputMetadata: [{ name: 'image', shape: ['batch', 3, 518, 518] }],
+    });
+    const v2 = t.detectModelContract({
+      inputNames: ['pixel_values'], outputNames: ['predicted_depth'], inputMetadata: [],
+    });
+    check('DA3 metadata 契约识别', da3.family === 'da3-small' && da3.invertDepth === true);
+    check('V2 metadata 契约兼容', v2.family === 'depth-anything-v2-small' && v2.invertDepth === false);
+    const wide = t.letterboxPlan(1920, 1080);
+    const tall = t.letterboxPlan(1080, 1920);
+    check('宽图 letterbox 不拉伸且上下留边', wide.contentW === 518 && wide.top > 0 && wide.left === 0);
+    check('竖图 letterbox 不拉伸且左右留边', tall.contentH === 518 && tall.left > 0 && tall.top === 0);
+    const nearWhite = t.normalizeDepth(new Float32Array([1, 2, 3]), true);
+    check('DA3 距离深度反转为近白远黑', nearWhite[0] === 255 && nearWhite[2] === 0);
+    const cropped = t.cropLetterboxDepth(
+      new Float32Array(Array.from({ length: 16 }, (_, i) => i)), [1, 4, 4],
+      { side: 4, left: 0, top: 1, contentW: 4, contentH: 2 },
+    );
+    check('letterbox 输出裁掉填充区', cropped.width === 4 && cropped.height === 2 && cropped.depth[0] === 4);
+  }
+
   console.log('── ① worker 线程协议回路（坏模型路径 → 明确失败，不挂死）');
   {
     const { Worker } = require('node:worker_threads');
@@ -100,6 +128,38 @@ async function main() {
     check('深度图是真 PNG（魔数校验）', (() => {
       try { return fs.readFileSync(second).subarray(1, 4).toString('ascii') === 'PNG'; } catch { return false; }
     })());
+    const pixels = await sharp(second).raw().toBuffer();
+    check('深度图非平坦', Math.max(...pixels) > Math.min(...pixels));
+    const activeStatus = depthService.status();
+    const expectedFamily = MODEL === DA3_MODEL ? 'da3-small' : 'depth-anything-v2-small';
+    check('状态面板回报模型系列', activeStatus.modelFamily === expectedFamily, String(activeStatus.modelFamily));
+
+    if (MODEL === DA3_MODEL && fs.existsSync(V2_MODEL)) {
+      console.log('── ③ 旧 V2 自定义模型兼容 + 缓存隔离');
+      const da3CachePath = second;
+      depthService.shutdown();
+      const v2Done = new Promise((resolve) => {
+        depthService.configure({
+          appRoot: ROOT,
+          onnxModel: V2_MODEL,
+          cacheDir,
+          depthDevice: 'gpu',
+          onReady: () => resolve('ready'),
+        });
+        setTimeout(() => resolve('timeout'), 90000).unref();
+      });
+      const v2First = depthService.lookup(imgPath);
+      check('切换 V2 后不复用 DA3 缓存', v2First === null);
+      const v2How = await v2Done;
+      check('V2 自定义模型仍可生成', v2How === 'ready', v2How);
+      const v2CachePath = depthService.lookup(imgPath);
+      check('V2 与 DA3 缓存命名空间隔离', Boolean(v2CachePath) && v2CachePath !== da3CachePath);
+      check('V2 metadata 实际识别', depthService.status().modelFamily === 'depth-anything-v2-small');
+      depthService.configure({ depthDevice: 'cpu' });
+      check('仅切换设备不会丢失 V2 自定义路径', path.resolve(depthService.status().onnxModel) === path.resolve(V2_MODEL));
+    } else {
+      check.skip('V2 真模型兼容链路', '未同时安装 DA3 与 V2 模型');
+    }
 
     depthService.shutdown();
     fs.rmSync(cacheDir, { recursive: true, force: true });

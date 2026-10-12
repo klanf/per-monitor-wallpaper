@@ -1,44 +1,38 @@
 'use strict';
 
 /**
- * depthEngineJs —— 深度生成引擎的 JS 实现（方案 B，2026-10-10 可行性验证后工程化）。
+ * depthEngineJs —— 深度生成引擎的 JS 实现。
  *
- * 替代 Python worker（tools/depth_worker.py）的**深度环节**：
- *   sharp 预处理（SmartResize 对齐 HF DPTImageProcessor）→ onnxruntime-node 推理
- *   → 半尺寸 + 边缘外扩（dilate 2×）→ 8bit PNG 原子写。
+ * 默认模型是 DA3-SMALL 的单图深度 ONNX；仍兼容原来的 Depth Anything V2 Small
+ * 自定义模型。两种模型共用 worker 线程、DirectML/CPU 会话和 PNG 后处理：
+ *   - DA3：固定 518×518 letterbox，原始输出是“距离”（近小远大），写盘前反转；
+ *   - V2：沿用 HF SmartResize 动态宽高，原始输出已经是“近大远小”。
  *
- * 与 Python 版的边界（有意不复刻的部分）：
- *   - mask（ISNet）/ bg（LaMa）不做 —— depthService 第十轮起只派深度任务，
- *     图层分割路线已终止，Python worker 里那段代码保留给将来复活分层用。
- *   - 只吃 CPU EP：实测 DirectML（GPU）对本模型反而慢 4~5 倍（调度开销 > 算力收益）。
- *
- * 复刻自 depth-onnx-exp/depth_infer.cjs（与生产 Python 管线对拍 corr=0.9995/0.9991）。
- * 三个 sharp 深坑已在代码里钉死，别"优化"掉：
- *   ① resize 必须 fit:'fill'（默认 cover 会裁边，对齐 PIL 语义）；
- *   ② 1 通道 raw resize 后必须 toColourspace('b-w') 再 .raw()（否则输出 3 通道，
- *      灰度被 RGB 交错污染成"变焦"伪影）；
- *   ③ 不能 Buffer.from(Float32Array)（拷的是底层字节，长度×4 全错位）。
+ * mask（ISNet）/ bg（LaMa）不在这里复刻：当前渲染链只消费深度图。
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 const debugLog = require('./debugLog');
 
-const MAX_SIDE = 518;          // HF 预处理器 shortest_edge（模型训练分辨率短边）
-const MULTIPLE = 14;           // ViT patch=14，输入必须是 14 的倍数
-const PRESHRINK_SIDE = 2048;   // 与 Python worker 一致：先压到 2048 再进模型
+const DA3_INPUT_SIDE = 518;
+const V2_MAX_SIDE = 518;
+const MULTIPLE = 14;
+const PRESHRINK_SIDE = 2048;
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
-const IDLE_RELEASE_MS = 10 * 60 * 1000;   // 与 Python worker 的空闲回收对齐
+const LETTERBOX_RGB = { r: 124, g: 116, b: 104 };
+const IDLE_RELEASE_MS = 10 * 60 * 1000;
 
 const state = {
   ort: null,
   sharp: null,
   session: null,
+  modelContract: null,
   onnxModel: '',
   releaseTimer: null,
-  depthDevice: 'gpu',          // 'gpu'=DML 优先(回落 CPU) | 'cpu'=强制 CPU（2026-10-10 实测 DML 快 5 倍）
-  failed: false,               // require 失败后不再反复试（降级交由 depthService 决策）
+  depthDevice: 'gpu',
+  failed: false,
   failReason: '',
 };
 
@@ -46,7 +40,6 @@ function log(...args) {
   debugLog.dlog('depth-js', ...args);
 }
 
-/* Python round() = 银行家舍入（Math.round 的 .5 恒进位，两者在 .5 处不同） */
 function pyRound(x) {
   const f = Math.floor(x);
   const d = x - f;
@@ -55,18 +48,90 @@ function pyRound(x) {
   return f % 2 === 0 ? f : f + 1;
 }
 
-/* HF DPTImageProcessor SmartResize：取 |1-scale| 更小的轴定 scale，再取整到 14 的倍数 */
 function smartResize(w, h) {
-  const sh = MAX_SIDE / h;
-  const sw = MAX_SIDE / w;
+  const sh = V2_MAX_SIDE / h;
+  const sw = V2_MAX_SIDE / w;
   let scaleH = sh;
   let scaleW = sw;
   if (Math.abs(1 - sw) < Math.abs(1 - sh)) scaleH = sw; else scaleW = sh;
-  const constrain = (val) => Math.max(0, pyRound(val / MULTIPLE) * MULTIPLE);
+  const constrain = (val) => Math.max(MULTIPLE, pyRound(val / MULTIPLE) * MULTIPLE);
   return { nh: constrain(scaleH * h), nw: constrain(scaleW * w) };
 }
 
-/* 3x3 最大值滤波 ×2（等价 worker 的 cv2.dilate 3x3 iterations=2） */
+function letterboxPlan(w, h, side = DA3_INPUT_SIDE) {
+  const scale = Math.min(side / w, side / h);
+  const contentW = Math.max(1, Math.min(side, Math.round(w * scale)));
+  const contentH = Math.max(1, Math.min(side, Math.round(h * scale)));
+  const left = Math.floor((side - contentW) / 2);
+  const top = Math.floor((side - contentH) / 2);
+  return {
+    side,
+    contentW,
+    contentH,
+    left,
+    top,
+    right: side - contentW - left,
+    bottom: side - contentH - top,
+  };
+}
+
+function metadataFor(items, name) {
+  if (Array.isArray(items)) return items.find((item) => item && item.name === name) || null;
+  return items && items[name] ? items[name] : null;
+}
+
+function detectModelContract(session) {
+  const inputs = Array.from(session.inputNames || []);
+  const outputs = Array.from(session.outputNames || []);
+  if (inputs.includes('image') && outputs.includes('depth')) {
+    const meta = metadataFor(session.inputMetadata, 'image');
+    const shape = (meta && (meta.shape || meta.dimensions)) || [];
+    const h = Number(shape[shape.length - 2]);
+    const w = Number(shape[shape.length - 1]);
+    if (h !== DA3_INPUT_SIDE || w !== DA3_INPUT_SIDE) {
+      throw new Error(`DA3 ONNX 输入必须是 [B,3,${DA3_INPUT_SIDE},${DA3_INPUT_SIDE}]，实际 ${shape}`);
+    }
+    return {
+      family: 'da3-small',
+      version: 'DA3-SMALL',
+      inputName: 'image',
+      outputName: 'depth',
+      inputSize: DA3_INPUT_SIDE,
+      fixedSquare: true,
+      invertDepth: true,
+    };
+  }
+  if (inputs.includes('pixel_values') && outputs.includes('predicted_depth')) {
+    return {
+      family: 'depth-anything-v2-small',
+      version: 'Depth-Anything-V2-Small',
+      inputName: 'pixel_values',
+      outputName: 'predicted_depth',
+      inputSize: V2_MAX_SIDE,
+      fixedSquare: false,
+      invertDepth: false,
+    };
+  }
+  throw new Error(`不支持的深度 ONNX 契约：inputs=${inputs.join(',')} outputs=${outputs.join(',')}`);
+}
+
+function pendingModelInfo(modelPath = state.onnxModel) {
+  const name = path.basename(modelPath || '').toLowerCase();
+  if (name.includes('da3')) {
+    return { family: 'da3-small', version: 'DA3-SMALL', inputSize: DA3_INPUT_SIDE, detected: false };
+  }
+  if (name.includes('v2') || name.includes('depth_anything')) {
+    return { family: 'depth-anything-v2-small', version: 'Depth-Anything-V2-Small', inputSize: V2_MAX_SIDE, detected: false };
+  }
+  return { family: 'unknown', version: name || 'unknown', inputSize: null, detected: false };
+}
+
+function modelInfo() {
+  return state.modelContract
+    ? { family: state.modelContract.family, version: state.modelContract.version, inputSize: state.modelContract.inputSize, detected: true }
+    : pendingModelInfo();
+}
+
 function dilate2x(gray, w, h) {
   let src = gray;
   let dst = new Float32Array(gray.length);
@@ -94,24 +159,67 @@ function dilate2x(gray, w, h) {
   return src;
 }
 
-/* 临时名 + rename 原子落盘（主进程 stat 到的一定是完整文件，与 Python worker 一致） */
+function normalizeDepth(depth, invertDepth) {
+  let mn = Infinity;
+  let mx = -Infinity;
+  for (let i = 0; i < depth.length; i++) {
+    const v = Number(depth[i]);
+    if (!Number.isFinite(v)) continue;
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  if (!Number.isFinite(mn) || !Number.isFinite(mx)) throw new Error('深度输出没有有限数值');
+  const span = (mx - mn) || 1;
+  const out = Buffer.alloc(depth.length);
+  for (let i = 0; i < depth.length; i++) {
+    const v = Number.isFinite(depth[i]) ? depth[i] : mn;
+    const unit = invertDepth ? (mx - v) / span : (v - mn) / span;
+    out[i] = Math.round(Math.max(0, Math.min(1, unit)) * 255);
+  }
+  return out;
+}
+
+function cropLetterboxDepth(depth, dims, plan) {
+  const oh = Number(dims[dims.length - 2]);
+  const ow = Number(dims[dims.length - 1]);
+  if (!Number.isInteger(oh) || !Number.isInteger(ow) || oh < 1 || ow < 1) {
+    throw new Error(`DA3 ONNX 输出形状异常：${dims}`);
+  }
+  const x0 = Math.max(0, Math.min(ow - 1, Math.round(plan.left * ow / plan.side)));
+  const y0 = Math.max(0, Math.min(oh - 1, Math.round(plan.top * oh / plan.side)));
+  const x1 = Math.max(x0 + 1, Math.min(ow, Math.round((plan.left + plan.contentW) * ow / plan.side)));
+  const y1 = Math.max(y0 + 1, Math.min(oh, Math.round((plan.top + plan.contentH) * oh / plan.side)));
+  const cw = x1 - x0;
+  const ch = y1 - y0;
+  const cropped = new Float32Array(cw * ch);
+  for (let y = 0; y < ch; y++) {
+    const row = (y0 + y) * ow + x0;
+    cropped.set(depth.subarray(row, row + cw), y * cw);
+  }
+  return { depth: cropped, width: cw, height: ch };
+}
+
 async function writeAtomic(sharpInst, out) {
   const tmp = `${out}.tmp`;
   await sharpInst.png().toFile(tmp);
   fs.renameSync(tmp, out);
 }
 
-/**
- * 生成一张深度图。job: { path, out, depthIn? } —— 契约与 Python worker 的任务行一致。
- * depthIn 存在时跳过推理直接复用（旧缓存回填场景；当前调度路径不派这种活，留作兼容）。
- * 失败抛异常（调用方计 fail / 可切引擎），成功静默返回。
- */
+function toNchwFloat(raw, w, h) {
+  const n = w * h;
+  if (raw.length !== n * 3) throw new Error(`RGB 输入长度 ${raw.length} != ${n * 3}`);
+  const px = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    for (let c = 0; c < 3; c++) px[c * n + i] = (raw[i * 3 + c] / 255 - MEAN[c]) / STD[c];
+  }
+  return px;
+}
+
 async function generate(job) {
   if (state.failed) throw new Error(state.failReason || 'JS 引擎不可用');
   const { sharp } = state;
   if (!sharp) throw new Error('sharp 未加载');
 
-  // ── 深度已就绪（旧缓存回填）：直接拷贝，不碰模型 ──
   if (job.depthIn && fs.existsSync(job.depthIn)) {
     const tmp = `${job.out}.tmp`;
     fs.copyFileSync(job.depthIn, tmp);
@@ -123,77 +231,74 @@ async function generate(job) {
   if (!meta.width || !meta.height) throw new Error('读不到图片尺寸');
   let w0 = meta.width;
   let h0 = meta.height;
-
-  // ── 预缩（对齐 worker：LANCZOS 压到长边 2048）──
   let resizeSource = sharp(job.path).removeAlpha();
   if (Math.max(w0, h0) > PRESHRINK_SIDE) {
     const s = PRESHRINK_SIDE / Math.max(w0, h0);
-    const tw = Math.max(1, Math.round(w0 * s));
-    const th = Math.max(1, Math.round(h0 * s));
-    w0 = tw;
-    h0 = th;
-    resizeSource = resizeSource.resize(tw, th, { kernel: 'lanczos3', fit: 'fill' });
+    w0 = Math.max(1, Math.round(w0 * s));
+    h0 = Math.max(1, Math.round(h0 * s));
+    resizeSource = resizeSource.resize(w0, h0, { kernel: 'lanczos3', fit: 'fill' });
   }
 
-  // ── SmartResize 到 14 的倍数 + ImageNet 归一化 ──
-  const { nh, nw } = smartResize(w0, h0);
-  const raw = await resizeSource.resize(nw, nh, { kernel: 'cubic', fit: 'fill' })
-    .toColourspace('srgb').raw().toBuffer();
-  const N = nw * nh;
-  const px = new Float32Array(3 * N);
-  for (let i = 0; i < N; i++) {
-    for (let c = 0; c < 3; c++) {
-      px[c * N + i] = (raw[i * 3 + c] / 255 - MEAN[c]) / STD[c];
-    }
-  }
-
-  // ── 推理（CPU EP；会话懒加载常驻）──
   const session = await ensureSession();
-  const out = await session.run({ pixel_values: new state.ort.Tensor('float32', px, [1, 3, nh, nw]) });
-  const depth = out.predicted_depth.data;   // [1,nh,nw]
-  const dims = out.predicted_depth.dims;
-  if (dims[1] !== nh || dims[2] !== nw) {
-    throw new Error(`ONNX 输出 dims ${dims} != [1,${nh},${nw}] —— 模型文件与导出图不符`);
+  const contract = state.modelContract;
+  let inputW;
+  let inputH;
+  let plan = null;
+  let raw;
+  if (contract.fixedSquare) {
+    plan = letterboxPlan(w0, h0, contract.inputSize);
+    raw = await resizeSource
+      .resize(plan.contentW, plan.contentH, { kernel: 'cubic', fit: 'fill' })
+      .extend({ top: plan.top, bottom: plan.bottom, left: plan.left, right: plan.right, background: LETTERBOX_RGB })
+      .toColourspace('srgb').raw().toBuffer();
+    inputW = contract.inputSize;
+    inputH = contract.inputSize;
+  } else {
+    const sized = smartResize(w0, h0);
+    inputW = sized.nw;
+    inputH = sized.nh;
+    raw = await resizeSource.resize(inputW, inputH, { kernel: 'cubic', fit: 'fill' })
+      .toColourspace('srgb').raw().toBuffer();
   }
 
-  // ── 后处理：minmax → 8bit → 半尺寸 resize → dilate 2× → 再 minmax → PNG ──
+  const px = toNchwFloat(raw, inputW, inputH);
+  const feeds = { [contract.inputName]: new state.ort.Tensor('float32', px, [1, 3, inputH, inputW]) };
+  const outputs = await session.run(feeds);
+  const tensor = outputs[contract.outputName];
+  if (!tensor || !tensor.data || !tensor.dims) throw new Error(`ONNX 缺少输出 ${contract.outputName}`);
+
+  let sourceDepth;
+  let sourceW;
+  let sourceH;
+  if (contract.fixedSquare) {
+    const cropped = cropLetterboxDepth(tensor.data, tensor.dims, plan);
+    sourceDepth = cropped.depth;
+    sourceW = cropped.width;
+    sourceH = cropped.height;
+  } else {
+    const dims = tensor.dims;
+    sourceH = Number(dims[dims.length - 2]);
+    sourceW = Number(dims[dims.length - 1]);
+    if (sourceH !== inputH || sourceW !== inputW) {
+      throw new Error(`V2 ONNX 输出 dims ${dims} != [1,${inputH},${inputW}]`);
+    }
+    sourceDepth = tensor.data;
+  }
+
+  const norm = normalizeDepth(sourceDepth, contract.invertDepth);
   const dw = Math.max(1, Math.floor(w0 / 2));
   const dh = Math.max(1, Math.floor(h0 / 2));
-  let mn = Infinity;
-  let mx = -Infinity;
-  for (let i = 0; i < depth.length; i++) {
-    if (depth[i] < mn) mn = depth[i];
-    if (depth[i] > mx) mx = depth[i];
-  }
-  const span0 = (mx - mn) || 1;
-  const norm = Buffer.alloc(N);
-  for (let i = 0; i < N; i++) norm[i] = Math.round((depth[i] - mn) / span0 * 255);
-
-  // ⚠️ 深坑②：1 通道 raw resize 必须 toColourspace('b-w') 钉死单通道输出
-  const resized = await sharp(norm, { raw: { width: nw, height: nh, channels: 1 } })
+  const resized = await sharp(norm, { raw: { width: sourceW, height: sourceH, channels: 1 } })
     .resize(dw, dh, { kernel: 'cubic', fit: 'fill' })
     .toColourspace('b-w').raw().toBuffer();
-  if (resized.length !== dw * dh) {
-    throw new Error(`resize 输出 ${resized.length} != ${dw * dh}（通道数异常）`);
-  }
-  const g = new Float32Array(dw * dh);
-  for (let i = 0; i < g.length; i++) g[i] = resized[i];
-  const dil = dilate2x(g, dw, dh);
-  mn = Infinity;
-  mx = -Infinity;
-  for (let i = 0; i < dil.length; i++) {
-    if (dil[i] < mn) mn = dil[i];
-    if (dil[i] > mx) mx = dil[i];
-  }
-  const span = (mx - mn) || 1;
-  const out8 = Buffer.alloc(dw * dh);
-  for (let i = 0; i < dil.length; i++) out8[i] = Math.round((dil[i] - mn) / span * 255);
+  if (resized.length !== dw * dh) throw new Error(`resize 输出 ${resized.length} != ${dw * dh}（通道数异常）`);
 
+  const gray = new Float32Array(dw * dh);
+  for (let i = 0; i < gray.length; i++) gray[i] = resized[i];
+  const out8 = normalizeDepth(dilate2x(gray, dw, dh), false);
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
   armReleaseTimer();
 }
-
-/* ---- 会话生命周期 ---- */
 
 async function ensureSession() {
   if (state.session) {
@@ -202,32 +307,28 @@ async function ensureSession() {
   }
   const ort = state.ort;
   const t0 = Date.now();
-  // 执行器选择（2026-10-10 实测，3070 Ti / depth_anything_v2_small）：
-  //   cpu 450ms/张 → dml 86ms/张（5.2 倍），DML 是 Windows 自带的 DX12 推理层，
-  //   不需要装 CUDA/cuDNN；ort-node 未内置 CUDA 后端（probe 实锤 backend not found）。
-  //   ['dml','cpu'] 里 ORT 对不支持的算子自动落到 CPU（shape 类算子），无需手动切分。
   const wantGpu = state.depthDevice !== 'cpu';
-  const mkSession = (providers) => ort.InferenceSession.create(state.onnxModel, {
-    executionProviders: providers,
-  });
+  const mkSession = (providers) => ort.InferenceSession.create(state.onnxModel, { executionProviders: providers });
   try {
     state.session = await mkSession(wantGpu ? ['dml', 'cpu'] : ['cpu']);
   } catch (err) {
     if (!wantGpu) throw err;
-    // DML 会话创建异常（老驱动/显卡不兼容等）：回落 CPU，深度功能不瘫
     log(`GPU(DML) 会话创建失败，回落 CPU EP：${err.message}`);
     state.session = await mkSession(['cpu']);
   }
-  const epDesc = wantGpu && state.depthDevice !== 'cpu' ? 'GPU(DML)+CPU兜底' : 'CPU EP';
-  log(`ONNX 会话就绪 ${path.basename(state.onnxModel)}（${((Date.now() - t0) / 1000).toFixed(1)}s，${epDesc}）`);
+  try {
+    state.modelContract = detectModelContract(state.session);
+  } catch (err) {
+    const bad = state.session;
+    state.session = null;
+    bad.release().catch(() => {});
+    throw err;
+  }
+  const epDesc = wantGpu ? 'GPU(DML)+CPU兜底' : 'CPU EP';
+  log(`ONNX 会话就绪 ${path.basename(state.onnxModel)} [${state.modelContract.version}]（${((Date.now() - t0) / 1000).toFixed(1)}s，${epDesc}）`);
   return state.session;
 }
 
-/**
- * 设备偏好（depthService.configure 转发 config 的 depthDevice 键）。
- * 'cpu' = 强制 CPU（GPU 占用冲突/驱动异常时用）；其余值 = GPU(DML) 优先。
- * 会话已存在且偏好变了：释放旧会话，下张图按新设备重建。
- */
 function configure(patch) {
   if (!patch || typeof patch.depthDevice !== 'string') return;
   const next = patch.depthDevice === 'cpu' ? 'cpu' : 'gpu';
@@ -236,7 +337,7 @@ function configure(patch) {
   if (state.session) {
     const old = state.session;
     state.session = null;
-    old.release().catch(() => { /* 已释放 */ });
+    old.release().catch(() => {});
     log(`深度设备切换为 ${next}，旧会话已释放`);
   }
 }
@@ -245,7 +346,7 @@ function armReleaseTimer() {
   clearTimeout(state.releaseTimer);
   state.releaseTimer = setTimeout(() => {
     if (state.session) {
-      state.session.release().catch(() => { /* 已释放 */ });
+      state.session.release().catch(() => {});
       state.session = null;
       log('闲置释放 ONNX 会话（省内存，下次 miss 重拉）');
     }
@@ -253,24 +354,23 @@ function armReleaseTimer() {
   if (state.releaseTimer.unref) state.releaseTimer.unref();
 }
 
-/**
- * 探测 JS 引擎可用性：onnxruntime-node / sharp 可 require 且 ONNX 模型存在。
- * 成功 = 引擎就绪（会话懒加载，首张图才付加载成本）；失败返回原因，不抛异常。
- */
 async function probe(onnxModel) {
-  // 测试钩子：设 WP_NO_JS_DEPTH=1 时 JS 引擎探测直接判负（回落 Python），
-  // 用于 A/B 验证「原生模块常驻主进程是否拖死退出链」（2026-10-10 重启挂死排查）
   if (process.env.WP_NO_JS_DEPTH) {
     state.failed = true;
     state.failReason = 'WP_NO_JS_DEPTH 测试钩子：JS 引擎禁用';
     return { ok: false, reason: state.failReason };
   }
-  if (state.failed) return { ok: false, reason: state.failReason };
   if (!onnxModel || !fs.existsSync(onnxModel)) {
     state.failed = true;
     state.failReason = `ONNX 模型不存在（${onnxModel || '未配置'}）`;
     return { ok: false, reason: state.failReason };
   }
+  if (state.onnxModel && path.resolve(state.onnxModel) !== path.resolve(onnxModel)) {
+    close();
+    state.modelContract = null;
+  }
+  state.failed = false;
+  state.failReason = '';
   try {
     state.ort = require('onnxruntime-node');
     state.sharp = require('sharp');
@@ -280,15 +380,24 @@ async function probe(onnxModel) {
     return { ok: false, reason: state.failReason };
   }
   state.onnxModel = onnxModel;
-  return { ok: true, model: onnxModel };
+  return { ok: true, model: onnxModel, modelInfo: modelInfo() };
 }
 
 function close() {
   clearTimeout(state.releaseTimer);
   if (state.session) {
-    state.session.release().catch(() => { /* 已释放 */ });
+    state.session.release().catch(() => {});
     state.session = null;
   }
 }
 
-module.exports = { probe, generate, close, configure, device: () => state.depthDevice, isReady: () => Boolean(state.onnxModel) && !state.failed };
+module.exports = {
+  probe,
+  generate,
+  close,
+  configure,
+  device: () => state.depthDevice,
+  isReady: () => Boolean(state.onnxModel) && !state.failed,
+  modelInfo,
+  __test: { smartResize, letterboxPlan, detectModelContract, normalizeDepth, cropLetterboxDepth },
+};

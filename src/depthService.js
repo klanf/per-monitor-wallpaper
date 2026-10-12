@@ -58,6 +58,9 @@ const LEGACY_PATHS = {
   onnxModel: 'D:\\workbuddy\\projects\\electron-wallpaper\\depth-onnx-exp\\depth_anything_v2_small.onnx',
 };
 
+// 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
+const DEPTH_CACHE_SCHEMA = 'depth-png-r2';
+
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {
   for (const c of candidates) {
@@ -73,6 +76,7 @@ const state = {
   workerScript: '',
   modelDir: '',
   onnxModel: '',               // JS 引擎的 ONNX 模型路径（r26）
+  modelInfo: null,             // worker 首次建会话后由 ONNX metadata 回报
   engine: 'probing',           // 'js' | 'python' | 'probing'（探测完成前置 disabled 闸）
   jsFails: 0,                  // JS 引擎连败计数（≥3 且 Python 可用则切引擎，不回切）
   cacheDir: null,
@@ -107,6 +111,7 @@ const state = {
  */
 function resolveRuntime() {
   const appRoot = state.appRoot || path.join(__dirname, '..');
+  const overrideModelDir = state.overrides && state.overrides.modelDir;
   const res = {
     python: [
       state.overrides && state.overrides.python,
@@ -125,8 +130,10 @@ function resolveRuntime() {
     ],
     onnxModel: [
       state.overrides && state.overrides.onnxModel,
-      // JS 引擎模型：优先 modelDir 内（与 HF 目录同位），再到打包布局固定名
-      (state.modelDir && path.join(state.modelDir, 'depth_anything_v2_small.onnx')) || '',
+      // DA3-SMALL 是发布默认；V2 仅保留为旧开发机/显式覆盖的兼容模型。
+      (overrideModelDir && path.join(overrideModelDir, 'da3_small.onnx')) || '',
+      path.join(appRoot, 'models', 'depth-anything', 'da3_small.onnx'),
+      (overrideModelDir && path.join(overrideModelDir, 'depth_anything_v2_small.onnx')) || '',
       path.join(appRoot, 'models', 'depth-anything', 'depth_anything_v2_small.onnx'),
       LEGACY_PATHS.onnxModel,
     ],
@@ -151,11 +158,26 @@ function log(...args) {
   debugLog.dlog('depth', ...args);   // VBS 启动丢 stdout，关键诊断要落文件
 }
 
-function keyFor(entryPath) {
+function modelFingerprint(engine = state.engine) {
+  const target = engine === 'python'
+    ? path.join(state.modelDir || '', 'model.safetensors')
+    : state.onnxModel;
+  let stat = null;
+  try { stat = fs.statSync(target); } catch { /* 缺模型时仍给稳定诊断 token */ }
+  return [
+    DEPTH_CACHE_SCHEMA,
+    engine === 'python' ? 'python' : 'js',
+    path.resolve(target || '.'),
+    stat ? stat.size : 0,
+    stat ? stat.mtimeMs : 0,
+  ].join('|');
+}
+
+function keyFor(entryPath, fingerprint = modelFingerprint()) {
   let st;
   try { st = fs.statSync(entryPath); } catch { return null; }
   return crypto.createHash('sha1')
-    .update(`${entryPath}|${st.mtimeMs}|${st.size}`)
+    .update(`${fingerprint}|${entryPath}|${st.mtimeMs}|${st.size}`)
     .digest('hex');
 }
 
@@ -190,12 +212,14 @@ function spawnJsWorker() {
     if (msg.type === 'probe-result') {
       // seq 对账：快速连发 configure 时旧探测会被新探测取代，旧回执直接丢弃
       if (msg.seq === state.probeSeq && state.probeWaiter) {
+        if (msg.modelInfo) state.modelInfo = msg.modelInfo;
         const r = state.probeWaiter;
         state.probeWaiter = null;
         r(msg);
       }
     } else if (msg.type === 'job-result') {
       if (msg.seq === state.wtJobSeq && state.wtWaiter) {
+        if (msg.modelInfo) state.modelInfo = msg.modelInfo;
         const r = state.wtWaiter;
         state.wtWaiter = null;
         r(msg);
@@ -299,6 +323,7 @@ async function runJsJob(job) {
     const res = await new Promise((resolve) => { state.wtWaiter = resolve; });
     if (state.currentJob !== job) return;   // 超时/换引擎后被放弃的迟到结果
     if (!res || !res.ok) throw new Error((res && res.error) || '深度引擎线程返回失败');
+    if (res.modelInfo) state.modelInfo = res.modelInfo;
     state.jsFails = 0;
     clearTimeout(state.jobTimer);
     state.currentJob = null;
@@ -512,6 +537,12 @@ function pump() {
   // 旧任务等切换停下来再慢慢补（缓存键去重，重复出现不会重复生成）。
   const job = state.queue.pop();
   state.queuedSet.delete(job.path);
+  // 探测结束后才知道最终引擎；此刻再落缓存路径，避免 Python 回退结果写进
+  // DA3 命名空间，也避免升级后继续命中 V2 的旧深度图。
+  const trio = trioFor(job.path);
+  if (!trio) { pump(); return; }
+  if (fs.existsSync(trio.depth)) { pump(); return; }
+  job.out = trio.depth;
   state.currentJob = job;
   state.busy = true;
   // ── JS 引擎（r26）：进程内异步推理，不走子进程协议 ──
@@ -565,13 +596,19 @@ function enqueue(job) {
 function prefetch(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return;
   if (state.queue.length > 0 || state.busy) return;
+  if (state.engine === 'probing') { enqueue({ path: entryPath }); return; }
   const trio = trioFor(entryPath);
   if (!trio || fs.existsSync(trio.depth)) return;
-  enqueue({ path: entryPath, out: trio.depth });
+  enqueue({ path: entryPath });
 }
 
 function lookup(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return null;
+  if (state.engine === 'probing') {
+    state.stats.misses += 1;
+    enqueue({ path: entryPath });
+    return null;
+  }
   const trio = trioFor(entryPath);
   if (!trio) return null;
   if (fs.existsSync(trio.depth)) {
@@ -587,11 +624,12 @@ function lookup(entryPath) {
   // 第十轮追补：分层路线已终止且渲染端（第五轮单平面/第十轮 POM flow）只吃
   // 深度图，mask/bg 无任何消费方 —— 新图只派深度（省 ISNet+LaMa 约 6s/张）。
   // worker 的 mask/bg 能力保留，将来若复活分层只改这里。
-  enqueue({ path: entryPath, out: trio.depth });
+  enqueue({ path: entryPath });
   return null;
 }
 
 function configure(patch) {
+  const previousOnnx = state.onnxModel;
   for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot', 'depthDevice']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
@@ -600,14 +638,20 @@ function configure(patch) {
   if (state.wt && state.engine === 'js') {
     try { state.wt.postMessage({ type: 'configure', depthDevice: state.depthDevice }); } catch (_) { /* 死线程下次派活会重拉 */ }
   }
-  // 覆盖项单独记档（空串=没覆盖），resolveRuntime 按覆盖→打包布局→legacy 探测
-  state.overrides = {
-    python: (patch && patch.python) || '',
-    workerScript: (patch && patch.workerScript) || '',
-    modelDir: (patch && patch.modelDir) || '',
-    onnxModel: (patch && patch.onnxModel) || '',
-  };
+  // 覆盖项单独记档（空串=显式清除覆盖），resolveRuntime 按覆盖→打包布局→legacy 探测。
+  // configure 也被设置页用于单独切换 depthDevice；这种部分更新不能顺手丢掉
+  // 用户配置的旧 V2 模型路径，否则下一次设备切换会悄悄改回内置 DA3。
+  const previousOverrides = state.overrides || {};
+  state.overrides = {};
+  for (const key of ['python', 'workerScript', 'modelDir', 'onnxModel']) {
+    state.overrides[key] = patch && Object.prototype.hasOwnProperty.call(patch, key)
+      ? (patch[key] || '')
+      : (previousOverrides[key] || '');
+  }
   resolveRuntime();
+  if (!previousOnnx || path.resolve(previousOnnx) !== path.resolve(state.onnxModel)) {
+    state.modelInfo = null;
+  }
   if (state.cacheDir) {
     try { fs.mkdirSync(state.cacheDir, { recursive: true }); } catch (err) {
       state.enabled = false;
@@ -631,7 +675,9 @@ function configure(patch) {
       state.engine = 'js';
       state.enabled = true;
       state.disabledReason = '';
-      log('深度功能就绪 [engine=js·worker] onnx=', state.onnxModel);
+      if (r.modelInfo) state.modelInfo = r.modelInfo;
+      log('深度功能就绪 [engine=js·worker] onnx=', state.onnxModel,
+        `model=${state.modelInfo && state.modelInfo.version || '待首张图识别'}`);
     } else {
       applyPythonAvailability(r.reason);
     }
@@ -642,6 +688,7 @@ function configure(patch) {
 /** Python 引擎可用性检查（r25 逻辑原样：三件套缺一置降级 + 精确原因） */
 function applyPythonAvailability(jsReason) {
   state.engine = 'python';
+  state.modelInfo = { family: 'python-hf', version: 'Python-HF', inputSize: null, detected: true };
   state.enabled = true;
   state.disabledReason = '';
   const missing = [];
@@ -674,6 +721,11 @@ function status() {
     workerScript: state.workerScript,
     modelDir: state.modelDir,
     onnxModel: state.onnxModel,
+    modelFamily: state.modelInfo && state.modelInfo.family,
+    modelVersion: state.modelInfo && state.modelInfo.version,
+    modelInputSize: state.modelInfo && state.modelInfo.inputSize,
+    modelDetected: Boolean(state.modelInfo && state.modelInfo.detected),
+    cacheSchema: DEPTH_CACHE_SCHEMA,
     pythonFound: Boolean(state.python) && fs.existsSync(state.python),
     workerFound: Boolean(state.workerScript) && fs.existsSync(state.workerScript),
     modelFound: Boolean(state.modelDir) && fs.existsSync(path.join(state.modelDir, 'model.safetensors')),
@@ -696,4 +748,7 @@ function shutdown() {
   log('深度引擎已释放（quit shutdown）');
 }
 
-module.exports = { lookup, prefetch, configure, stats, status, shutdown };
+module.exports = {
+  lookup, prefetch, configure, stats, status, shutdown,
+  __test: { keyFor, modelFingerprint, cacheSchema: DEPTH_CACHE_SCHEMA },
+};

@@ -14,6 +14,7 @@
     "verify:unit": "node tools/test-scheduler.js && node tools/test-slideshow-guard.js && node tools/test-updater.js && node tools/test-depth-service.js",
     "verify:update": "node tools/test-updater.js",
     "verify:depth": "node tools/test-depth-service.js",
+    "depth:export": "python tools/export_onnx.py",
     "verify:desktop": "node tools/test-desktop-host.js",
     "verify:live": "node tools/test-live-desktop.js",
     "verify:fs-watch": "node tools/test-fullscreen-watch.js",
@@ -60,6 +61,8 @@
     "files": [
       "src/**/*",
       "assets/**/*",
+      "licenses/**/*",
+      "THIRD_PARTY_NOTICES.md",
       "package.json"
     ],
     "asar": true,
@@ -73,7 +76,7 @@
         "from": "models/depth-anything",
         "to": "models/depth-anything",
         "filter": [
-          "*.onnx"
+          "da3_small.onnx"
         ]
       }
     ],

@@ -1438,9 +1438,10 @@ async function refreshDepthStatus() {
     if (s.enabled) {
       const engineName = s.engine === 'js' ? 'JS·ONNX' : s.engine === 'python' ? 'Python' : (s.engine || '—');
       const devName = s.engine === 'js' ? (s.device === 'cpu' ? 'CPU' : 'GPU(DML)') : '';
-      el.textContent = `深度生成：就绪 ✓（引擎 ${engineName}${devName ? ` · ${devName}` : ''}）`;
+      const modelName = s.modelVersion || '';
+      el.textContent = `深度生成：就绪 ✓（${modelName ? `${modelName} · ` : ''}引擎 ${engineName}${devName ? ` · ${devName}` : ''}）`;
       el.title = s.engine === 'js'
-        ? `onnx: ${s.onnxModel}\n设备: ${devName}（外观页「推理设备」可切换）`
+        ? `模型: ${modelName || '等待首张图识别'}${s.modelInputSize ? ` (${s.modelInputSize}×${s.modelInputSize})` : ''}\nonnx: ${s.onnxModel}\n设备: ${devName}（外观页「推理设备」可切换）`
         : `python: ${s.python}\nworker: ${s.workerScript}\nmodel: ${s.modelDir}`;
     } else {
       el.textContent = `深度生成不可用：${s.disabledReason || '依赖缺失'}（视差自动回退普通平移缩放）`;

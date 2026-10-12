@@ -17,9 +17,9 @@
  *
  * 协议（parentPort 消息，全部 {type, seq, ...}）：
  *   → { type:'probe',      seq, onnxModel }            可用性探测（require 依赖 + 模型存在）
- *   ← { type:'probe-result', seq, ok, reason? }
+ *   ← { type:'probe-result', seq, ok, reason?, modelInfo? }
  *   → { type:'generate',   seq, onnxModel, depthDevice, job }   job 契约与 Python worker 一致
- *   ← { type:'job-result', seq, ok, error? }
+ *   ← { type:'job-result', seq, ok, error?, modelInfo? }
  *   → { type:'configure',  depthDevice }                设备偏好变更：worker 内释放旧会话
  *   → { type:'release' }                                闲时释放：关会话省显存，线程留着热复用
  *
@@ -35,7 +35,7 @@ async function handle(msg) {
     let out;
     try {
       const r = await engineJs.probe(msg.onnxModel);
-      out = { ok: Boolean(r.ok), reason: r.reason };
+      out = { ok: Boolean(r.ok), reason: r.reason, modelInfo: r.modelInfo };
     } catch (err) {
       out = { ok: false, reason: `probe 异常: ${err.message}` };
     }
@@ -58,7 +58,10 @@ async function handle(msg) {
     } catch (err) {
       error = (err && err.message) || String(err);
     }
-    parentPort.postMessage({ type: 'job-result', seq: msg.seq, ok, error });
+    parentPort.postMessage({
+      type: 'job-result', seq: msg.seq, ok, error,
+      modelInfo: ok ? engineJs.modelInfo() : undefined,
+    });
     return;
   }
 
