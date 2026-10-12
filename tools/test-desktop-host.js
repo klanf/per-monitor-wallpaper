@@ -110,9 +110,10 @@ function main() {
   {
     const d = desktopHost.chooseMountParent(realSnapshot());
     check('本机形态 ⇒ ok', d.ok === true);
-    check('策略是 progman（首选路径）', d.strategy === 'progman', d.strategy);
-    check('挂到 Progman 0x3013a', d.parentHwnd === 0x3013a, `0x${d.parentHwnd.toString(16)}`);
+    check('策略是 raised-workerw（图标层下方的安全路径）', d.strategy === 'raised-workerw', d.strategy);
+    check('挂到 Progman 下的全屏 WorkerW 0xa112e', d.parentHwnd === 0xa112e, `0x${d.parentHwnd.toString(16)}`);
     check('插入锚点是 DefView 0x1014e', d.insertAfterHwnd === 0x1014e, `0x${d.insertAfterHwnd.toString(16)}`);
+    check('WorkerW 路径不与 DefView 做同级 Z 序争抢', d.zOrderManaged === false);
     check('全部判据通过', d.checks.every((c) => c.pass), `${d.checks.filter((c) => c.pass).length}/${d.checks.length}`);
   }
 
@@ -120,10 +121,20 @@ function main() {
     // 老式布局：DefView 挂在顶层 WorkerW 里
     const defView = node('SHELLDLL_DefView', 0x202, { parentHwnd: 0x201 });
     const holder = node('WorkerW', 0x201, { parentHwnd: 0, children: [defView] });
-    const d = desktopHost.chooseMountParent(realSnapshot({ progman: null, topLevel: [holder] }));
+    const wallpaperHost = node('WorkerW', 0x203, { parentHwnd: 0 });
+    const d = desktopHost.chooseMountParent(realSnapshot({ progman: null, topLevel: [holder, wallpaperHost] }));
     check('老式形态（DefView 在 WorkerW 里）⇒ ok', d.ok === true);
-    check('策略是 workerw-holder', d.strategy === 'workerw-holder', d.strategy);
-    check('挂到那个 WorkerW', d.parentHwnd === 0x201, `0x${d.parentHwnd.toString(16)}`);
+    check('策略是 classic-workerw', d.strategy === 'classic-workerw', d.strategy);
+    check('挂到不含图标层的壁纸 WorkerW', d.parentHwnd === 0x203, `0x${d.parentHwnd.toString(16)}`);
+  }
+
+  {
+    // 全屏 WorkerW 若在 DefView 的 Z 序上方，仍然会遮住图标，不能只看尺寸就选。
+    const defView = node('SHELLDLL_DefView', 0x302, { parentHwnd: 0x301 });
+    const unsafe = node('WorkerW', 0x303, { parentHwnd: 0x301 });
+    const progman = node('Progman', 0x301, { parentHwnd: 0, children: [unsafe, defView] });
+    const d = desktopHost.chooseMountParent(realSnapshot({ progman, topLevel: [progman] }));
+    check('位于 DefView 上方的 WorkerW 被拒绝（防再次遮住图标）', d.ok === false, d.reason);
   }
 
   {
@@ -150,7 +161,8 @@ function main() {
   {
     // 图标层被隐藏（用户关掉了"显示桌面图标"）—— 仍然可以挂，只是 checks 里那一条为 false
     const defView = node('SHELLDLL_DefView', 0x1014e, { parentHwnd: 0x3013a, visible: false });
-    const progman = node('Progman', 0x3013a, { parentHwnd: 0, children: [defView] });
+    const worker = node('WorkerW', 0xa112e, { parentHwnd: 0x3013a });
+    const progman = node('Progman', 0x3013a, { parentHwnd: 0, children: [defView, worker] });
     const d = desktopHost.chooseMountParent(realSnapshot({ topLevel: [progman], progman }));
     const visCheck = d.checks.find((c) => c.name === '图标层可见');
     check('图标层隐藏时不拦截（仍可挂）', d.ok === true, d.strategy);
@@ -200,6 +212,7 @@ function main() {
     const C = desktopHost.CONST;
     check('WS_CHILD = 0x40000000（挂载必须补这个样式）', C.WS_CHILD === 0x40000000);
     check('WS_POPUP = 0x80000000', C.WS_POPUP === 0x80000000);
+    check('WS_CLIPCHILDREN = 0x02000000（WorkerW 刷新不覆盖舞台）', C.WS_CLIPCHILDREN === 0x02000000);
     check('WS_EX_NOACTIVATE = 0x08000000', C.WS_EX_NOACTIVATE === 0x08000000);
     check('WS_EX_TOOLWINDOW = 0x00000080', C.WS_EX_TOOLWINDOW === 0x00000080);
     check('GWL_STYLE = -16 / GWL_EXSTYLE = -20', C.GWL_STYLE === -16 && C.GWL_EXSTYLE === -20);

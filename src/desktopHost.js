@@ -21,8 +21,10 @@
  *   - 发 `0x052C` 造出来的 `WorkerW` 反而是 **`Progman` 的子窗口**（不是顶层兄弟），
  *     而且**每写一次系统壁纸就被 Explorer 销毁重建一次**（实测 4/4 同点，间隔 30 秒）。
  *
- * ⇒ 本模块的口径：**挂"持有 `SHELLDLL_DefView` 的那个窗口"**（本机是 `Progman`，老式布局下才是 `WorkerW`），
- *   再把自己插到 `DefView` 的**下一层**。这样既不依赖 `0x052C`，也不受壁纸写入影响。
+ * ⇒ Windows 11 24H2+ 的安全口径：先用 `0x052C (0xD, 1)` 进入 raised-desktop，
+ *   再把自己挂到 `Progman` 下那个全屏 `WorkerW` 里。这块 `WorkerW` 天然位于
+ *   `SHELLDLL_DefView` 下方，动态画面可见而图标仍在上面。找不到可验证的宿主时宁可降级，
+ *   不再把舞台置于图标层之上。
  *
  * ---------------------------------------------------------------------------
  * 二、挂载四步（缺一不可）
@@ -32,7 +34,7 @@
  *      `SetParent` 不会自动加这个样式，少了它窗口会「挂上了但不显示」（非常常见的坑）。
  *   3. `SetWindowLongPtrW(GWL_EXSTYLE)`    —— 补 `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`
  *      （不进 Alt+Tab、不抢焦点；`Electron` 的 `focusable:false` 只影响它自己的窗口管理）
- *   4. `SetWindowPos(our, defView, ...)`   —— 插到图标层下面（`hWndInsertAfter` = 放到它**之后**= 更下层）
+ *   4. `SetWindowPos(our, HWND_TOP, ...)`   —— 在专用 `WorkerW` 内铺满（图标层在其父层上方）
  *
  * ---------------------------------------------------------------------------
  * 三、DPI
@@ -68,6 +70,8 @@ const GW_HWNDPREV = 3;
 const WS_CHILD = 0x40000000;
 const WS_POPUP = 0x80000000;
 const WS_VISIBLE = 0x10000000;
+/** 父 WorkerW 绘制系统静态壁纸时不要覆盖它的子舞台 */
+const WS_CLIPCHILDREN = 0x02000000;
 /** 标题栏+对话框边框。⚠️ 挂成子窗口后必须剥掉：非客户区边框会把客户区
  * （= 网页内容区）啃掉一圈 —— 实测本机左/右/下各 11px、顶部 0（DWM 边框扩展），
  * 表现为「桌面四周露出系统壁纸」。 */
@@ -79,7 +83,7 @@ const WS_BORDER = 0x00800000;
 const WS_DLGFRAME = 0x00400000;
 const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_TOOLWINDOW = 0x00000080;
-const WS_EX_TRANSPARENT = 0x00000020;   // 鼠标穿透：我们盖在图标层之上，不能吃掉桌面右键/框选/双击
+const WS_EX_TRANSPARENT = 0x00000020;   // 兼容旧挂载路径的命中测试透传；WorkerW 安全路径天然在图标下方
 // ⚠️ 2026-09-26 命中实测：**只加 WS_EX_TRANSPARENT 不生效**。WindowFromPoint 在
 //    桌面空白点仍返回我们的 Chrome_RenderWidgetHostHWND（即右键被舞台吃掉、桌面
 //    菜单不弹）。win32k 跨进程跳过命中的条件是 TRANSPARENT **且 LAYERED**。
@@ -196,26 +200,58 @@ function chooseMountParent(snap, options = {}) {
   add('父窗口句柄非空', holder.hwnd > 0, `0x${(holder.hwnd || 0).toString(16)}`);
   add('图标层可见', defView.visible === true, `visible=${defView.visible}`);
 
+  add('holder 属于 explorer.exe', holder.pid === snap.explorerPid, `pid=${holder.pid} / explorer=${snap.explorerPid}`);
+
+  /*
+   * raised-desktop 的层级：
+   *   Progman
+   *     ├─ SHELLDLL_DefView   (图标，在上)
+   *     └─ WorkerW           (系统壁纸，在下)
+   * 舞台必须进入下方这块全屏 WorkerW，不能再做 Progman 的置顶子窗口。
+   * 老式布局则是“含 DefView 的 WorkerW”与“壁纸 WorkerW”互为顶层兄弟。
+   */
+  const vd = (snap && snap.virtualDesktop) || { w: 0, h: 0 };
+  const fullScreenWorkers = flatten(snap && snap.topLevel)
+    .filter((n) => n.cls === 'WorkerW' && n.hwnd !== holder.hwnd)
+    .filter((n) => n.visible === true && n.pid === snap.explorerPid)
+    .filter((n) => n.rect
+      && Math.abs(n.rect.w - vd.w) <= SIZE_TOLERANCE
+      && Math.abs(n.rect.h - vd.h) <= SIZE_TOLERANCE)
+    .filter((n) => !flatten(n.children || []).some((c) => c.cls === DEFVIEW_CLASS));
+
+  let wallpaperHost = null;
   if (isProgman) {
-    add('holder 属于 explorer.exe', holder.pid === snap.explorerPid, `pid=${holder.pid} / explorer=${snap.explorerPid}`);
+    const defIndex = (holder.children || []).findIndex((n) => n.hwnd === defView.hwnd);
+    wallpaperHost = fullScreenWorkers.find((n) => n.parentHwnd === holder.hwnd
+      && (holder.children || []).findIndex((c) => c.hwnd === n.hwnd) > defIndex) || null;
+  } else if (isWorkerW && allowWorkerWHolder) {
+    const holderIndex = (snap.topLevel || []).findIndex((n) => n.hwnd === holder.hwnd);
+    wallpaperHost = fullScreenWorkers.find((n) => n.parentHwnd === 0
+      && (snap.topLevel || []).findIndex((w) => w.hwnd === n.hwnd) > holderIndex) || null;
+  }
+  add('找到图标层下方的全屏 WorkerW', Boolean(wallpaperHost), wallpaperHost
+    ? `hwnd=0x${wallpaperHost.hwnd.toString(16)} parent=0x${(wallpaperHost.parentHwnd || 0).toString(16)}`
+    : '未找到尺寸/可见性/进程均匹配的安全宿主');
+
+  if (wallpaperHost) {
     return {
       ok: true,
-      strategy: 'progman',
-      reason: 'Progman 直接持有图标层，句柄实测稳定（不受系统壁纸写入影响）',
-      parentHwnd: holder.hwnd,
-      parentCls: holder.cls,
+      strategy: isProgman ? 'raised-workerw' : 'classic-workerw',
+      reason: '舞台挂到图标层下方的全屏 WorkerW，保留桌面图标可见与可点击',
+      parentHwnd: wallpaperHost.hwnd,
+      parentCls: wallpaperHost.cls,
       insertAfterHwnd: defView.hwnd,
+      zOrderManaged: false,
       checks,
     };
   }
 
-  if (isWorkerW && allowWorkerWHolder) {
-    add('holder 属于 explorer.exe', holder.pid === snap.explorerPid, `pid=${holder.pid} / explorer=${snap.explorerPid}`);
+  if (isProgman || (isWorkerW && allowWorkerWHolder)) {
     return {
-      ok: true,
-      strategy: 'workerw-holder',
-      reason: '老式布局：图标层在顶层 WorkerW 里，挂它（注意该 WorkerW 可能被 Explorer 重建）',
-      parentHwnd: holder.hwnd,
+      ok: false,
+      strategy: 'none',
+      reason: '找不到图标层下方的全屏 WorkerW，为避免动态舞台盖住桌面图标，已拒绝不安全的 Progman 置顶挂载',
+      parentHwnd: 0,
       parentCls: holder.cls,
       insertAfterHwnd: defView.hwnd,
       checks,
@@ -308,6 +344,7 @@ function load() {
       FindWindowW: u.func('void *FindWindowW(str16 cls, str16 title)'),
       IsWindow: u.func('bool IsWindow(void *hWnd)'),
       IsWindowVisible: u.func('bool IsWindowVisible(void *hWnd)'),
+      IsChild: u.func('bool IsChild(void *hWndParent, void *hWnd)'),
       GetParent: u.func('void *GetParent(void *hWnd)'),
       GetWindow: u.func('void *GetWindow(void *hWnd, uint32 cmd)'),
       GetAncestor: u.func('void *GetAncestor(void *hWnd, uint32 flags)'),
@@ -580,8 +617,8 @@ function snapshotWorkerWHandles(snap) {
 }
 
 /**
- * 发 `0x052C` 让 Explorer 造一个 WorkerW 挂载层。**退路方案才需要** ——
- * 首选（挂 Progman）路径完全不依赖它。返回是否成功投递（不代表一定造出来了，要用快照 diff 判）。
+ * 旧参数 `(0, 0)` 的 `0x052C` 探针，仅保留给历史诊断工具。
+ * 生产挂载走 raiseDesktop() 的 `(0xD, 1)` 新桌面层级。
  */
 function sendSpawnMessage(timeoutMs = 1000) {
   const a = load();
@@ -591,6 +628,27 @@ function sendSpawnMessage(timeoutMs = 1000) {
   const out = koffi.alloc('uintptr_t', 1);
   const r = a.SendMessageTimeoutW(progman, WM_SPAWN_WORKERW, 0, 0, SMTO_NORMAL, timeoutMs, out);
   return { ok: true, result: Number(r), progman: addr(progman) };
+}
+
+/**
+ * Windows 11 24H2+ 进入 raised-desktop：DefView 变为透明图标层，
+ * Progman 下创建一块位于它下方的全屏 WorkerW。`(0, 0)` 在新版
+ * Windows 上可能只是 no-op；`(0xD, 1)` 是新层级的激活参数。
+ * 这一步幂等，每次创建/重挂舞台前都可以调用。
+ */
+function raiseDesktop(timeoutMs = 1000) {
+  const a = load();
+  if (!a) return { ok: false, error: loadError ? loadError.message : 'koffi 不可用' };
+  const progman = a.FindWindowW('Progman', null);
+  if (!progman || addr(progman) === 0) return { ok: false, error: '找不到 Progman 窗口' };
+  const out = koffi.alloc('uintptr_t', 1);
+  const r = a.SendMessageTimeoutW(progman, WM_SPAWN_WORKERW, 0xD, 1, SMTO_NORMAL, timeoutMs, out);
+  return {
+    ok: Boolean(r),
+    result: Number(r),
+    progman: addr(progman),
+    error: r ? null : 'raised-desktop 消息超时或投递失败',
+  };
 }
 
 /**
@@ -609,17 +667,24 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
 
   const self = koffi.as(hwnd, 'void *');
   const parent = koffi.as(parentHwnd, 'void *');
-  // ⚠️ 2026-09-26 实测改判：Win11(本机 25H2) 的 SHELLDLL_DefView **自己绘制壁纸且
-  //    不透明**，挂在它「之后(=之下)」的舞台会被完全盖住 —— 结构验证（父子关系、
-  //    Z 序、抓屏尺寸）全绿，但桌面肉眼一动不动。决定性实验：把舞台提到 DefView
-  //    之上，桌面立刻显示舞台内容。故改为置顶（HWND_TOP），不再用 insertAfter。
-  // （insertAfterHwnd 参数保留兼容调用方，但不再参与定位）
+  // 舞台现在以全屏 WorkerW 为父窗口，在这个专用宿主内置顶即可；
+  // WorkerW 本身位于 DefView 下方，所以不会再盖住桌面图标。insertAfterHwnd
+  // 仅保留 DefView 句柄供生命周期自检/兼容用，不参与 WorkerW 内部定位。
 
   // 1. 父子关系
   const prevParent = a.SetParent(self, parent);
   const setParentErr = !prevParent && addr(prevParent) === 0 ? 'SetParent 失败（返回 NULL）' : null;
   if (setParentErr && addr(a.GetParent(self)) !== parentHwnd) {
     return { ok: false, step: 'SetParent', error: setParentErr };
+  }
+
+  // WorkerW 会绘制系统静态壁纸；加 CLIPCHILDREN 后其绘制区域排除舞台子窗口，
+  // 避免 Explorer 的背景刷新将 Chromium 画面重新盖住。
+  if (classNameOf(parent) === 'WorkerW') {
+    const parentStyle = Number(a.GetWindowLongPtrW(parent, GWL_STYLE));
+    if ((parentStyle & WS_CLIPCHILDREN) === 0) {
+      a.SetWindowLongPtrW(parent, GWL_STYLE, parentStyle | WS_CLIPCHILDREN);
+    }
   }
 
   // 2. 样式补 WS_CHILD（**SetParent 不会自动加**，少了它窗口挂上了但不显示）。
@@ -645,7 +710,7 @@ function mount(hwnd, parentHwnd, insertAfterHwnd, bounds) {
     console.log(`[desktop-host] 鼠标穿透: LAYERED+TRANSPARENT alpha255 ok=${okAlpha ? 'ok' : 'FAIL'}`);
   }
 
-  // 4. 插到图标层之后。
+  // 4. 在壁纸 WorkerW 内铺满。
   //    ⚠️ 坐标语义①：WS_CHILD 的 SetWindowPos 坐标是**父窗口客户区相对坐标**，
   //    而调用方传的是虚拟桌面物理坐标（含多屏负偏移）。Progman 的客户区原点
   //    = 虚拟桌面左上角（本机副屏在最左，是 (-1600,0)，不是 (0,0)）——
@@ -723,7 +788,8 @@ function unmount(hwnd) {
  * 挂载后的自检（看门狗判据）：
  *   ① 我们自己的窗口还在（`IsWindow`）
  *   ② 父窗口还在（`IsWindow(parent)`）
- *   ③ `GetParent(our) === parent`（不等 ⇒ 已变孤儿，需要「先隐藏再重挂」）
+ *   ③ `GetParent(our) === parent` 或 `IsChild(parent, our)`（新 raised desktop 上
+ *      GetParent 偶发不回报，IsChild 作为双重真值）
  *   ④ 如果我们有插入锚点，锚点还在
  */
 function assertMount(hwnd, parentHwnd, insertAfterHwnd) {
@@ -734,7 +800,7 @@ function assertMount(hwnd, parentHwnd, insertAfterHwnd) {
   const alive = Boolean(a.IsWindow(self));
   const parentAlive = Boolean(a.IsWindow(parent));
   const actualParent = alive ? addr(a.GetParent(self)) : 0;
-  const attached = parentAlive && actualParent === parentHwnd;
+  const attached = parentAlive && (actualParent === parentHwnd || Boolean(a.IsChild(parent, self)));
   const anchorAlive = insertAfterHwnd ? Boolean(a.IsWindow(koffi.as(insertAfterHwnd, 'void *'))) : null;
   return {
     ok: alive && attached,
@@ -833,9 +899,8 @@ function reaffirmZOrder(hwnd, insertAfterHwnd, bounds) {
 }
 
 /** 把桌面右键转发给 SHELLDLL_DefView，让 Explorer 弹原生桌面菜单。
- *  背景：舞台必须置顶在图标层之上才可见，而 LAYERED 穿透会让 Chromium 整窗白屏
- *  （USE_LAYERED_CLICK_THROUGH=false），鼠标注定被舞台吃掉 —— 右键由渲染端捕获后
- *  经 liveStage → 这里还给 Explorer。x/y 为该屏**物理**屏幕坐标。
+ *  现在 WorkerW 安全路径上鼠标会直接落到图标层，此函数只作旧路径兼容保留。
+ *  x/y 为该屏**物理**屏幕坐标。
  *  可行性探针：tools/tmp/probe-ctxmenu.js（#32768 菜单窗口出现+可取消）。 */
 function postContextMenu(hwnd, x, y) {
   const a = load();
@@ -942,6 +1007,7 @@ module.exports = {
   snapshot,
   snapshotWorkerWHandles,
   sendSpawnMessage,
+  raiseDesktop,
   mount,
   unmount,
   assertMount,
@@ -957,7 +1023,7 @@ module.exports = {
   release,
   CONST: {
     WM_SPAWN_WORKERW,
-    WS_CHILD, WS_POPUP, WS_VISIBLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_CHILD, WS_POPUP, WS_VISIBLE, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     GWL_STYLE, GWL_EXSTYLE,
     SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     SIZE_TOLERANCE, DEFVIEW_CLASS,

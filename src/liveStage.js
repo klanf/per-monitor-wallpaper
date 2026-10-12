@@ -17,9 +17,8 @@
  * ---------------------------------------------------------------------------
  * 三条实测结论铸成的规矩（任务书 §2.13~§2.16）
  * ---------------------------------------------------------------------------
- *   1. 挂载点 = chooseMountParent() 的输出，**绝不自己找 WorkerW**；
- *   2. 「挂载还活着」不能只看父子关系 —— 写系统壁纸会把我们挤到下层，
- *      看门狗判据必须是 Z 序（isZOrderIntact），失效就 reaffirmZOrder；
+ *   1. 先进入 raised-desktop，再使用 chooseMountParent() 选出图标层下方的全屏 WorkerW；
+ *   2. 舞台做 WorkerW 的子窗口，图标层与舞台不再是同级争抢 Z 序；
  *   3. Explorer 重启后父句柄失效 → 窗口变孤儿（盖住图标、Alt+Tab 没有）。
  *      处理：先 hide 再重挂再 showInactive，全程不抢焦点。
  *
@@ -278,11 +277,19 @@ async function createStage(ch) {
     await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
     if (!running) { win.destroy(); return; }
 
-    // 找挂载点。每次创建都重新 snapshot：Explorer 可能重启过，Progman 句柄会变
+    // 先让 Windows 11 24H2+ 进入 raised-desktop，保证存在图标层下方的 WorkerW。
+    // 每次创建都重新 snapshot：Explorer 可能重启过，所有句柄都会变。
+    const raised = desktopHost.raiseDesktop();
+    if (!raised.ok) throw new Error(`raised-desktop 初始化失败：${raised.error}`);
     const snap = desktopHost.snapshot({});
     const choice = desktopHost.chooseMountParent(snap);
     if (!choice.ok) throw new Error(`挂载点判定失败：${choice.reason}`);
-    rec.anchor = { parentHwnd: choice.parentHwnd, insertAfterHwnd: choice.insertAfterHwnd };
+    rec.anchor = {
+      parentHwnd: choice.parentHwnd,
+      insertAfterHwnd: choice.insertAfterHwnd,
+      zOrderManaged: choice.zOrderManaged !== false,
+      strategy: choice.strategy,
+    };
 
     rec.hwnd = hwndOf(win);
     const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys);
@@ -353,10 +360,17 @@ function watchOnce() {
         rec.fails += 1;
         if (rec.win && !rec.win.isDestroyed()) {
           rec.win.hide();
+          const raised = desktopHost.raiseDesktop();
+          if (!raised.ok) throw new Error(`raised-desktop 重建失败：${raised.error}`);
           const snap = desktopHost.snapshot({});
           const choice = desktopHost.chooseMountParent(snap);
           if (choice.ok) {
-            rec.anchor = { parentHwnd: choice.parentHwnd, insertAfterHwnd: choice.insertAfterHwnd };
+            rec.anchor = {
+              parentHwnd: choice.parentHwnd,
+              insertAfterHwnd: choice.insertAfterHwnd,
+              zOrderManaged: choice.zOrderManaged !== false,
+              strategy: choice.strategy,
+            };
             // ⚠️ mount 要的是**物理坐标**（boundsPhys），之前误传 DIP 的 rec.bounds，
             //    多屏/高 DPI 下重挂位置会错（2026-09-25 复查时抓出）
             const m = desktopHost.mount(rec.hwnd, choice.parentHwnd, choice.insertAfterHwnd, rec.boundsPhys || {
@@ -373,13 +387,15 @@ function watchOnce() {
         continue;
       }
 
-      // 父子关系正常 —— 但还要看 Z 序（§2.14：写系统壁纸会插入 WorkerW 压住我们）。
+      // 旧 Progman 兼容路径才需要维护与 DefView 的同级 Z 序。raised WorkerW 路径
+      // 里舞台是 WorkerW 的子窗口，图标层在父层上方，不参与这段同级判定。
       // 兄弟舞台（其它屏的窗口）不算外人，否则多屏下互相误报、看门狗无限打架。
       const others = new Set();
       for (const [otherId, otherRec] of stages) {
         if (otherId !== id && otherRec.hwnd) others.add(otherRec.hwnd);
       }
-      if (!desktopHost.isZOrderIntact(rec.hwnd, rec.anchor.insertAfterHwnd, others)) {
+      if (rec.anchor.zOrderManaged !== false
+        && !desktopHost.isZOrderIntact(rec.hwnd, rec.anchor.insertAfterHwnd, others)) {
         const r = desktopHost.reaffirmZOrder(rec.hwnd, rec.anchor.insertAfterHwnd, rec.boundsPhys);
         if (r.ok) console.log(`[live-stage] ${id} Z 序被挤掉，已重申恢复`);
       }
@@ -480,6 +496,11 @@ function isDegraded() {
   for (const rec of stages.values()) {
     if (rec.degraded) return true;
   }
+  // 安全宿主不存在时 createStage 会销毁失败记录；这时也必须向调度器
+  // 报降级，否则动态舞台没起来、系统壁纸又被错误停写，桌面会卡在旧图。
+  for (const id of expectedChannels.keys()) {
+    if (!stages.has(id) && (recreateFails.get(id) || 0) > DEGRADED_AFTER) return true;
+  }
   return false;
 }
 
@@ -500,9 +521,8 @@ function stats() {
   };
 }
 
-/** 桌面右键补偿：舞台置顶吃掉了鼠标（穿透方案见 desktopHost 的 LAYERED 注释，
- *  会让 Chromium 白屏），渲染端把 contextmenu 的 CSS(DIP) 屏幕坐标发上来，
- *  这里换算成物理像素后转发给 SHELLDLL_DefView，Explorer 就会弹原生桌面菜单。 */
+/** 旧 Progman 置顶路径的桌面右键补偿。WorkerW 安全路径上舞台在图标层下方，
+ *  不会收到 contextmenu；保留本通道是为了兼容旧系统/已存运行态。 */
 function showDesktopContextMenu(dipX, dipY) {
   const rec = stages.values().next().value;
   const defViewHwnd = rec && rec.anchor && rec.anchor.insertAfterHwnd;

@@ -388,7 +388,7 @@ const BOOL_KEYS = new Set([
   'perMonitor', 'skipSizeTwin', 'confirmDelete', 'autoMonitorSetup',
   'tray', 'closeToTray', 'startHidden', 'launchAtLogin',
   'filmstrip', 'filmstripAutoCenter', 'infoPanel', 'contextMenu',
-  'videoPlayFull',
+  'videoPlayFull', 'swipeSwitch',
   'videoOptimize',
   'depthParallax',             // 深度视差总开关（不写 = 默认开）
   'todRandom',                 // 时段滤镜随机开关（r21）
