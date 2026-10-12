@@ -17,6 +17,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
+const { buildBootstrapIni } = require('./prepare-update.js');
 const serveDir = path.join(os.tmpdir(), 'wp-bootstrap-serve');
 const workDir = path.join(os.tmpdir(), 'wp-bootstrap');
 const PORT = 8099;
@@ -74,7 +75,19 @@ async function main() {
   parts.forEach((p, i) => {
     lines.push(`[part${i + 1}]`, `name=${p.name}`, `url=http://127.0.0.1:${PORT}/${encodeURIComponent(p.name)}`, `size=${p.size}`, `sha256=${p.sha256}`);
   });
-  fs.writeFileSync(path.join(serveDir, 'bootstrap.ini'), lines.join('\r\n') + '\r\n');
+  // ⚠️ 必须用与实发文件同一份生成函数（prepare-update.buildBootstrapIni）——
+  // v0.4.2 翻车实录：这里曾手写无 BOM 的 UTF-8 ini，实发文件却是 UTF-8 BOM，
+  // GetPrivateProfileStringW 不认 UTF-8 BOM → 真机「版本清单内容异常」而本地测试全过。
+  // UTF-16 LE BOM 版本顺带覆盖「中文分片名按 Unicode 读」的链路。
+  const iniBytes = buildBootstrapIni({
+    version: '9.9.9-test',
+    size: fake.length,
+    sha256: wholeSha,
+    parts,
+    base: `http://127.0.0.1:${PORT}/`,
+    installerName: '壁纸切换器-Setup-9.9.9-test.exe',
+  });
+  fs.writeFileSync(path.join(serveDir, 'bootstrap.ini'), iniBytes);
 
   // ── 2. 本地 HTTP ──
   const server = http.createServer((req, res) => {

@@ -86,6 +86,42 @@ async function splitInstaller(installerPath, outputDir, chunkBytes) {
   };
 }
 
+// 引导安装器清单（r39）：NSIS 原生可读的扁平 ini，引导器下载它来拿到
+// 每个分片的名字/大小/哈希，避免在 NSIS 里解析 JSON。URL 预编码好
+//（分片名含中文），NSIS 侧拿来即用。
+//
+// ⚠️ 编码必须是 UTF-16 LE + BOM（Windows ini 官方 Unicode 口径）。
+// 真机翻车实录（v0.4.2 首发版）：曾用 UTF-8 BOM，注释错误地以为
+//「Unicode NSIS 的 ReadINIStr 靠 BOM 识别 UTF-8」——实际 ReadINIStr 底层是
+// GetPrivateProfileStringW，只认 UTF-16 BOM / ANSI，不认 UTF-8 BOM：BOM 字节
+// 粘在首节名前 → [bootstrap] 节查不到 → parts 读空 → 引导器弹「版本清单内容异常」。
+// 本地测试当时自己手写了无 BOM 的 ini，与实发文件不一致，所以测试全过、真跑必挂。
+// 现在生成逻辑抽成共享函数（test-bootstrap.js 也用它），杜绝再度脱节。
+function buildBootstrapIni({ version, size, sha256, parts, base, installerName }) {
+  const enc = encodeURIComponent;
+  const iniLines = [
+    '[bootstrap]',
+    `version=${version}`,
+    `installer=${installerName}`,
+    `size=${size}`,
+    `sha256=${sha256}`,
+    `parts=${parts.length}`,
+    `base=${base}`,
+  ];
+  parts.forEach((part, i) => {
+    iniLines.push(`[part${i + 1}]`);
+    iniLines.push(`name=${part.name}`);
+    iniLines.push(`url=${base}${enc(part.name)}`);
+    iniLines.push(`size=${part.size}`);
+    iniLines.push(`sha256=${part.sha256}`);
+  });
+  // UTF-16 LE + BOM：GetPrivateProfileStringW 官方支持的 Unicode ini 格式，
+  // 中文 name 字段按 Unicode 读，不再有 ANSI(GBK) 乱码。
+  return Buffer.from('\ufeff' + iniLines.join('\r\n') + '\r\n', 'utf16le');
+}
+
+module.exports = { buildBootstrapIni };
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const expectedName = `壁纸切换器-Setup-${PKG.version}.exe`;
@@ -123,32 +159,19 @@ async function main() {
     const manifestPath = path.join(outputDir, 'update-manifest.json');
     await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
 
-    // 引导安装器清单（r39）：NSIS 原生可读的扁平 ini，引导器下载它来拿到
-    // 每个分片的名字/大小/哈希，避免在 NSIS 里解析 JSON。URL 预编码好
-    //（分片名含中文），NSIS 侧拿来即用；base 直指本版本 tag 的附件区。
+    // 引导安装器清单（r39）：生成逻辑与编码见 buildBootstrapIni 注释。
+    // 本地测试（test-bootstrap.js）也用这个函数造 ini，保证测试文件与实发文件逐字节同源。
     const tag = `v${PKG.version}`;
     const base = `https://gitee.com/klanf/per-monitor-wallpaper/releases/download/${tag}/`;
-    const enc = encodeURIComponent;
-    const iniLines = [
-      '[bootstrap]',
-      `version=${PKG.version}`,
-      `installer=${result.parts[0].name.replace(/\.part\d{3}$/, '')}`,
-      `size=${result.size}`,
-      `sha256=${result.sha256}`,
-      `parts=${result.parts.length}`,
-      `base=${base}`,
-    ];
-    result.parts.forEach((part, i) => {
-      iniLines.push(`[part${i + 1}]`);
-      iniLines.push(`name=${part.name}`);
-      iniLines.push(`url=${base}${enc(part.name)}`);
-      iniLines.push(`size=${part.size}`);
-      iniLines.push(`sha256=${part.sha256}`);
+    const iniBytes = buildBootstrapIni({
+      version: PKG.version,
+      size: result.size,
+      sha256: result.sha256,
+      parts: result.parts,
+      base,
+      installerName: expectedName,
     });
-    // ⚠️ 带 UTF-8 BOM 写 ini：Unicode NSIS 的 ReadINIStr 靠 BOM 识别 UTF-8，
-    // 否则含中文的 name 字段会按 ANSI(GBK) 读成乱码（url 字段是纯 ASCII 的
-    // %xx 编码，下载不受影响；name 只用于诊断展示，但乱码会误导排查）
-    await fsp.writeFile(path.join(outputDir, 'bootstrap.ini'), `\ufeff${iniLines.join('\r\n')}\r\n`, { encoding: 'utf8', flag: 'wx' });
+    await fsp.writeFile(path.join(outputDir, 'bootstrap.ini'), iniBytes, { flag: 'wx' });
 
     // 再从磁盘复核一遍，避免写盘异常或脚本改动让清单和成品脱节。
     for (const part of result.parts) {
@@ -167,7 +190,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`[FAILED] ${err.message}`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`[FAILED] ${err.message}`);
+    process.exitCode = 1;
+  });
+}
