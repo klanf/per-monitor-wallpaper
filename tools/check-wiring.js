@@ -152,5 +152,22 @@ check('主进程认得纯界面配置键', Boolean(mUiOnly)
     .every((k) => mUiOnly[1].includes(`'${k}'`)));
 check('纯界面改动跳过重建', /if \(uiOnly\) return store\.get\(\);/.test(MAIN));
 
+// ---- 自动暂停：配置保存与应用级常驻接线 ----
+const STORE_SOURCE = fs.readFileSync(path.join(ROOT, 'src/store.js'), 'utf8');
+check('liveStage 默认配置只有一份',
+  (STORE_SOURCE.match(/^  liveStage: \{$/gm) || []).length === 1);
+check('clampLiveStage 只有一份完整实现',
+  (STORE_SOURCE.match(/^function clampLiveStage\(/gm) || []).length === 1
+    && ['pauseOnIdle', 'idlePauseMinutes', 'hideOnPaused'].every((key) => STORE_SOURCE.includes(key)));
+
+const startupRebuildAt = MAIN.indexOf("await scheduler.rebuild('startup')");
+const dynamicStartupAt = MAIN.indexOf('if (store.get().liveWallpaper)', startupRebuildAt);
+const pauseWatchStartupAt = MAIN.indexOf('startFullscreenWatch();', startupRebuildAt);
+check('暂停监控在动态桌面条件判断之前无条件启动',
+  startupRebuildAt >= 0 && pauseWatchStartupAt > startupRebuildAt
+    && dynamicStartupAt > pauseWatchStartupAt);
+check('修改 liveStage 后立即重采样暂停状态',
+  /if \(keys\.includes\('liveStage'\)\) \{[\s\S]{0,400}refreshFullscreenPauseState\(\);/.test(MAIN));
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

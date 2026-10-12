@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { Store, resolveProfile, DEFAULTS, SETTINGS_TABS } = require('../src/store');
+const { Store, resolveProfile, DEFAULTS, SETTINGS_TABS, clampLiveStage } = require('../src/store');
 const { MonitorScheduler, UNIFIED_ID } = require('../src/scheduler');
 const { ShuffleOrders } = require('../src/shuffleOrders');
 
@@ -1158,6 +1158,53 @@ async function main() {
     check('改完再读一次也对得上', new Store(tabPath).get().settingsTab === 'look');
   }
 
+  // =========================================================== §28b =====
+  console.log('\n§28b 动态桌面暂停配置持久化');
+  {
+    const livePath = path.join(tmpDir, 'cfg-live-stage.json');
+    const liveStore = new Store(livePath);
+    liveStore.set({
+      liveStage: {
+        ...liveStore.get().liveStage,
+        pauseOnIdle: false,
+        idlePauseMinutes: 3,
+        hideOnPaused: true,
+      },
+    });
+
+    let reread = new Store(livePath);
+    check('关闭人离开暂停能够写盘并在重启后保持关闭', reread.get().liveStage.pauseOnIdle === false);
+    check('无输入 3 分钟能够写盘并在重启后保持', reread.get().liveStage.idlePauseMinutes === 3);
+    check('暂停时隐藏画面能够写盘并在重启后保持', reread.get().liveStage.hideOnPaused === true);
+
+    for (const minutes of [3, 5, 10, 15]) {
+      reread.set({ liveStage: { ...reread.get().liveStage, idlePauseMinutes: minutes } });
+      reread = new Store(livePath);
+      check(`${minutes} 分钟预设能够保存并回读`, reread.get().liveStage.idlePauseMinutes === minutes);
+    }
+
+    const low = clampLiveStage({ ...DEFAULTS.liveStage, idlePauseMinutes: -9 });
+    const high = clampLiveStage({ ...DEFAULTS.liveStage, idlePauseMinutes: 999 });
+    const invalid = clampLiveStage({ ...DEFAULTS.liveStage, idlePauseMinutes: 'abc' });
+    check('负数分钟收紧为 0', low.idlePauseMinutes === 0, String(low.idlePauseMinutes));
+    check('超上限分钟收紧为 120', high.idlePauseMinutes === 120, String(high.idlePauseMinutes));
+    check('非法分钟回落默认 5', invalid.idlePauseMinutes === 5, String(invalid.idlePauseMinutes));
+
+    const legacyPath = path.join(tmpDir, 'cfg-live-stage-legacy.json');
+    fs.writeFileSync(legacyPath, JSON.stringify({
+      liveStage: {
+        fpsCap: 20,
+        pauseOnFullscreen: true,
+        pauseOnBattery: false,
+        pauseOnLock: true,
+      },
+    }));
+    const legacy = new Store(legacyPath).get().liveStage;
+    check('旧配置缺少新字段时恢复默认值',
+      legacy.pauseOnIdle === true && legacy.idlePauseMinutes === 5 && legacy.hideOnPaused === false,
+      JSON.stringify(legacy));
+  }
+
   // ============================================================ §29 =====
   /* ================= 29. 动态桌面降频写：锚点才写系统壁纸 ================= */
   console.log('\n===== 29. 动态桌面降频写：锚点才写系统壁纸 =====');
@@ -1198,6 +1245,59 @@ async function main() {
     await scheduler.step(ch, 1);
     check('动态关掉：翻页照旧写（老行为不变）', writes.length === writesBefore + 4,
       `写入数 → ${writes.length}`);
+  }
+
+  // =========================================================== §29b =====
+  console.log('\n===== 29b. 挂机暂停与动态桌面开关解耦 =====');
+  {
+    const pauseStore = new Store(path.join(tmpDir, 'config-pause-watch.json'));
+    pauseStore.set({
+      albumId: albumA.id,
+      albums: [albumA],
+      perMonitor: false,
+      interval: 1,
+      applyToSystem: false,
+      applyOnStart: false,
+      liveWallpaper: false,
+      liveStage: { ...pauseStore.get().liveStage, pauseOnIdle: true, idlePauseMinutes: 3 },
+    });
+
+    let idleAway = true;
+    const pauseScheduler = new MonitorScheduler({
+      store: pauseStore,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: [FAKE_MONITORS[0]] }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async () => ({ ok: true, method: 'test' }),
+      isPaused: () => idleAway && pauseStore.get().liveStage.pauseOnIdle !== false,
+    });
+    await pauseScheduler.rebuild('test');
+    const pauseChannel = pauseScheduler.channels.get(UNIFIED_ID);
+
+    const staticTicks = pauseChannel.ticks;
+    await new Promise((r) => setTimeout(r, 1200));
+    check('动态桌面关闭时，挂机状态仍冻结系统壁纸轮播', pauseChannel.ticks === staticTicks,
+      `${staticTicks} → ${pauseChannel.ticks}`);
+
+    idleAway = false;
+    await new Promise((r) => setTimeout(r, 1200));
+    check('产生输入后轮播自动恢复', pauseChannel.ticks > staticTicks,
+      `${staticTicks} → ${pauseChannel.ticks}`);
+
+    pauseStore.set({ liveWallpaper: true });
+    idleAway = true;
+    const dynamicTicks = pauseChannel.ticks;
+    await new Promise((r) => setTimeout(r, 1200));
+    check('动态桌面开启时，挂机状态同样冻结轮播', pauseChannel.ticks === dynamicTicks,
+      `${dynamicTicks} → ${pauseChannel.ticks}`);
+
+    pauseStore.set({
+      liveStage: { ...pauseStore.get().liveStage, pauseOnIdle: false },
+    });
+    await new Promise((r) => setTimeout(r, 1200));
+    check('关闭人离开暂停后，超过阈值也继续轮播', pauseChannel.ticks > dynamicTicks,
+      `${dynamicTicks} → ${pauseChannel.ticks}`);
+    pauseScheduler.stop();
   }
 
   // ============================================================ §30 =====

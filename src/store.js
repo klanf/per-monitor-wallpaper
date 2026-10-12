@@ -121,35 +121,6 @@ const DEFAULTS = {
     idlePauseMinutes: 5,     // 无输入判定阈值（分钟，0~120；0 = 关闭该判定）
     hideOnPaused: false,     // 暂停时把舞台窗口整个藏起来（默认关；独占全屏游戏前手动开）
   },
-
-
-  /**
-   * 动态桌面总开关：把渲染窗口挂到桌面图标**下面**实时渲染（Wallpaper Engine 那种活桌面）。
-   *
-   * 挂法是 SetParent 到持有 SHELLDLL_DefView 的窗口（本机是 Progman），再插到图标层之后
-   * —— 不用网上那套「找 WorkerW」，那套在本机必然误选（见 desktopHost.js 头注释）。
-   *
-   * 开启后系统壁纸**降频写**：只在锚点时机（启动/重建、停止前）写一次，判定见 liveDesktop.js。
-   * 实测每写一次系统壁纸，Explorer 会重建 WorkerW 把我们的窗口盖住约 1 秒（任务书 §2.14），
-   * 照原来「每换图都写」的节奏，桌面会每 30 秒闪一下。
-   */
-  liveWallpaper: false,
-
-  /**
-   * 动态桌面的性能策略（拍板：省电优先 + 暂停必须**按屏独立**）。
-   *
-   * fpsCap 只约束渲染层自己 tick 驱动的动画 —— 纯 CSS 动画跑在合成器里，
-   * rAF 节流对它无效（任务书 §2.8），所以过渡/缓动一律由渲染层出帧。
-   */
-  liveStage: {
-    fpsCap: 30,              // 帧率上限（5~240）
-    pauseOnFullscreen: true, // 某块屏被全屏应用占满时只暂停那块屏，其它屏照常
-    pauseOnBattery: true,    // 电池供电时暂停
-    pauseOnLock: true,       // 锁屏 / 息屏 / 睡眠时暂停
-    pauseOnIdle: true,       // 无输入超时也算「人离开」
-    idlePauseMinutes: 5,     // 无输入判定阈值（分钟，0~120；0 = 关闭该判定）
-    hideOnPaused: false,     // 暂停时把舞台窗口整个藏起来（默认关）
-  },
   monitor: 'all',          // 统一模式的写入目标：all | primary | window | <设备路径>
   fit: 'cover',            // cover（铺满裁切）| contain（完整显示·模糊底）| mirror（完整显示·镜像延展）| collage（拼接填充）
 
@@ -417,7 +388,6 @@ const BOOL_KEYS = new Set([
   'perMonitor', 'skipSizeTwin', 'confirmDelete', 'autoMonitorSetup',
   'tray', 'closeToTray', 'startHidden', 'launchAtLogin',
   'filmstrip', 'filmstripAutoCenter', 'infoPanel', 'contextMenu',
-  'liveWallpaper',
   'videoPlayFull',
   'videoOptimize',
   'depthParallax',             // 深度视差总开关（不写 = 默认开）
@@ -602,37 +572,6 @@ function clampLiveStage(value) {
 
 
 /**
- * 动态桌面帧率上限。
- *
- * 下限 5 是「再低就不像动画了」，上限 240 只是防手滑 —— 配置是用户能直接手改的地方，
- * 一个 `fpsCap: 99999` 不该变成渲染层的死循环。中间不认识的输入一律回默认。
- */
-function clampLiveFps(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return DEFAULTS.liveStage.fpsCap;
-  return Math.min(Math.max(Math.round(n), 5), 240);
-}
-
-/**
- * 动态桌面子配置收紧。
- *
- * 与顶层布尔键不同，`liveStage` 是嵌套对象，`normalizeBooleans` 走不到它里面，
- * 所以三个 `pauseOn*` 在这里单独归位。整体不是对象时（用户手改成了字符串 / 数组）
- * 整块回默认，而不是留一个半成品让渲染层去猜。
- */
-function clampLiveStage(value) {
-  const src = isPlainObject(value) ? value : {};
-  const d = DEFAULTS.liveStage;
-  const bool = (key) => (key in src ? toBool(src[key]) : d[key]);
-  return {
-    fpsCap: clampLiveFps(src.fpsCap),
-    pauseOnFullscreen: bool('pauseOnFullscreen'),
-    pauseOnBattery: bool('pauseOnBattery'),
-    pauseOnLock: bool('pauseOnLock'),
-  };
-}
-
-/**
  * 计算一台显示器写入 monitors[id] 后的覆盖表。
  *
  * 两条规则：
@@ -745,7 +684,6 @@ module.exports = {
   resolveProfile,
   writeProfile,
   clampInterval,
-  clampLiveStage,
   clampLiveStage,
   newAlbumId,
   normalizeAlbums,

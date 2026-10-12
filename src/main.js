@@ -1362,7 +1362,7 @@ const UI_ONLY_KEYS = ['settingsTab', 'hintParticlesPerMonitor', 'swipeSwitch', '
 /* ---------------------------------------------------------------- 全屏暂停（阶段 3） */
 
 /**
- * 全屏 / 挂机暂停轮询：随动态桌面启停。
+ * 全屏 / 挂机暂停轮询：应用启动后常驻，动态桌面关闭时也要冻结系统壁纸轮播。
  * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
  */
 function startFullscreenWatch() {
@@ -1408,6 +1408,13 @@ function startFullscreenWatch() {
 function stopFullscreenWatch() {
   fullscreenWatch.stop();
   broadcastPauseState([], false, {});   // 兜底解冻（手动暂停集保留，继续生效）
+}
+
+/** 配置改动后立即重采样，不让用户等下一轮 2s 轮询才看到开关效果。 */
+function refreshFullscreenPauseState() {
+  const r = fullscreenWatch.tickNow();
+  if (r.ok) broadcastPauseState(r.pausedIds, r.away, r.reasons);
+  return r;
 }
 
 /* ---------------------------------------------------------------- 深度预取 */
@@ -1464,8 +1471,8 @@ async function applyConfigChange(patch) {
   if (keys.includes('liveStage')) {
     // hideOnPaused 改动实时生效（藏窗与否读的是这里的运行态）
     liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused === true);
+    refreshFullscreenPauseState();
     if (store.get().liveWallpaper) {
-      startFullscreenWatch();
       liveStage.syncTo(scheduler.list());
     }
   }
@@ -1479,8 +1486,6 @@ async function applyConfigChange(patch) {
     if (liveAfter) {
       liveStage.start();
       liveStage.syncTo(scheduler.list());
-      // 暂停轮询（57 轮起常驻，不随动态桌面启停）：开着也无妨，start 幂等
-      startFullscreenWatch();
     } else {
       liveStage.stop();
       // 关掉动态桌面：系统壁纸还停在最后一次锚点图 → 补写当前帧
@@ -2288,13 +2293,14 @@ if (!gotLock) {
     announceAutoSetup(autoAtStartup, true);
     thumbnails.pruneCache().catch(() => {});
 
+    // 暂停监控是应用级能力：动态桌面关闭时，系统壁纸轮播同样需要在挂机、
+    // 锁屏、全屏或电池供电时停表。只在退出阶段 stop，切动态桌面不影响它。
+    startFullscreenWatch();
+
     // 动态桌面：配置开着就随应用启动（窗口在这里创建并挂到桌面图标下面）
     if (store.get().liveWallpaper) {
       liveStage.start();
       liveStage.syncTo(scheduler.list());
-      // 全屏/锁屏暂停轮询（57 轮起常驻）。⚠️ 60~72 轮重构丢了这行 → 暂停系统
-      // 整个没启动（2026-10-09 从日志与调用点对拍实锤），恢复。
-      startFullscreenWatch();
     }
 
     // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫。不依赖动态桌面 ——
