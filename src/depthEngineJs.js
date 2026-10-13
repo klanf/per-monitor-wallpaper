@@ -227,6 +227,55 @@ function dilate2x(gray, w, h) {
   return src;
 }
 
+/**
+ * 十字核膨胀 ×1 + 7-tap 可分离高斯羽化（σ≈1.7 texel）。
+ * 替代旧 dilate2x（方形 3×3 ×2）：方形结构元在斜轮廓上产出轴对齐楼梯齿，
+ * 半分辨率深度上采样到屏幕后 ≈ 每 2 texel 一格的方块锯齿（tools/pom-sim.py
+ * 渲染复现实拍；DA3 锐边下尤其刺眼，V2 软边被斜坡掩盖故当年未暴露）。
+ * 保留 1 texel 菱形外扩维持旧 dilate 的防白边意图，羽化把台阶圆化。
+ */
+function featherDilate(gray, w, h) {
+  const dil = new Float32Array(gray.length);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - 1);
+    const y1 = Math.min(h - 1, y + 1);
+    const rUp = y0 * w, rMid = y * w, rDn = y1 * w;
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(w - 1, x + 1);
+      dil[rMid + x] = Math.max(gray[rMid + x], gray[rUp + x], gray[rDn + x],
+                               gray[rMid + x0], gray[rMid + x1]);
+    }
+  }
+  const K = [1, 6, 15, 20, 15, 6, 1];
+  const KS = 64;
+  const tmp = new Float32Array(gray.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let k = 0; k < 7; k++) {
+        const xx = Math.min(w - 1, Math.max(0, x + k - 3));
+        s += dil[row + xx] * K[k];
+      }
+      tmp[row + x] = s / KS;
+    }
+  }
+  const out = new Float32Array(gray.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let k = 0; k < 7; k++) {
+        const yy = Math.min(h - 1, Math.max(0, y + k - 3)) * w;
+        s += tmp[yy + x] * K[k];
+      }
+      out[row + x] = s / KS;
+    }
+  }
+  return out;
+}
+
 function normalizeDepth(depth, invertDepth) {
   let mn = Infinity;
   let mx = -Infinity;
@@ -368,7 +417,7 @@ async function generate(job) {
 
   const gray = new Float32Array(dw * dh);
   for (let i = 0; i < gray.length; i++) gray[i] = resized[i];
-  const out8 = normalizeDepth(dilate2x(gray, dw, dh), false);
+  const out8 = normalizeDepth(featherDilate(gray, dw, dh), false);
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
   armReleaseTimer();
 }
@@ -482,5 +531,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate },
 };

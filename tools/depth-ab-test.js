@@ -127,7 +127,7 @@ async function runVariant(session, variant, imgPath) {
     .resize(dw, dh, { kernel: 'cubic', fit: 'fill' }).toColourspace('b-w').raw().toBuffer();
   const g = new Float32Array(dw * dh);
   for (let i = 0; i < g.length; i++) g[i] = mid[i];
-  const fin = normalizeDepth(dilate2x(g, dw, dh), false);
+  const fin = normalizeDepth(engineTest.featherDilate(g, dw, dh), false);
   return { fin, dw, dh, tInf, meta: { w0, h0 } };
 }
 
