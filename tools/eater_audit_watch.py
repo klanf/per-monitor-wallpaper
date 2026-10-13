@@ -75,10 +75,12 @@ def parse_events(text):
 
 
 def poll():
+    # CREATE_NO_WINDOW：pythonw 无控制台，spawn 控制台程序（wevtutil）时
+    # Windows 会给它新建可见窗口 → 每 10s 轮询就闪一次控制台。必须压掉。
     r = subprocess.run(
         ['wevtutil', 'qe', 'Security', '/q:' + XPATH,
          '/f:xml', '/c:%d' % BATCH, '/rd:true'],
-        capture_output=True)
+        capture_output=True, creationflags=0x08000000)
     if r.returncode != 0:
         return None, r.stderr.decode('gbk', 'replace').strip()[:200]
     return parse_events(r.stdout.decode('utf-8', 'replace')), None

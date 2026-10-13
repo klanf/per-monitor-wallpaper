@@ -38,7 +38,7 @@ REPOS = [
 
 
 def run(cmd, show=True):
-    r = subprocess.run(cmd, capture_output=True)
+    r = subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
     out = r.stdout.decode('gbk', 'replace').strip()
     err = r.stderr.decode('gbk', 'replace').strip()
     if r.returncode != 0:
@@ -167,7 +167,7 @@ def main():
         q = ('*[System[TimeCreated[timediff(@SystemTime) <= %d]]]' % seconds)
         r = subprocess.run(['wevtutil', 'qe', 'Security', '/q:' + q,
                             '/f:xml', '/c:%d' % cap, '/rd:true'],
-                           capture_output=True)
+                           capture_output=True, creationflags=0x08000000)
         txt = r.stdout.decode('utf-8', 'replace')
         hist = collections.Counter(evt_ids(txt))
         return hist, txt
@@ -186,7 +186,7 @@ def main():
         ['wevtutil', 'qe', 'Security',
          '/q:*[System[(EventID=4656) or (EventID=4659) or (EventID=4660) '
          'or (EventID=4663)]]', '/f:xml', '/c:5', '/rd:true'],
-        capture_output=True)
+        capture_output=True, creationflags=0x08000000)
     any_audit = evt_ids(r1000.stdout.decode('utf-8', 'replace'))
     print('     全日志最近的对象访问事件（任意路径）：共 %d 条（抽样5）' % len(any_audit))
     print()
@@ -196,7 +196,7 @@ def main():
         q = ('*[System[((EventID=4656) or (EventID=4659) or (EventID=4660) '
              'or (EventID=4663)) and TimeCreated[timediff(@SystemTime) <= 60000]]]')
         r = subprocess.run(['wevtutil', 'qe', 'Security', '/q:' + q,
-                            '/f:xml', '/c:200', '/rd:true'], capture_output=True)
+                            '/f:xml', '/c:200', '/rd:true'], capture_output=True, creationflags=0x08000000)
         txt = r.stdout.decode('utf-8', 'replace')
         return [m.group(0) for m in re.finditer(r'<Event[ >].*?</Event>', txt, re.S)
                 if name in m.group(0)]
