@@ -197,6 +197,20 @@ def build_audit_sacl(path, mask=DELETE):
     return buf  # 返回 buffer，防止被 GC（调用方引用）
 
 
+def clear_sacl(path):
+    """写空 ACL（AceCount=0），清除审计 SACL。返回 True=成功。"""
+    enable_security_privilege()
+    buf = ctypes.create_string_buffer(8)
+    hdr = ctypes.cast(ctypes.addressof(buf), ctypes.POINTER(ACL)).contents
+    hdr.AclRevision = REVISION
+    hdr.AclSize = 8
+    hdr.AceCount = 0
+    rc = adv.SetNamedSecurityInfoW(
+        ctypes.c_wchar_p(path), SE_FILE_OBJECT, SACL_SECURITY_INFORMATION,
+        None, None, None, ctypes.c_void_p(ctypes.addressof(buf)))
+    return rc == 0
+
+
 def show(path):
     sacl_p, sd = _get_sacl(path)
     if not sacl_p or not sacl_p.value:
