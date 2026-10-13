@@ -30,6 +30,7 @@ const state = {
   session: null,
   modelContract: null,
   onnxModel: '',
+  sessionPath: '',             // 当前会话对应的模型路径（切换模型时判失效用）
   releaseTimer: null,
   depthDevice: 'gpu',
   failed: false,
@@ -87,9 +88,24 @@ function detectModelContract(session) {
     const meta = metadataFor(session.inputMetadata, 'image');
     const shape = (meta && (meta.shape || meta.dimensions)) || [];
     const h = Number(shape[shape.length - 2]);
-    const w = Number(shape[shape.length - 1]);
-    if (h !== DA3_INPUT_SIDE || w !== DA3_INPUT_SIDE) {
-      throw new Error(`DA3 ONNX 输入必须是 [B,3,${DA3_INPUT_SIDE},${DA3_INPUT_SIDE}]，实际 ${shape}`);
+    const last = Number(shape[shape.length - 1]);
+    const w = Number(shape[shape.length - 3]);
+    // NHWC uint8 变体（社区 fold-preprocess 导出，输入 [B,S,S,3] RGB 0..255）：
+    // 归一化已折叠进图，引擎直接喂 sharp raw（RGB HWC uint8），不再自己做 MEAN/STD
+    if (last === 3 && h === DA3_INPUT_SIDE && w === DA3_INPUT_SIDE) {
+      return {
+        family: 'da3-small',
+        version: 'DA3-SMALL',
+        inputName: 'image',
+        outputName: 'depth',
+        inputSize: DA3_INPUT_SIDE,
+        fixedSquare: true,
+        invertDepth: true,
+        layout: 'nhwc-u8',
+      };
+    }
+    if (h !== DA3_INPUT_SIDE || last !== DA3_INPUT_SIDE) {
+      throw new Error(`DA3 ONNX 输入必须是 [B,3,${DA3_INPUT_SIDE},${DA3_INPUT_SIDE}]（或折叠预处理 [B,${DA3_INPUT_SIDE},${DA3_INPUT_SIDE},3]），实际 ${shape}`);
     }
     return {
       family: 'da3-small',
@@ -99,6 +115,7 @@ function detectModelContract(session) {
       inputSize: DA3_INPUT_SIDE,
       fixedSquare: true,
       invertDepth: true,
+      layout: 'nchw-f32',
     };
   }
   if (inputs.includes('pixel_values') && outputs.includes('predicted_depth')) {
@@ -261,8 +278,14 @@ async function generate(job) {
       .toColourspace('srgb').raw().toBuffer();
   }
 
-  const px = toNchwFloat(raw, inputW, inputH);
-  const feeds = { [contract.inputName]: new state.ort.Tensor('float32', px, [1, 3, inputH, inputW]) };
+  let feeds;
+  if (contract.layout === 'nhwc-u8') {
+    // 折叠预处理变体：归一化在图内，sharp raw 出来的就是 RGB HWC uint8，直接喂
+    feeds = { [contract.inputName]: new state.ort.Tensor('uint8', raw, [1, inputH, inputW, 3]) };
+  } else {
+    const px = toNchwFloat(raw, inputW, inputH);
+    feeds = { [contract.inputName]: new state.ort.Tensor('float32', px, [1, 3, inputH, inputW]) };
+  }
   const outputs = await session.run(feeds);
   const tensor = outputs[contract.outputName];
   if (!tensor || !tensor.data || !tensor.dims) throw new Error(`ONNX 缺少输出 ${contract.outputName}`);
@@ -302,8 +325,17 @@ async function generate(job) {
 
 async function ensureSession() {
   if (state.session) {
+    if (state.sessionPath === state.onnxModel) {
+      clearTimeout(state.releaseTimer);
+      return state.session;
+    }
+    // 模型被切换（设置页 V2/DA3 切换 → 下一个任务的 onnxModel 变了）：
+    // 旧会话立刻释放，按新路径重建 —— 不判路径的话旧模型会一直活到闲置回收
+    const stale = state.session;
+    state.session = null;
+    state.modelContract = null;
     clearTimeout(state.releaseTimer);
-    return state.session;
+    stale.release().catch(() => {});
   }
   const ort = state.ort;
   const t0 = Date.now();
@@ -324,6 +356,7 @@ async function ensureSession() {
     bad.release().catch(() => {});
     throw err;
   }
+  state.sessionPath = state.onnxModel;
   const epDesc = wantGpu ? 'GPU(DML)+CPU兜底' : 'CPU EP';
   log(`ONNX 会话就绪 ${path.basename(state.onnxModel)} [${state.modelContract.version}]（${((Date.now() - t0) / 1000).toFixed(1)}s，${epDesc}）`);
   return state.session;

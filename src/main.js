@@ -1463,6 +1463,11 @@ async function applyConfigChange(patch) {
   if (keys.includes('depthDevice')) {
     depthService.configure({ depthDevice: store.get().depthDevice });
   }
+  // 深度模型切换（自动/DA3/V2）：实时转发 —— resolveRuntime 按偏好重排候选链，
+  // 引擎线程发现下一个任务的 onnxModel 变了会自动释放旧会话、按新模型重建
+  if (keys.includes('depthModel')) {
+    depthService.configure({ depthModel: store.get().depthModel });
+  }
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
@@ -2203,6 +2208,7 @@ if (!gotLock) {
       workerScript: store.get().depthWorkerScript,
       modelDir: store.get().depthModelDir,
       depthDevice: store.get().depthDevice,   // 'cpu'=强制CPU；缺省=GPU(DML)优先（3070 Ti 实测快 5 倍）
+      depthModel: store.get().depthModel,     // 'v2'=V2 兼容优先；'da3'=强制 DA3；缺省=auto（DA3 优先，缺失回落 V2）
       onReady: (imagePath) => {
         // 现场升级：正在显示这张图的舞台立刻从 2D 切视差
         send('depth:ready', { path: imagePath });
