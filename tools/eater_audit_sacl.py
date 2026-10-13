@@ -33,6 +33,66 @@ EVERYONE_SID = bytes([0x01, 0x01,
                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                       0x00, 0x00, 0x00, 0x00])
 
+k32 = ctypes.windll.kernel32
+_priv_done = False
+
+
+def enable_security_privilege():
+    """开启本进程的 SeSecurityPrivilege。
+
+    管理员令牌默认【持有但未启用】该特权，不 enable 就调
+    Get/SetNamedSecurityInfoW 读 SACL 会得到 rc=1314（特权未持有）。
+    幂等，重复调用无害。
+    """
+    global _priv_done
+    if _priv_done:
+        return
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    TOKEN_QUERY = 0x0008
+    SE_PRIVILEGE_ENABLED = 0x0002
+
+    class LUID(ctypes.Structure):
+        _fields_ = [('LowPart', ctypes.c_uint32), ('HighPart', ctypes.c_int32)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [('Luid', LUID), ('Attributes', ctypes.c_uint32)]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [('PrivilegeCount', ctypes.c_uint32),
+                    ('Privileges', LUID_AND_ATTRIBUTES * 1)]
+
+    # 64 位句柄必须显式原型，否则默认 c_int 截断出 rc=6
+    k32.GetCurrentProcess.restype = ctypes.c_void_p
+    adv.OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                     ctypes.POINTER(ctypes.c_void_p)]
+    adv.LookupPrivilegeValueW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p,
+                                          ctypes.POINTER(LUID)]
+    adv.AdjustTokenPrivileges.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                          ctypes.c_void_p, ctypes.c_uint32,
+                                          ctypes.c_void_p, ctypes.c_void_p]
+
+    htok = ctypes.c_void_p()
+    if not adv.OpenProcessToken(k32.GetCurrentProcess(),
+                                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                                ctypes.byref(htok)):
+        raise OSError('OpenProcessToken 失败 rc=%d' % k32.GetLastError())
+    try:
+        tp = TOKEN_PRIVILEGES()
+        tp.PrivilegeCount = 1
+        if not adv.LookupPrivilegeValueW(None, 'SeSecurityPrivilege',
+                                         ctypes.byref(tp.Privileges[0].Luid)):
+            raise OSError('LookupPrivilegeValueW(SeSecurityPrivilege) 失败')
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+        if not adv.AdjustTokenPrivileges(htok, False, ctypes.byref(tp), 0, None, None):
+            raise OSError('AdjustTokenPrivileges 失败 rc=%d' % k32.GetLastError())
+        # 1300 = ERROR_NOT_ALL_ASSIGNED：令牌里根本没有这个特权（不是管理员）
+        err = k32.GetLastError()
+        if err == 1300:
+            raise OSError('SeSecurityPrivilege 未分配——请以管理员身份运行')
+        _priv_done = True
+    finally:
+        k32.CloseHandle(htok)
+
 
 class ACL(ctypes.Structure):
     _fields_ = [('AclRevision', ctypes.c_ubyte),
@@ -44,6 +104,7 @@ class ACL(ctypes.Structure):
 
 def _get_sacl(path):
     """返回 (sacl 指针, sd 指针)。两者必须在整个使用周期存活。"""
+    enable_security_privilege()  # 不开特权，读 SACL 一律 rc=1314
     sacl = ctypes.c_void_p()
     sd = ctypes.c_void_p()
     rc = adv.GetNamedSecurityInfoW(

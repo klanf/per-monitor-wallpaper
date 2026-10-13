@@ -59,17 +59,41 @@ def main():
     run(['auditpol', '/backup', '/file:' + POLICY_BACKUP], show=False)
     print('  已备份（回滚：auditpol /restore /file:<该文件>）\n')
 
-    # 2. 打开文件系统审计
+    # 2. 打开文件系统审计（GUID 双保险 + 本地名兜底）
     print('[2/5] 打开「文件系统」审计（成功+失败）')
     r = run(['auditpol', '/set', '/subcategory:' + FS_GUID,
              '/success:enable', '/failure:enable'], show=False)
-    if r.returncode == 0:
-        g = run(['auditpol', '/get', '/subcategory:' + FS_GUID], show=False)
-        print('  ' + g.stdout.decode('gbk', 'replace').strip())
-    else:
-        print('  [失败] rc=%d %s' % (r.returncode,
-                                    r.stderr.decode('gbk', 'replace').strip()[:200]))
-        sys.exit(1)
+    if r.returncode != 0:
+        print('  [失败] GUID 写法 rc=%d %s' % (r.returncode,
+              r.stderr.decode('gbk', 'replace').strip()[:200]))
+    # 校验 GUID 实际解析成了哪个子类（防 GUID 记错开到别的子类上）
+    g = run(['auditpol', '/get', '/subcategory:' + FS_GUID], show=False)
+    resolved = g.stdout.decode('gbk', 'replace').strip()
+    print('  GUID 解析 →', resolved.replace('\n', ' | '))
+    resolved_ok = ('文件系统' in resolved) or ('File System' in resolved)
+    if not resolved_ok:
+        # 枚举全部子类，找到本地化的「文件系统」名再开一次
+        lst = run(['auditpol', '/list', '/subcategory:*'], show=False)
+        candidates = []
+        for line in lst.stdout.decode('gbk', 'replace').splitlines():
+            t = line.strip()
+            # 只匹配纯粹的「文件系统」（排除 文件共享/详细文件共享/可移动存储 等）
+            if '文件系统' in t or t.lower() == 'file system':
+                candidates.append(t)
+        if candidates:
+            print('  本地化子类名命中：', candidates, '—— 按名再开一次')
+            for n in candidates:
+                run(['auditpol', '/set', '/subcategory:' + n,
+                     '/success:enable', '/failure:enable'], show=False)
+        else:
+            print('  [警告] /list 里没找到「文件系统」，请人工核对 auditpol /list /subcategory:*')
+    # 终态确认
+    g2 = run(['auditpol', '/get', '/subcategory:' + FS_GUID], show=False)
+    final = g2.stdout.decode('gbk', 'replace').strip()
+    print('  终态 →', final.replace('\n', ' | '))
+    if not (('成功' in final and '启用' in final) or 'Success' in final.lower()
+            or '成功和失败' in final):
+        print('  [警告] 回显未见「启用/Success」，请人工核对上面终态行')
     print()
 
     # 3. 挂 SACL
@@ -84,6 +108,17 @@ def main():
         except OSError as e:
             print('  %s : 失败 —— %s' % (d, e))
             sys.exit(1)
+    # 回读校验（防写入假成功）
+    print('  回读校验：')
+    for d in REPOS:
+        if not os.path.isdir(d):
+            continue
+        try:
+            sacl_p, sd = sacl._get_sacl(d)
+            ok = sacl._audit_ace_exists(sacl_p)
+            print('  %s : %s' % (d, '审计 ACE 在 ✓' if ok else '未检出审计 ACE ✗'))
+        except OSError as e:
+            print('  %s : 回读失败 %s' % (d, e))
     print()
 
     # 4. 计划任务
