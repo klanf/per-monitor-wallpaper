@@ -86,7 +86,12 @@ process.on('uncaughtException', (err) => {
  */
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+// RemoveRedirectionBitmap：Chromium 139 起默认开启，渲染输出从重定向位图换成
+// DirectComposition/DXGI 交换链子窗口模型。舞台窗口是挂进 WorkerW 的重新父级化
+// 窗口，显示器拓扑一变（挪副屏/改排列），DComp 视觉沿用**过期坐标**合成 ——
+// 窗口 rect 全对但内容偏移/半屏透明（用户 2026-10-13 实测三种屏幕排列全复现）。
+// CefSharp#5174 同症状同修法；Electron#54627（43.x 跨 DPI 挪屏内容持久偏移）同族。
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,RemoveRedirectionBitmap');
 
 /*
  * 测试隔离钩子：环境变量把 userData（配置 / 单实例锁 / 播放存档）整个换目录。
