@@ -275,7 +275,7 @@ async function createStage(ch) {
     });
 
     await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
-    if (!running) { win.destroy(); return; }
+    if (!running || rec.retired) { win.destroy(); return; }
 
     // 先让 Windows 11 24H2+ 进入 raised-desktop，保证存在图标层下方的 WorkerW。
     // 每次创建都重新 snapshot：Explorer 可能重启过，所有句柄都会变。
@@ -328,6 +328,32 @@ function destroyStage(id) {
     if (rec.hwnd) desktopHost.unmount(rec.hwnd);   // 先脱离桌面树，窗口销毁时不留残影
   } catch { /* koffi 不可用时窗口销毁同样会移除窗口本身 */ }
   if (rec.win && !rec.win.isDestroyed()) rec.win.destroy();
+}
+
+/*
+ * 拓扑变化后的全量重建（2026-10-13 主屏舞台半屏透明的修复）。
+ *
+ * 为什么不能只重新对齐 bounds：主屏在虚拟桌面原点，挪副屏**不会改变主屏的
+ * 任何几何**，per-display 伪舞台的 displayId 也不变 —— syncTo 的复用分支
+ * （!stages.has(key) 才建）于是永远复用旧窗口。但 Chromium 的渲染输出状态
+ * （DirectComposition 视觉 / 交换链）会随显示器拓扑事件滞留过期坐标 ——
+ * 窗口 rect 全对（探针取证过）、渲染内容却错位/半透明，CefSharp#5174 同族。
+ * 副屏为什么没事：副屏 bounds 变了走 setBounds 重对齐，顺带刺激 Chromium
+ * 重新评估几何；主屏什么都没变、什么都没触发，就带着污染状态继续跑。
+ *
+ * 销毁重建是唯一可靠的清零手段：新窗口 = 新渲染进程 = 全新合成器状态。
+ * 重建由 syncTo（调用方紧跟）或 2s 看门狗（watchOnce）补上。
+ */
+function recreateAll(reason = 'topology') {
+  if (!running) return 0;
+  let n = 0;
+  for (const [id, rec] of [...stages]) {
+    rec.retired = true;   // createStage 在途的加载完成后看到标记即自毁，防止僵尸挂载
+    destroyStage(id);
+    n++;
+  }
+  debugLog.dlog('live-stage', `全量重建舞台（${reason}）：销毁 ${n} 块，等 syncTo/看门狗重建`);
+  return n;
 }
 
 /* ---------------------------------------------------------------- 看门狗 */
@@ -566,6 +592,7 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
+  recreateAll,          // 显示器拓扑变化时全量重建舞台（渲染器状态滞留的唯一清零手段）
   isPausedForDisplay,   // 调度器暂停感知用（暂停的显示器不推进轮播）
   displayIdForMonitor,  // 设备路径 → Electron displayId（手动暂停换算用）
   allDisplayIds,        // 当前舞台的 displayId 集合（PAUSE_ALL 展开用）

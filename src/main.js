@@ -2344,12 +2344,19 @@ if (!gotLock) {
       }, 800);
     }
 
-    // 插拔显示器 / 改分辨率后要重建频道；派发事件很密集，节流一下
+    // 插拔显示器 / 改分辨率 / 挪屏改排列后：
+    // ① 全量重建舞台 —— 拓扑事件后 Chromium 渲染输出状态滞留（主屏半屏透明
+    //    2026-10-13 实锤，CefSharp#5174 同族），重新对齐救不了主屏（几何没变、
+    //    没有任何东西触发它重估），只有销毁重建能清零；
+    // ② 重建频道 —— 拓扑变化本身要的。
+    // 派发事件很密集，节流一下。销毁后紧跟 syncTo 立即重建，不等 2s 看门狗。
     let settle = null;
     const notifyMonitorsChanged = () => {
       clearTimeout(settle);
       settle = setTimeout(async () => {
+        liveStage.recreateAll('display-metrics');
         await scheduler.rebuild('display');
+        if (store.get().liveWallpaper) liveStage.syncTo(scheduler.list());
         send('monitors:changed', { channels: scheduler.list() });
       }, 600);
     };
