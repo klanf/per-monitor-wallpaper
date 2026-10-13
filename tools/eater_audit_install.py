@@ -144,38 +144,74 @@ def main():
         print('  [注意] 状态文件还没出现，可能要再等一个轮询周期（%ds）' % 10)
     print()
 
-    # 5. 自测
-    print('[5/5] 自测：创建并删除 .git 金丝雀文件，验证全链路')
+    # 5. 自测：继承诊断 + 金丝雀全链路 + 文件级直挂对照
+    print('[5/5] 自测：继承诊断 + 金丝雀全链路')
+    logf = os.path.join(os.path.dirname(WATCH), '..', 'eater-audit.log')
+    logf = os.path.normpath(logf)
+
+    def wait_canary(name, seconds):
+        """轮询 eater-audit.log 找金丝雀证据行。"""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            time.sleep(5)
+            if os.path.exists(logf):
+                body = open(logf, encoding='utf-8', errors='replace').read()
+                if name in body:
+                    return True
+        return False
+
+    # ① 继承诊断：建金丝雀 → 读它自己的 SACL（提权进程有权读）
     canary = os.path.join(REPOS[0], 'canary-delete-test.tmp')
     with open(canary, 'w') as f:
         f.write('git-eater-audit canary\n')
+    try:
+        p, sd = sacl._get_sacl(canary)
+        aces = list(sacl._walk_aces(p))
+        print('  ① 金丝雀自身 SACL：%d ACEs' % len(aces))
+        for t, fl, m, sid in aces:
+            print('     type=%d flags=0x%02x mask=0x%08x sid=%s'
+                  % (t, fl, m, sid.hex()))
+        if not aces:
+            print('  [诊断] 审计 ACE 没有从 .git 目录继承到新文件 → 继承腿断了')
+        inherited_ok = len(aces) > 0
+    except OSError as e:
+        print('  ① 金丝雀 SACL 读取失败：%s' % e)
+        inherited_ok = False
+
+    # ② 删金丝雀，等监听器/事件
     os.remove(canary)
-    print('  金丝雀已删除，等监听器抓（最多 40s）...')
-    logf = os.path.join(os.path.dirname(WATCH), '..', 'eater-audit.log')
-    logf = os.path.normpath(logf)
-    found = False
-    deadline = time.time() + 40
-    while time.time() < deadline:
-        time.sleep(5)
-        if os.path.exists(logf):
-            body = open(logf, encoding='utf-8', errors='replace').read()
-            # 金丝雀路径只会出现在 fmt() 证据行里（启动行不含它）
-            if 'canary-delete-test.tmp' in body:
-                found = True
-                break
-    if found:
-        print('  [通过] 安全日志 -> 监听器 -> eater-audit.log 全链路打通！')
-        print('  证据行：')
+    print('  ② 金丝雀（继承 SACL）已删除，等 40s...')
+    got = wait_canary('canary-delete-test.tmp', 40)
+
+    # ③ 对照：文件级直挂审计 ACE 再删（绕开继承）
+    if not got:
+        print('  ③ 继承腿没抓到 → 对照实验：文件级直挂审计 ACE')
+        f2 = os.path.join(REPOS[0], 'canary-direct-test.tmp')
+        with open(f2, 'w') as f:
+            f.write('x')
+        try:
+            sacl.build_audit_sacl(f2)
+            print('     文件级 SACL 写入成功')
+        except OSError as e:
+            print('     文件级 SACL 写入失败：%s' % e)
+        os.remove(f2)
+        print('     已删除，等 30s...')
+        got = wait_canary('canary-direct-test.tmp', 30)
+
+    # ④ 结论分流
+    if got:
+        print('  [通过] 全链路打通！证据行：')
         for line in open(logf, encoding='utf-8', errors='replace'):
-            if 'canary-delete-test.tmp' in line and 'watcher' not in line:
+            if 'canary-' in line and 'watcher' not in line:
                 print('    ' + line.strip())
+    elif inherited_ok:
+        print('  [诊断] 文件上继承了审计 ACE 但删除无事件：')
+        print('    - 嫌疑=DELETE 审计在该系统的语义/策略层。请跑：')
+        print('      auditpol /get /subcategory:{0CCE921D-69AE-11D9-BED3-505054503030}')
+        print('    - 以及检查是否有组策略覆盖（gpedit 高级审核策略）')
     else:
-        print('  [未抓到] 直接查安全日志（区分是策略/SACL 没生效还是监听器延迟）：')
-        run(['wevtutil', 'qe', 'Security',
-             '/q:*[System[(EventID=4663)]]', '/c:5', '/f:text', '/rd:true'],
-            show=True)
-        print('  若上面能看到 canary-delete-test.tmp 的 4663 = 只是监听器还没轮到；')
-        print('  若完全没有 = SACL 或策略没生效，把本脚本完整回显发回排查。')
+        print('  [诊断] 继承与直挂均无事件 → 把本回显整体发回，需要看')
+        print('    「金丝雀自身 SACL」行与文件级直写结果来定断点')
     print()
     print('=== 安装完成。谁删了 .git 里的文件，eater-audit.log 会记下进程与路径 ===')
 

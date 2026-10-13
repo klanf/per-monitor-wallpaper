@@ -13,7 +13,11 @@ import time
 import os
 import re
 import json
+import sys
 import xml.etree.ElementTree as ET
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import eater_audit_sacl as saclmod
 
 # 监控范围：本机所有 git 仓库的 .git（与 eater-audit-sacl.py 的 --set 清单一致）
 REPOS = [
@@ -30,6 +34,8 @@ ROOT = r'D:\workbuddy\projects\electron-wallpaper\electron-wallpaper'
 LOG = os.path.join(ROOT, 'eater-audit.log')
 STATUS = os.path.join(ROOT, 'eater-audit-status.txt')
 STATE = os.path.join(ROOT, 'tools', 'eater-audit-state.json')
+CMD_FILE = os.path.join(ROOT, 'tools', 'eater-audit-cmd.json')
+DIAG = os.path.join(ROOT, 'eater-audit-diag.log')
 XPATH = "*[System[(EventID=4663) or (EventID=4659) or (EventID=4660)]]"
 POLL_SEC = 10
 BATCH = 400
@@ -122,6 +128,73 @@ def save_state(rid):
         pass
 
 
+def diag():
+    """提权诊断：目录 SACL、新文件继承情况、文件级直写测试。结果落 DIAG。"""
+    lines = []
+
+    def w(s):
+        lines.append(s)
+        print(s)
+
+    for d in REPOS[:1]:  # 主树足够，其他仓库同机制
+        try:
+            p, sd = saclmod._get_sacl(d)
+            aces = list(saclmod._walk_aces(p))
+            w('DIR %s : %d ACEs %s' % (d, len(aces), aces))
+        except OSError as e:
+            w('DIR %s : get failed %s' % (d, e))
+
+    # ① 新文件继承测试：建文件→读它自己的 SACL→删除
+    f = os.path.join(REPOS[0], 'diag-inherit-test.tmp')
+    with open(f, 'w') as fh:
+        fh.write('x')
+    try:
+        p, sd = saclmod._get_sacl(f)
+        aces = list(saclmod._walk_aces(p))
+        w('INHERIT: 新文件 SACL %d ACEs %s' % (len(aces), aces))
+    except OSError as e:
+        w('INHERIT: 新文件 SACL 读取失败 %s' % e)
+    os.remove(f)
+
+    # ② 文件级直写测试：直接给文件挂审计 ACE 再删
+    f2 = os.path.join(REPOS[0], 'diag-direct-test.tmp')
+    with open(f2, 'w') as fh:
+        fh.write('x')
+    try:
+        saclmod.build_audit_sacl(f2)
+        p, sd = saclmod._get_sacl(f2)
+        aces = list(saclmod._walk_aces(p))
+        w('DIRECT: 文件级直写后 %d ACEs %s' % (len(aces), aces))
+    except OSError as e:
+        w('DIRECT: 直写失败 %s' % e)
+    os.remove(f2)
+
+    with open(DIAG, 'a', encoding='utf-8') as fh:
+        fh.write('==== diag %s ====\n%s\n' % (time.strftime('%F %T'),
+                                              '\n'.join(lines)))
+    with open(LOG, 'a', encoding='utf-8') as fh:
+        fh.write('==== diag 完成，见 eater-audit-diag.log ====\n')
+
+
+def handle_cmd():
+    """消费指令文件（白名单动作），结果落 DIAG。"""
+    if not os.path.exists(CMD_FILE):
+        return
+    try:
+        with open(CMD_FILE, encoding='utf-8') as f:
+            cmd = json.load(f)
+        os.remove(CMD_FILE)
+        act = cmd.get('action')
+        if act == 'diag':
+            diag()
+        else:
+            with open(DIAG, 'a', encoding='utf-8') as fh:
+                fh.write('==== 未知指令 %r ====\n' % cmd)
+    except Exception as e:
+        with open(DIAG, 'a', encoding='utf-8') as fh:
+            fh.write('==== cmd 异常 %r ====\n' % (e,))
+
+
 def main():
     last = load_state()
     with open(LOG, 'a', encoding='utf-8') as f:
@@ -129,6 +202,7 @@ def main():
     err_streak = 0
     while True:
         try:
+            handle_cmd()
             events, err = poll()
             now = time.strftime('%F %T')
             if err is not None:
