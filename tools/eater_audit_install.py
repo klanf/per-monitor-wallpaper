@@ -59,10 +59,14 @@ def main():
 
     print('=== git 啃食者审计 · 安装开始 ===\n')
 
-    # 1. 备份审计策略
-    print('[1/5] 备份当前审计策略 -> %s' % POLICY_BACKUP)
-    run(['auditpol', '/backup', '/file:' + POLICY_BACKUP], show=False)
-    print('  已备份（回滚：auditpol /restore /file:<该文件>）\n')
+    # 1. 备份审计策略（首跑的底账是「改动前原状」，存在就不覆盖）
+    if os.path.exists(POLICY_BACKUP):
+        print('[1/5] 底账已存在，跳过备份（保留改动前原状）：', POLICY_BACKUP)
+    else:
+        print('[1/5] 备份当前审计策略 -> %s' % POLICY_BACKUP)
+        run(['auditpol', '/backup', '/file:' + POLICY_BACKUP], show=False)
+        print('  已备份（回滚：auditpol /restore /file:<该文件>）')
+    print()
 
     # 2. 打开文件系统审计（真 GUID + 本地名双开 + 校验 + 回关误开的证书服务）
     print('[2/5] 打开「文件系统」审计（成功+失败）')

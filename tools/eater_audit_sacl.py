@@ -18,6 +18,14 @@ import sys
 
 adv = ctypes.windll.advapi32
 
+# 显式签名：SetNamedSecurityInfoW 的 pSacl 是 PACL（一级指针），
+# GetNamedSecurityInfoW 的 ppSacl 才是二级指针——两者搞反就是「rc=0 但没写上」
+adv.SetNamedSecurityInfoW.restype = ctypes.c_uint32
+adv.SetNamedSecurityInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32,
+                                      ctypes.c_uint32, ctypes.c_void_p,
+                                      ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_void_p]
+
 SE_FILE_OBJECT = 1
 SACL_SECURITY_INFORMATION = 0x00000008
 SYSTEM_AUDIT_ACE_TYPE = 2
@@ -148,7 +156,15 @@ def _audit_ace_exists(sacl_p):
 
 
 def build_audit_sacl(path):
-    """在现有 SACL 基础上追加审计 ACE，返回新 SACL 的指针（caller 保活）。"""
+    """给目录写入「仅含审计 ACE」的全新 SACL（覆盖式，幂等）。
+
+    ⚠️ SetNamedSecurityInfoW 的 pSacl 是 PACL——直接传 ACL 指针，
+    不像 GetNamedSecurityInfoW 那样收二级指针；首版误传 byref(PPACL)
+    导致 API 拿垃圾字节当 ACL、rc=0 却什么都没写。
+    覆盖式而不是追加式：.git 目录此前无有效 SACL，追加反而会被
+    首版写进去的垃圾 SACL 干扰；本地开发目录无其他审计条目可保全。
+    """
+    enable_security_privilege()
     old_p, sd = _get_sacl(path)
     if _audit_ace_exists(old_p):
         return None  # 已存在，幂等跳过
@@ -160,28 +176,17 @@ def build_audit_sacl(path):
            + DELETE.to_bytes(4, 'little')
            + EVERYONE_SID)
 
-    if old_p and old_p.value:
-        old = ctypes.cast(old_p, ctypes.POINTER(ACL)).contents
-        old_bytes = ctypes.string_at(old_p.value, old.AclSize)
-    else:
-        # 空 ACL：8 字节头
-        old_bytes = (bytes([REVISION, 0]) + (8).to_bytes(2, 'little')
-                     + (0).to_bytes(2, 'little') + (0).to_bytes(2, 'little'))
-
-    new_size = len(old_bytes) + len(ace)
-    buf = ctypes.create_string_buffer(new_size)
-    ctypes.memmove(buf, old_bytes, len(old_bytes))
-    ctypes.memmove(ctypes.addressof(buf) + len(old_bytes), ace, len(ace))
-
-    # 修正头：AclSize / AceCount
+    acl_size = 8 + len(ace)
+    buf = ctypes.create_string_buffer(acl_size)
     hdr = ctypes.cast(ctypes.addressof(buf), ctypes.POINTER(ACL)).contents
-    hdr.AclSize = new_size
-    hdr.AceCount += 1
+    hdr.AclRevision = REVISION
+    hdr.AclSize = acl_size
+    hdr.AceCount = 1
+    ctypes.memmove(ctypes.addressof(buf) + 8, ace, len(ace))
 
-    new_p = ctypes.c_void_p(ctypes.addressof(buf))
     rc = adv.SetNamedSecurityInfoW(
         ctypes.c_wchar_p(path), SE_FILE_OBJECT, SACL_SECURITY_INFORMATION,
-        None, None, None, ctypes.byref(new_p))
+        None, None, None, ctypes.c_void_p(ctypes.addressof(buf)))
     if rc != 0:
         raise OSError('SetNamedSecurityInfoW(%s) rc=%d' % (path, rc))
     return buf  # 返回 buffer，防止被 GC（调用方引用）
