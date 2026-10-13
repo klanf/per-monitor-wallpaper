@@ -34,6 +34,10 @@ CONTAINER_INHERIT_ACE = 0x02
 SUCCESSFUL_ACCESS_ACE_FLAG = 0x40
 FAILED_ACCESS_ACE_FLAG = 0x80
 DELETE = 0x00010000
+# 目录专用权：经由父目录 DELETE_CHILD 权限删除文件时，文件本身不会被以
+# DELETE 打开（文件级 DELETE 审计不触发），只有目录的这条审计能抓到。
+# DELETE 与 FILE_DELETE_CHILD 同位不同权（0x10000 vs 0x40），都要审计。
+FILE_DELETE_CHILD = 0x00000040
 REVISION = 1  # ACL_REVISION
 
 # Everyone SID 的二进制形式：S-1-1-0
@@ -147,16 +151,17 @@ def _walk_aces(sacl_p):
         offset += ace_size
 
 
-def _audit_ace_exists(sacl_p):
-    """已有「Everyone + DELETE 审计」就返回 True（幂等保护）。"""
+def _audit_ace_exists(sacl_p, mask=DELETE):
+    """已有覆盖 mask 全部位（Everyone + 审计型）的 ACE 就返回 True（幂等保护）。"""
     for t, f, m, sid in _walk_aces(sacl_p):
-        if t == SYSTEM_AUDIT_ACE_TYPE and (m & DELETE) and sid == EVERYONE_SID:
+        if t == SYSTEM_AUDIT_ACE_TYPE and (m & mask) == mask \
+                and sid == EVERYONE_SID:
             return True
     return False
 
 
-def build_audit_sacl(path):
-    """给目录写入「仅含审计 ACE」的全新 SACL（覆盖式，幂等）。
+def build_audit_sacl(path, mask=DELETE):
+    """给目录/文件写入「仅含审计 ACE」的全新 SACL（覆盖式，幂等）。
 
     ⚠️ SetNamedSecurityInfoW 的 pSacl 是 PACL——直接传 ACL 指针，
     不像 GetNamedSecurityInfoW 那样收二级指针；首版误传 byref(PPACL)
@@ -166,14 +171,14 @@ def build_audit_sacl(path):
     """
     enable_security_privilege()
     old_p, sd = _get_sacl(path)
-    if _audit_ace_exists(old_p):
-        return None  # 已存在，幂等跳过
+    if _audit_ace_exists(old_p, mask):
+        return None  # 已覆盖全部所需位，幂等跳过
 
     ace_size = 8 + len(EVERYONE_SID)
     ace = (bytes([SYSTEM_AUDIT_ACE_TYPE,
                   OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | SUCCESSFUL_ACCESS_ACE_FLAG])
            + ace_size.to_bytes(2, 'little')
-           + DELETE.to_bytes(4, 'little')
+           + mask.to_bytes(4, 'little')
            + EVERYONE_SID)
 
     acl_size = 8 + len(ace)

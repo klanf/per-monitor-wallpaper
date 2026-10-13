@@ -36,7 +36,8 @@ STATUS = os.path.join(ROOT, 'eater-audit-status.txt')
 STATE = os.path.join(ROOT, 'tools', 'eater-audit-state.json')
 CMD_FILE = os.path.join(ROOT, 'tools', 'eater-audit-cmd.json')
 DIAG = os.path.join(ROOT, 'eater-audit-diag.log')
-XPATH = "*[System[(EventID=4663) or (EventID=4659) or (EventID=4660)]]"
+XPATH = ("*[System[(EventID=4663) or (EventID=4659) or (EventID=4660) "
+         "or (EventID=4656)]]")  # 4656=句柄请求（DELETE 意图的最早记录点）
 POLL_SEC = 10
 BATCH = 400
 
