@@ -125,11 +125,16 @@ def _walk_aces(sacl_p):
     for _ in range(acl.AceCount):
         if offset + 8 > acl.AclSize:
             break
-        raw = ctypes.string_at(base + offset, 8)
-        ace_type, ace_flags = raw[0], raw[1]
-        ace_size = int.from_bytes(raw[2:4], 'little')
-        mask = int.from_bytes(raw[4:8], 'little')
-        sid = raw[8:] if ace_size > 8 else b''
+        head = ctypes.string_at(base + offset, 8)
+        ace_type, ace_flags = head[0], head[1]
+        ace_size = int.from_bytes(head[2:4], 'little')
+        if ace_size < 8 or offset + ace_size > acl.AclSize:
+            break
+        # ⚠️ 必须读满 ace_size 才拿得到 SID——只读 8 字节时 sid 永远为空，
+        # 会把「已有审计 ACE」误判成没有（幂等失效 + 回读假阴性）
+        full = ctypes.string_at(base + offset, ace_size)
+        mask = int.from_bytes(full[4:8], 'little')
+        sid = full[8:ace_size]
         yield ace_type, ace_flags, mask, sid
         offset += ace_size
 

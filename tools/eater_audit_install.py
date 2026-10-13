@@ -23,7 +23,10 @@ TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 WATCH = os.path.join(TOOL_DIR, 'eater_audit_watch.py')
 TASK_NAME = 'GitEaterWatch'
 POLICY_BACKUP = os.path.join(TOOL_DIR, 'eater-audit-policy-backup.csv')
-FS_GUID = '{0CCE9221-69AE-11D9-BED3-505054503030}'  # File System（locale 无关）
+# 真实 GUID（从 auditpol /backup 底账核实）：文件系统=0CCE921D
+FS_GUID = '{0CCE921D-69AE-11D9-BED3-505054503030}'
+# 首跑误开的「证书服务」（0CCE9221），安装时回关复原
+WRONG_GUID = '{0CCE9221-69AE-11D9-BED3-505054503030}'
 
 REPOS = [
     r'D:\workbuddy\projects\electron-wallpaper\electron-wallpaper\.git',
@@ -36,14 +39,16 @@ REPOS = [
 
 def run(cmd, show=True):
     r = subprocess.run(cmd, capture_output=True)
-    if show:
+    out = r.stdout.decode('gbk', 'replace').strip()
+    err = r.stderr.decode('gbk', 'replace').strip()
+    if r.returncode != 0:
+        # 任何失败都必须可见——首跑的按名 /set 失败就是这样被 show=False 吞掉的
+        print('  [rc=%d] %s | %s' % (r.returncode, ' '.join(cmd[:4]),
+                                    (err or out)[:200]))
+    elif show:
         print('  $ %s' % ' '.join(cmd[:3]) + (' ...' if len(cmd) > 3 else ''))
-        out = r.stdout.decode('gbk', 'replace').strip()
         if out:
             print('    ' + out.replace('\n', '\n    '))
-        if r.returncode != 0:
-            print('    [rc=%d] %s' % (r.returncode,
-                                      r.stderr.decode('gbk', 'replace').strip()[:200]))
     return r
 
 
@@ -59,41 +64,40 @@ def main():
     run(['auditpol', '/backup', '/file:' + POLICY_BACKUP], show=False)
     print('  已备份（回滚：auditpol /restore /file:<该文件>）\n')
 
-    # 2. 打开文件系统审计（GUID 双保险 + 本地名兜底）
+    # 2. 打开文件系统审计（真 GUID + 本地名双开 + 校验 + 回关误开的证书服务）
     print('[2/5] 打开「文件系统」审计（成功+失败）')
-    r = run(['auditpol', '/set', '/subcategory:' + FS_GUID,
+    # 先回关首跑误开的「证书服务」（GUID 记错的历史遗留，本机无 AD CS 但保持干净）
+    run(['auditpol', '/set', '/subcategory:' + WRONG_GUID,
+         '/success:disable', '/failure:disable'], show=False)
+    # 真 GUID 开
+    run(['auditpol', '/set', '/subcategory:' + FS_GUID,
+         '/success:enable', '/failure:enable'], show=False)
+    # 本地化名兜底再开（幂等）
+    lst = run(['auditpol', '/list', '/subcategory:*'], show=False)
+    fs_names = []
+    for line in lst.stdout.decode('gbk', 'replace').splitlines():
+        t = line.strip()
+        if '文件系统' in t or t.lower() == 'file system':
+            fs_names.append(t)
+    for n in fs_names:
+        run(['auditpol', '/set', '/subcategory:' + n,
              '/success:enable', '/failure:enable'], show=False)
-    if r.returncode != 0:
-        print('  [失败] GUID 写法 rc=%d %s' % (r.returncode,
-              r.stderr.decode('gbk', 'replace').strip()[:200]))
-    # 校验 GUID 实际解析成了哪个子类（防 GUID 记错开到别的子类上）
-    g = run(['auditpol', '/get', '/subcategory:' + FS_GUID], show=False)
-    resolved = g.stdout.decode('gbk', 'replace').strip()
-    print('  GUID 解析 →', resolved.replace('\n', ' | '))
-    resolved_ok = ('文件系统' in resolved) or ('File System' in resolved)
-    if not resolved_ok:
-        # 枚举全部子类，找到本地化的「文件系统」名再开一次
-        lst = run(['auditpol', '/list', '/subcategory:*'], show=False)
-        candidates = []
-        for line in lst.stdout.decode('gbk', 'replace').splitlines():
-            t = line.strip()
-            # 只匹配纯粹的「文件系统」（排除 文件共享/详细文件共享/可移动存储 等）
-            if '文件系统' in t or t.lower() == 'file system':
-                candidates.append(t)
-        if candidates:
-            print('  本地化子类名命中：', candidates, '—— 按名再开一次')
-            for n in candidates:
-                run(['auditpol', '/set', '/subcategory:' + n,
-                     '/success:enable', '/failure:enable'], show=False)
-        else:
-            print('  [警告] /list 里没找到「文件系统」，请人工核对 auditpol /list /subcategory:*')
-    # 终态确认
-    g2 = run(['auditpol', '/get', '/subcategory:' + FS_GUID], show=False)
-    final = g2.stdout.decode('gbk', 'replace').strip()
-    print('  终态 →', final.replace('\n', ' | '))
-    if not (('成功' in final and '启用' in final) or 'Success' in final.lower()
-            or '成功和失败' in final):
-        print('  [警告] 回显未见「启用/Success」，请人工核对上面终态行')
+    if not fs_names:
+        print('  [警告] /list 没找到「文件系统」子类名，请人工核对')
+    # 终态校验：按名 get（GUID 只用于 set，get 的解析名每次都要人看容易漏）
+    ok2 = False
+    for probe in ([FS_GUID] + fs_names):
+        g = run(['auditpol', '/get', '/subcategory:' + probe], show=False)
+        txt = g.stdout.decode('gbk', 'replace').strip().replace('\n', ' | ')
+        enabled = ('成功和失败' in txt) or ('成功, 失败' in txt) or \
+                  ('Success and Failure' in txt)
+        print('  %s → %s%s' % (probe[:40], txt,
+                               '  ✓' if enabled else ''))
+        if enabled and ('文件系统' in txt or 'File System' in txt):
+            ok2 = True
+    if not ok2:
+        print('  [失败] 文件系统审计未确认启用——金丝雀测试将无意义，请把上面回显发回')
+        sys.exit(1)
     print()
 
     # 3. 挂 SACL
@@ -162,9 +166,12 @@ def main():
             if 'canary-delete-test.tmp' in line and 'watcher' not in line:
                 print('    ' + line.strip())
     else:
-        print('  [未抓到] 可能是事件落日志有延迟。手动验证：')
-        print('    wevtutil qe Security /q:"*[System[(EventID=4663)]]" /c:5 /f:text /rd:true')
-        print('  监听器每 10s 轮询，之后出现也属正常。')
+        print('  [未抓到] 直接查安全日志（区分是策略/SACL 没生效还是监听器延迟）：')
+        run(['wevtutil', 'qe', 'Security',
+             '/q:*[System[(EventID=4663)]]', '/c:5', '/f:text', '/rd:true'],
+            show=True)
+        print('  若上面能看到 canary-delete-test.tmp 的 4663 = 只是监听器还没轮到；')
+        print('  若完全没有 = SACL 或策略没生效，把本脚本完整回显发回排查。')
     print()
     print('=== 安装完成。谁删了 .git 里的文件，eater-audit.log 会记下进程与路径 ===')
 
