@@ -202,6 +202,15 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('stage:pause', (_event, payload) => cb(payload));
   },
 
+  /**
+   * 主进程喂光标位置（30Hz，位置变化才发）：raised-WorkerW 挂载后舞台收不到
+   * 原生 mousemove（图标层截走输入），深度视差接管 / 粒子避让改吃这条。
+   * payload = { nx, ny, x, y }：归一化 [-1,1] + 舞台内 CSS 像素。
+   */
+  onStageMouse: (cb) => {
+    ipcRenderer.on('stage:mouse', (_event, payload) => cb(payload));
+  },
+
   /** 主进程主动弹提示（右键菜单操作、托盘操作的结果） */
   onNotice: (cb) => {
     ipcRenderer.on('notice', (_event, payload) => cb(payload));

@@ -1712,15 +1712,27 @@ async function init() {
   window.wp.onStagePause((payload) => {
     setFrozen(Boolean(payload && payload.paused));
   });
-  // 深度视差：鼠标临时接管视角（不动就走自动漂移；坐标是 CSS 的，归一化即可）
+  // 深度视差：鼠标临时接管视角（不动就走自动漂移；坐标是 CSS 的，归一化即可）。
+  // ⚠️ raised-WorkerW 挂载后这条本地 mousemove 收不到（见下方 onStageMouse）——
+  // 保留它作为「挂载拓扑允许原生输入到达舞台」时的兜底，两条路并存不冲突。
   window.addEventListener('mousemove', (e) => {
     glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
     glState.mouseUntil = performance.now() + 2500;
-    // 粒子斥力避让（主树 54 轮追记六）：粒子层拿到 CSS 像素坐标自己换算；
-    // 开关关着就不喂（省一层白工）。live 不走主进程 30Hz 广播 —— 舞台窗口
-    // 本来就吃得到真实 mousemove（视差接管同源），直接本地喂。
     if (particleFx && cfg.particleCursor) particleFx.setCursor(e.clientX, e.clientY);
   }, { passive: true });
+  // raised-WorkerW 挂载后桌面空白点的输入被图标层（SHELLDLL_DefView）截走，
+  // 上面的原生 mousemove 收不到了 —— 深度视差接管 / 粒子避让改吃主进程
+  // GetCursorPos 轮询喂送（30Hz，语义与 mousemove 一致：只在移动时来，
+  // 停手 2.5s 后 mouseUntil 过期自然回落自动漂移）。两条路并存：
+  // 哪天挂载拓扑让舞台重新吃得到原生输入，本地 mousemove 照样生效。
+  if (window.wp.onStageMouse) {
+    window.wp.onStageMouse((p) => {
+      if (!p || typeof p.nx !== 'number') return;
+      glState.mouse = [p.nx, p.ny];
+      glState.mouseUntil = performance.now() + 2500;
+      if (particleFx && cfg.particleCursor) particleFx.setCursor(p.x, p.y);
+    });
+  }
   // 深度生成完成 → 正在显示这张图的话，现场从 2D 升级成视差（短交叉淡入）。
   // ⚠️ 不能因 glState.anim 直接放弃：上一张视差的退场淡出（~900ms）和本张的
   // depth:ready（~1s）几乎同时到期，抢先把升级 return 掉这张图就永远停在 2D

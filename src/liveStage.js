@@ -30,6 +30,7 @@ const { BrowserWindow, screen } = require('electron');
 const path = require('node:path');
 const desktopHost = require('./desktopHost');
 const debugLog = require('./debugLog');
+const swipeWatch = require('./swipeWatch');
 
 const WATCHDOG_MS = 2000;
 /** 连续重挂失败多少次才算「降级」（交给系统壁纸兜底） */
@@ -356,6 +357,64 @@ function recreateAll(reason = 'topology') {
   return n;
 }
 
+/* ---------------------------------------------------------------- 鼠标跟随喂送 */
+
+/*
+ * 为什么要主进程喂光标（2026-10-13 实锤）：
+ *   舞台渲染端的深度视差接管 / 鼠标平移裁切（cropPan）靠的是舞台窗口自己收到
+ *   原生 mousemove。旧挂载（Progman 置顶，舞台在图标层上方）天然吃得到；
+ *   2beea28 换成 raised-WorkerW 挂载（舞台在图标层下方，修 Win10 图标被盖）
+ *   之后，桌面空白点的命中测试归 SHELLDLL_DefView（WindowFromPoint 实测命中
+ *   DefView 而非舞台）—— 输入被图标层截走，舞台一个 mousemove 都收不到，
+ *   视差接管和平移裁切一起哑火（画面照常，只是不再跟鼠标）。
+ *
+ *   修法不回退挂载架构，改走主进程轮询喂送：GetCursorPos(30Hz) + 桌面本体
+ *   判定（根窗口类 = Progman/WorkerW，复用 swipeWatch.isDesktopPoint —— 光标
+ *   悬在应用窗口/任务栏上时舞台不响应，与旧 hit-test 语义一致）→ 换算成目标
+ *   舞台的归一化坐标与 CSS 像素 → IPC 给那块屏的 stage 渲染端。渲染端把值
+ *   喂进 glState.mouse/mouseUntil 与粒子层，语义与原生 mousemove 完全一致。
+ *   只在位置变化时发送，停手 2.5s 后接管自然过期（渲染端既有逻辑）。
+ */
+
+const MOUSE_FEED_MS = 33;               // 30Hz：视差接管够顺滑，IPC 开销可忽略
+let mouseTimer = null;
+let lastMousePt = null;
+
+function mouseFeedTick() {
+  const pt = swipeWatch.cursorPoint();
+  if (!pt) return;
+  if (lastMousePt && lastMousePt.x === pt.x && lastMousePt.y === pt.y) return;
+  lastMousePt = { x: pt.x, y: pt.y };
+  // 光标必须悬在桌面本体上（Progman/WorkerW 根）：悬在应用窗口上时舞台不动，
+  // 与旧挂载「只有命中舞台窗口才有 mousemove」的语义对齐
+  if (!swipeWatch.isDesktopPoint(pt)) return;
+  for (const rec of stages.values()) {
+    if (!rec.win || rec.win.isDestroyed() || !rec.boundsPhys || !rec.bounds) continue;
+    const b = rec.boundsPhys;
+    if (pt.x < b.x || pt.x >= b.x + b.w || pt.y < b.y || pt.y >= b.y + b.h) continue;
+    const nx = ((pt.x - b.x) / Math.max(1, b.w)) * 2 - 1;
+    const ny = ((pt.y - b.y) / Math.max(1, b.h)) * 2 - 1;
+    // CSS 像素 = 物理像素 ÷ 缩放（bounds 是 DIP、boundsPhys 是物理，比值即 scaleFactor）
+    const scale = Math.max(0.1, b.w / Math.max(1, rec.bounds.width));
+    rec.win.webContents.send('stage:mouse', {
+      nx, ny,
+      x: (pt.x - b.x) / scale,
+      y: (pt.y - b.y) / scale,
+    });
+  }
+}
+
+function startMouseFeed() {
+  if (mouseTimer) return;
+  lastMousePt = null;
+  mouseTimer = setInterval(mouseFeedTick, MOUSE_FEED_MS);
+}
+
+function stopMouseFeed() {
+  if (mouseTimer) { clearInterval(mouseTimer); mouseTimer = null; }
+  lastMousePt = null;
+}
+
 /* ---------------------------------------------------------------- 看门狗 */
 
 function watchOnce() {
@@ -440,12 +499,14 @@ function start() {
   if (running) return;
   running = true;
   if (!watchdogTimer) watchdogTimer = setInterval(watchOnce, WATCHDOG_MS);
+  startMouseFeed();
   console.log('[live-stage] 动态桌面已启动');
 }
 
 function stop() {
   running = false;
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  stopMouseFeed();
   expectedChannels.clear();
   recreateFails.clear();
   for (const id of [...stages.keys()]) destroyStage(id);
