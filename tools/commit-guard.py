@@ -87,6 +87,18 @@ def append_log(msg: str):
             continue
 
 
+def reflog_last_new(git_dir: Path):
+    """从 .git/logs/HEAD 尾行取「新哈希」（HEAD 解析失败时的最后手段）。"""
+    p = git_dir / "logs" / "HEAD"
+    if p.exists():
+        lines = [l for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
+        if lines:
+            parts = lines[-1].split()
+            if len(parts) >= 2:
+                return parts[1]
+    return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-m", "--message", required=True)
@@ -116,16 +128,26 @@ def main():
         print((r.stderr or r.stdout).strip()[:2000], file=sys.stderr)
         sys.exit(1)
 
-    new_hash = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     problems = []
+
+    # ---- 解析新提交哈希：HEAD 解析失败（=ref 正被啃）时退回 reflog 尾行 ----
+    r2 = run_git(repo, "rev-parse", "HEAD", check=False)
+    new_hash = r2.stdout.strip()
+    if r2.returncode != 0 or not new_hash:
+        problems.append("commit 后 HEAD 解析失败（ref 疑似被啃）")
+        new_hash = reflog_last_new(git_dir)
+        if not new_hash:
+            append_log("致命：HEAD 解析失败且 reflog 无记录，无法自动恢复，请用 bundle 手工恢复")
+            sys.exit(2)
+
+    post_refs = snapshot_refs(git_dir)
 
     # ---- 复检 1：新提交对象存在 ----
     t = run_git(repo, "cat-file", "-t", new_hash, check=False).stdout.strip()
     if t != "commit":
         problems.append(f"新提交对象异常：cat-file -t {new_hash[:12]} = {t or '(无)'}")
 
-    # ---- 复检 2：当前分支 ref == 新提交 ----
-    post_refs = snapshot_refs(git_dir)
+    # ---- 复检 2：当前分支 ref == 新提交 ----（143 行已快照被啃现场，不重拍）
     cur = post_refs.get(f"refs/heads/{branch}")
     if cur != new_hash:
         problems.append(f"当前分支 ref 未指向新提交：refs/heads/{branch} = "
