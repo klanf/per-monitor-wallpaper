@@ -76,6 +76,57 @@ function letterboxPlan(w, h, side = DA3_INPUT_SIDE) {
   };
 }
 
+/**
+ * letterbox 的「边缘复制填充」版：内容居中，四周空带不填灰板，而是把内容
+ * 边缘 1px 拉伸过去 —— 模型看到的是内容的自然延续而非突兀灰板。
+ * 实测（tools/depth-ab-test.js）：灰板会让 DA3 在内容边界预测出硬边竖带
+ * （注意力把 band 上下文渗进内容边缘），视差时就是用户看到的「边缘撕裂」；
+ * 复制填充后硬带消失。返回 518×518 RGB raw（NHWC 直喂）。
+ */
+async function letterboxReplicate(sharp, resizeSource, plan) {
+  const { side, contentW, contentH, left, top, right, bottom } = plan;
+  const contentRaw = await resizeSource
+    .resize(contentW, contentH, { kernel: 'cubic', fit: 'fill' })
+    .toColourspace('srgb').raw().toBuffer();
+  if (left === 0 && right === 0 && top === 0 && bottom === 0) return contentRaw;
+
+  const contentImg = () => sharp(contentRaw, { raw: { width: contentW, height: contentH, channels: 3 } });
+  const stretch = async (buf, srcW, srcH, dstW, dstH) => sharp(buf, { raw: { width: srcW, height: srcH, channels: 3 } })
+    .resize(dstW, dstH, { kernel: 'cubic', fit: 'fill' }).toColourspace('srgb').raw().toBuffer();
+
+  // ① 中段行：[左带|内容|右带]（左右带 = 内容边缘列拉伸）
+  const midParts = [];
+  if (left > 0) {
+    const col = await contentImg().extract({ left: 0, top: 0, width: 1, height: contentH }).raw().toBuffer();
+    midParts.push({ input: await stretch(col, 1, contentH, left, contentH), raw: { width: left, height: contentH, channels: 3 }, left: 0, top: 0 });
+  }
+  midParts.push({ input: contentRaw, raw: { width: contentW, height: contentH, channels: 3 }, left, top: 0 });
+  if (right > 0) {
+    const col = await contentImg().extract({ left: contentW - 1, top: 0, width: 1, height: contentH }).raw().toBuffer();
+    midParts.push({ input: await stretch(col, 1, contentH, right, contentH), raw: { width: right, height: contentH, channels: 3 }, left: left + contentW, top: 0 });
+  }
+  const midRaw = midParts.length
+    ? await sharp({ create: { width: side, height: contentH, channels: 3, background: { r: 0, g: 0, b: 0 } } })
+        .composite(midParts).removeAlpha().toColourspace('srgb').raw().toBuffer()
+    : contentRaw;
+  const midImg = () => sharp(midRaw, { raw: { width: side, height: contentH, channels: 3 } });
+
+  // ② 整幅：[顶带|中段|底带]（上下带 = 中段边缘行拉伸）
+  const canvasParts = [];
+  if (top > 0) {
+    const row = await midImg().extract({ left: 0, top: 0, width: side, height: 1 }).raw().toBuffer();
+    canvasParts.push({ input: await stretch(row, side, 1, side, top), raw: { width: side, height: top, channels: 3 }, left: 0, top: 0 });
+  }
+  canvasParts.push({ input: midRaw, raw: { width: side, height: contentH, channels: 3 }, left: 0, top });
+  if (bottom > 0) {
+    const row = await midImg().extract({ left: 0, top: contentH - 1, width: side, height: 1 }).raw().toBuffer();
+    canvasParts.push({ input: await stretch(row, side, 1, side, bottom), raw: { width: side, height: bottom, channels: 3 }, left: 0, top: top + contentH });
+  }
+  if (!canvasParts.length) return midRaw;
+  return sharp({ create: { width: side, height: side, channels: 3, background: { r: 0, g: 0, b: 0 } } })
+    .composite(canvasParts).removeAlpha().toColourspace('srgb').raw().toBuffer();
+}
+
 function metadataFor(items, name) {
   if (Array.isArray(items)) return items.find((item) => item && item.name === name) || null;
   return items && items[name] ? items[name] : null;
@@ -264,10 +315,9 @@ async function generate(job) {
   let raw;
   if (contract.fixedSquare) {
     plan = letterboxPlan(w0, h0, contract.inputSize);
-    raw = await resizeSource
-      .resize(plan.contentW, plan.contentH, { kernel: 'cubic', fit: 'fill' })
-      .extend({ top: plan.top, bottom: plan.bottom, left: plan.left, right: plan.right, background: LETTERBOX_RGB })
-      .toColourspace('srgb').raw().toBuffer();
+    // 边缘复制填充（不喂灰板）：灰板会污染 DA3 对内容边界的预测，
+    // 产生硬边竖带 → 视差「边缘撕裂」（tools/depth-ab-test.js 实测）
+    raw = await letterboxReplicate(sharp, resizeSource, plan);
     inputW = contract.inputSize;
     inputH = contract.inputSize;
   } else {
@@ -432,5 +482,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, detectModelContract, normalizeDepth, cropLetterboxDepth },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x },
 };

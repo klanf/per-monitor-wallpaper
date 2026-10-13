@@ -59,7 +59,7 @@ const LEGACY_PATHS = {
 };
 
 // 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
-const DEPTH_CACHE_SCHEMA = 'depth-png-r2';
+const DEPTH_CACHE_SCHEMA = 'depth-png-r3';  // r3：DA3 letterbox 灰板→边缘复制填充（旧缓存深度图带撕裂竖带，须全量失效重生成）
 
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {
