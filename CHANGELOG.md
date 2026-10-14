@@ -245,6 +245,27 @@ store.js PROFILE_KEYS 补 4 键（atmoPalette/atmoFog/depthDof/godRays）。
 - 附注：auto 档白天时段近无操作是 r72 设计（用户嫌「只增亮度压暗部」），白天空看氛围请选固定调色板或等黄昏窗
 
 
+## 第七十三轮精简：撤掉雾浓度滑杆 / 景深虚化 / 丁达尔光束 —— 只留调色板体系（2026-10-14）
+
+### 需求
+
+用户验收后拍板：「2,3,4还是拿掉吧」——撤雾浓度滑杆、景深虚化、丁达尔光束三个特性，氛围只留调色板选择（顶栏太阳总开关 + 设置页调色板下拉不变）。
+
+### 撤除清单（三端全清）
+
+- stage.js：shader 删 uFogK/uDof/uGodR 声明+注册+上传、godRays 函数（含 SUN_POS）、flowSample 内 DOF 螺旋采样块与 godRays 调用；雾还原固定档位密度（fogW = fogDen*(1-exp(-2.2far²))）；cfg 默认值与 applyProfile 解析删 atmoFog/depthDof/godRays 三键
+- app.js：回填与 change 监听删三控件
+- index.html：设置页删雾浓度滑杆行 + 景深/丁达尔两 checkbox 行
+- store.js：PROFILE_KEYS 删三键（atmoPalette 保留）
+
+### 验证
+
+- node --check ×3；grep 全仓零残留（RESIDUE-GREP-EXIT=1）
+- Edge headless 真实编译：GLSL-COMPILE-OK
+- check-wiring 56/0；六套单测 345 项全 0 失败
+- 真机待验收：氛围 = 顶栏太阳开关 + 设置页调色板（auto 按时间白天/黄昏 / 黄金时刻 / 青橙 / 赛博朋克 / 月光蓝 / 褪色胶片）
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

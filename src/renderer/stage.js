@@ -96,9 +96,6 @@ const cfg = {
   idleFx: false,               // idle 微动画（r62，profile.idleFx）：呼吸+飘动+差速视差（mask 前景）
   depthAtmo: false,            // 分层氛围总开关（r71，profile.depthAtmo）：调色板光照+雾+金边
   atmoPalette: 'auto',         // 氛围调色板（r73）：auto=按时间（白天/黄昏）；golden/tealorange/cyberpunk/moonlight/faded=固定档
-  atmoFog: 1,                  // 雾浓度倍率（r73）：0=无雾 1=默认 2=加倍（设置页滑杆）
-  depthDof: false,             // 景深虚化（r73）：CoC 焦外模糊，默认关（设置页体验对比）
-  godRays: false,              // 丁达尔光束（r73）：亮源径向光柱，默认关（设置页开关）
   pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
 };
@@ -701,9 +698,6 @@ uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
 uniform float uIdle;        // idle 微动画总开关（profile.idleFx）
 uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
 uniform float uAtmoSel;     // 调色板档位（连续浮点，JS 端缓动防跳变）：0=白天 1=黄昏 2=黄金时刻 3=青橙好莱坞 4=赛博朋克 5=月光 6=褪色胶片
-uniform float uFogK;        // 雾浓度倍率（0=无雾 1=默认 2=加倍，设置页滑杆）
-uniform float uDof;         // 景深强度（0=关；>0 = CoC 放大倍率）
-uniform float uGodR;        // 丁达尔光束总开关（0/1）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -757,7 +751,7 @@ struct AtmoP {
   float lift;    // 抬黑量（0=不动；褪色胶片用，黑位抬到灰）
   float sat;     // 饱和度倍率（1=不动；胶片/月光降饱和，赛博朋克提）
   vec3 fogCol;   // 雾色（兼作金边颜色）
-  float fogDen;  // 雾密度峰值（指数雾，再乘 uFogK）
+  float fogDen;  // 雾密度峰值（指数雾）
   float farDark; // 远景压暗系数（深度带远端）
   float rimK;    // 金边强度（mask 边缘）
 };
@@ -791,26 +785,6 @@ void atmoParams(int i, out AtmoP p) {
     p.lift = 0.045; p.sat = 0.72;
     p.fogCol = vec3(0.88, 0.85, 0.80); p.fogDen = 0.10; p.farDark = 0.97; p.rimK = 0.0;
   }
-}
-
-// 丁达尔光束（r73）：屏幕空间径向采样（Mitchell 2004 / Crysis Sun Shafts 经典）——
-// 从像素向太阳屏幕位走 20 步，亮度阈值提取亮源（天空/窗光），衰减累加成光柱；
-// 每步吃 mask 遮挡（被前景挡住的光不贡献）→ 光柱不会打在人物身上。
-const vec2 SUN_POS = vec2(0.72, 0.16);   // 太阳屏幕位（stB 域，右上；v1 固定）
-vec3 godRays(vec3 col, vec2 stB) {
-  if (uGodR < 0.5) return col;
-  vec2 dir = SUN_POS - stB;
-  vec3 acc = vec3(0.0);
-  float w = 1.0;
-  for (int i = 0; i < 20; i++) {
-    vec2 st = stB + dir * (float(i) * 0.045);
-    vec3 c = texMirror(uImg, st).rgb;
-    float lit = smoothstep(0.70, 0.92, dot(c, vec3(0.2126, 0.7152, 0.0722)));
-    if (uHasMask > 0.5) lit *= 1.0 - texMirror(uMask, st).r * 0.85;   // 该步被前景挡住
-    acc += c * lit * w;
-    w *= 0.93;
-  }
-  return col + acc * 0.035;   // 20 步衰减累加归一（亮源直下 ≈ +0.5）
 }
 
 // stB：未扭曲基准坐标（与 idleWarp 的 mask 锚点一致 → 效果不随视差游走）。
@@ -852,7 +826,7 @@ vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
   float key = 0.22 + 0.78 * smoothstep(0.02, 0.30, luma);
   col = mix(col, graded, key);
   // 空气透视：IQ 指数平方雾（线性 smoothstep 有「中间突然一截」断层风险）；雾色亮度取自当前像素
-  float fogW = uFogK * fogDen * (1.0 - exp(-2.2 * far * far));
+  float fogW = fogDen * (1.0 - exp(-2.2 * far * far));
   col = mix(col, fogCol * (luma * 0.6 + 0.4), clamp(fogW, 0.0, 1.0));
   // 主体金边（黄昏/黄金时刻档）：mask 边缘梯度，与 idleWarp 同款 4 邻域差分
   if (rimK > 0.01 && uHasMask > 0.5) {
@@ -915,25 +889,6 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
   idleWarp(stF, stB, off, imgAspect, breathM);
   vec3 col = texMirror(uImg, stF).rgb;
   if (breathM != 0.0) col *= 1.0 + 0.02 * breathM;   // 呼吸亮度脉动 ±2%
-  // 景深虚化（r73）：CoC = |该点深度 − 焦点深度|（焦点取屏幕中心），黄金角螺旋 16 tap；
-  // CoC 小于阈值时保持原图（轻混入），避免全图微糊。
-  if (uDof > 0.01) {
-    float focus = texMirror(uDepth, vec2(0.5, 0.5)).r;
-    float coc = clamp(abs(texMirror(uDepth, stB).r - focus) * uDof, 0.0, 1.0);
-    if (coc > 0.015) {
-      float rad = coc * 9.0 / uCanvas.y;   // 屏幕像素域（CoC 最大 ~9px）→ st 域
-      vec3 acc = vec3(0.0);
-      for (int i = 0; i < 16; i++) {
-        float fi = float(i);
-        float ang = fi * 2.39996323;       // 黄金角螺旋分布
-        float rr = rad * sqrt((fi + 0.5) / 16.0);
-        vec2 o = vec2(cos(ang), sin(ang)) * rr;
-        acc += texMirror(uImg, stF + vec2(o.x / imgAspect, o.y)).rgb;
-      }
-      col = mix(col, acc * (1.0 / 16.0), smoothstep(0.015, 0.10, coc));
-    }
-  }
-  col = godRays(col, stB);                // 丁达尔光束（r73）：在调色前叠加，随调色板染色
   col = atmoApply(col, stB, imgAspect);   // 分层氛围：调色板光照+雾+金边
   return col;
 }
@@ -1058,7 +1013,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uMask', 'uHasMask', 'uIdle', 'uAtmo', 'uAtmoSel', 'uFogK', 'uDof', 'uGodR']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uMask', 'uHasMask', 'uIdle', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1223,9 +1178,6 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uIdle, cfg.idleFx ? 1 : 0);
   gl.uniform1f(glState.U.uAtmo, cfg.depthAtmo ? 1 : 0);
   gl.uniform1f(glState.U.uAtmoSel, atmoSelNow());       // 调色板档位（JS 端每帧缓动防跳变）
-  gl.uniform1f(glState.U.uFogK, Math.min(2, Math.max(0, Number(cfg.atmoFog) || 0)));
-  gl.uniform1f(glState.U.uDof, cfg.depthDof ? 6.0 : 0.0);
-  gl.uniform1f(glState.U.uGodR, cfg.godRays ? 1 : 0);
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uFlowIso, flowIso);
@@ -1819,9 +1771,6 @@ function applyChannelConfig() {
   if (p.atmoPalette !== undefined) {
     cfg.atmoPalette = ['auto', 'golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(p.atmoPalette) ? p.atmoPalette : 'auto';
   }
-  if (p.atmoFog !== undefined && Number.isFinite(Number(p.atmoFog))) cfg.atmoFog = Math.min(2, Math.max(0, Number(p.atmoFog)));
-  if (p.depthDof !== undefined) cfg.depthDof = Boolean(p.depthDof);
-  if (p.godRays !== undefined) cfg.godRays = Boolean(p.godRays);
   // 鼠标影响动效（r70，profile 不写 = 默认开）：关 = 两个喂入口闸门不更新
   // glState.mouse，并立刻清 mouseUntil —— 混合权重 mouseW 按 0.02/帧平滑衰减，
   // ~2s 内镜头无跳变地回到预设轨迹。
