@@ -199,6 +199,44 @@ body.idle { cursor: none; }
 .badge.clickable { cursor: pointer; }
 .badge.clickable:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.26); }
 
+/* 顶栏快捷开关（r41）：绑当前预览显示器，高亮=开、熄灭=关 */
+.qchip {
+  font-size: 11.5px;
+  font-family: inherit;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.qchip:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.26); }
+.qchip.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.qchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* 「重新扫描 ▾」组合按钮 + 自动扫描档位菜单（r41 从设置页搬来） */
+/* 根因修复：.preview-menu 的 display:flex 会压过 hidden 属性的 UA display:none，
+   菜单永远关不上（2026-10-14 实测）——所有弹出菜单统一补这条 */
+.preview-menu[hidden] { display: none; }
+.quick-toggles-wrap { position: relative; }
+.rescan-group { position: relative; }  /* Auto/▾/菜单的定位锚 */
+.autoscan-menu { left: 0; }
+.autoscan-hint {
+  padding: 6px 10px 4px;
+  margin-top: 3px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.qchip-text { font-size: 11px; padding: 3px 9px; }
+.qchip-caret { padding: 3px 6px; margin-left: -3px; }
+
 /* 预览目标徽章组：每台显示器一枚，点谁预览谁 */
 .badge-group { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; }
 .pm-badge.active {

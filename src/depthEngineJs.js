@@ -276,6 +276,81 @@ function featherDilate(gray, w, h) {
   return out;
 }
 
+/**
+ * 可分离滑动窗口均值（边缘复制 clamp），O(1)/像素，Float64 累加防精度损失。
+ * 返回 Float64Array（除以窗口数后），供引导滤波做二阶矩统计。
+ */
+function boxMean(src, w, h, r) {
+  const tmp = new Float64Array(src.length);
+  const out = new Float64Array(src.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += src[row + Math.min(w - 1, Math.max(0, k))];
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = acc;
+      acc += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += tmp[Math.min(h - 1, Math.max(0, k)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = acc;
+      acc += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
+    }
+  }
+  const cnt = (2 * r + 1) * (2 * r + 1);
+  for (let i = 0; i < out.length; i++) out[i] /= cnt;
+  return out;
+}
+
+/**
+ * RGB 引导滤波（He et al. guided filter，外部引导图版）。
+ * 与 2026-10-13 回退掉的 self-guided（引导图=深度自身）的本质差异：
+ * 引导图换原图亮度 —— 原图边缘在哪，深度边缘就跟到哪；平坦区回归平面，
+ * 过渡带沿真实轮廓重新分布而不是按深度自身梯度乱抹。DA3 锐边下
+ * 「深度过渡带取中间值 → 视差外扩成暗晕」正是社区 Depthbake 定性的
+ * 「alpha 问题被当深度问题」，引导滤波是其中最轻的后处理缓解路线。
+ * eps 语义：引导值域 0~255，variance 单位同域；取 2400（≈49²）——
+ * 压掉动漫图内部纹理边与背景画线（var<2400 不跟随，防止深度被纹理爬走
+ * → 视差把旁边角色拉变形，2026-10-14 用户实测），真实物体轮廓照常保留。
+ * strength=0.5 线性混合（q' = p + 0.5(q-p)）：引导滤波对"不该动的区域"
+ * 的误拉偏也砍半，保边收益保留大半。r=4 texel（半分辨率深度，屏幕 8px）
+ * 覆盖过渡带宽度。
+ */
+function rgbGuided(p, guide, w, h, r = 4, eps = 2400, strength = 0.5) {
+  const n = w * h;
+  const I = new Float64Array(n);
+  for (let i = 0; i < n; i++) I[i] = guide[i];
+  const meanI = boxMean(I, w, h, r);
+  const meanP = boxMean(p, w, h, r);
+  const II = new Float64Array(n);
+  const IP = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    II[i] = I[i] * I[i];
+    IP[i] = I[i] * p[i];
+  }
+  const mII = boxMean(II, w, h, r);
+  const mIP = boxMean(IP, w, h, r);
+  const a = new Float64Array(n);
+  const b = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const varI = mII[i] - meanI[i] * meanI[i];
+    const covIP = mIP[i] - meanI[i] * meanP[i];
+    a[i] = covIP / (varI + eps);
+    b[i] = meanP[i] - a[i] * meanI[i];
+  }
+  const mA = boxMean(a, w, h, r);
+  const mB = boxMean(b, w, h, r);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const q = mA[i] * I[i] + mB[i];
+    out[i] = p[i] + strength * (q - p[i]);  // 强度混合：误拉偏（背景纹理带偏深度）同样减半
+  }
+  return out;
+}
+
 function normalizeDepth(depth, invertDepth) {
   let mn = Infinity;
   let mx = -Infinity;
@@ -417,7 +492,17 @@ async function generate(job) {
 
   const gray = new Float32Array(dw * dh);
   for (let i = 0; i < gray.length; i++) gray[i] = resized[i];
-  const out8 = normalizeDepth(featherDilate(gray, dw, dh), false);
+  // RGB 引导滤波：引导图取原图亮度缩到深度分辨率（几何与裁剪回内容区后的
+  // 深度图对齐 —— 两条契约都是深度图最终落回全图比例），从原图直缩一趟
+  // 避开 resizeSource 已带 preshrink resize 再链 resize 的语义坑。
+  const dil = featherDilate(gray, dw, dh);
+  const gbuf = await sharp(job.path).removeAlpha()
+    .resize(dw, dh, { kernel: 'cubic', fit: 'fill' })
+    .toColourspace('b-w').raw().toBuffer();
+  if (gbuf.length !== dw * dh) throw new Error(`引导图输出 ${gbuf.length} != ${dw * dh}`);
+  const guide = new Float32Array(dw * dh);
+  for (let i = 0; i < guide.length; i++) guide[i] = gbuf[i];
+  const out8 = normalizeDepth(rgbGuided(dil, guide, dw, dh), false);
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
   armReleaseTimer();
 }
@@ -531,5 +616,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided },
 };

@@ -33,6 +33,14 @@ const els = {
   emptyAlbums: $('empty-albums'),
   folderLabel: $('folder-label'),
   previewBadges: $('preview-badges'),
+  quickToggles: $('quick-toggles'),
+  qtAuto: $('qt-auto'),
+  btnRescanCaret: $('btn-rescan-caret'),
+  autoscanMenu: $('autoscan-menu'),
+  quickToggles: $('quick-toggles'),
+  qtVideo: $('qt-video'),
+  qtDepth: $('qt-depth'),
+  qtParticles: $('qt-particles'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
   counter: $('counter'),
@@ -1218,6 +1226,7 @@ async function setPreview(id) {
     .catch(() => {});
   renderCards();
   updateBadges();
+  updateQuickToggles();
   await loadPreviewChannel();
   const now = channelById(id);
   if (previous && now) toast(`预览已切换到「${channelName(now)}」`);
@@ -1323,6 +1332,7 @@ function applyChannelInfo(info) {
   updateBadges();
   // 别的频道的索引也顺手刷新，避免设置面板显示旧值
   updateFilmStates();
+  updateQuickToggles();
 
   // 目录 / 递归 / 张数 / 修订号变了才重新取文件列表，单纯改间隔不该把画面打回第一张
   if (previewSignature(previewing) !== state.loadedSignature) loadPreviewChannel();
@@ -1424,6 +1434,41 @@ function resolvedDepth(chId) {
   const ov = (cfg.monitors || {})[chId] || {};
   if (ov.depthParallax === true || ov.depthParallax === false) return ov.depthParallax;
   return cfg.depthParallax !== false;
+}
+
+/* 顶栏快捷开关（r41）的生效值解析：与 resolvedDepth 同构 ——
+   每屏覆盖优先（monitors[id]），没覆盖回落全局默认。 */
+function resolvedVideoFull(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (ov.videoPlayFull === true || ov.videoPlayFull === false) return ov.videoPlayFull;
+  return cfg.videoPlayFull === true;
+}
+
+function resolvedParticles(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (typeof ov.particles === 'string') return ov.particles;  // '' = 该屏显式关
+  return cfg.particles || '';
+}
+
+/* Auto 开关「灭→亮」时回落的间隔：会话内记住最后一次非零档位（缺省 1 小时） */
+let lastAutoScanMinutes = 60;
+
+/* 顶栏快捷开关组状态刷新：频道列表 / 配置 / 预览目标三者任一变化都要调。 */
+function updateQuickToggles() {
+  if (!els.quickToggles) return;
+  const ch = channelById(state.previewId);
+  if (!ch) { els.quickToggles.hidden = true; return; }
+  els.quickToggles.hidden = false;
+  const set = (el, on) => { el.classList.toggle('on', on); el.setAttribute('aria-pressed', String(on)); };
+  set(els.qtVideo, resolvedVideoFull(ch.id));
+  set(els.qtDepth, resolvedDepth(ch.id));
+  set(els.qtParticles, resolvedParticles(ch.id) !== '');
+  // Auto 是全局开关（不跟屏）：亮=autoScanMinutes>0；▾ 只在亮时显示
+  const autoOn = ((state.config || {}).autoScanMinutes || 0) > 0;
+  set(els.qtAuto, autoOn);
+  els.btnRescanCaret.hidden = !autoOn;
 }
 
 /**
@@ -1616,11 +1661,11 @@ function cardHtml(ch) {
         <div class="field-hint">随机 = 每次换图在全部种类里抽一种；仅动态桌面开启时可见；烟花数量内置（最多同时 5 发）。</div>
       </div>
       <div class="mc-block">
-        <label class="check"><input type="checkbox" data-field="depthSwitch"${resolvedDepth(ch.id) ? ' checked' : ''}><span>深度视差</span></label>
+        <!-- 深度视差开关已搬顶栏快捷开关（r41）：卡片只留风格下拉，随生效值显隐 -->
         <div class="field-row"${resolvedDepth(ch.id) ? '' : ' hidden'}>
           <select class="select sm" data-field="flowStyle" title="这块屏的 DepthFlow 动效轨迹；跟随全局 = 用「外观」页里的全局设置">${flowStyleOptions(ov.flowStyle)}</select>
         </div>
-        <div class="field-hint">开关 = 这块屏的生效状态（全局关了这里也能单独开）；多屏全开 GPU 消耗大，可只给主力屏开。</div>
+        <div class="field-hint">开关在顶栏快捷开关组（绑定预览的那块屏）；这里只调动效轨迹。</div>
       </div>
     </div>
   </div>`;
@@ -2355,6 +2400,7 @@ function syncIntervalPresetActive(container, value) {
 
 function applyConfigToUI() {
   const c = state.config;
+  updateQuickToggles();  // 全局默认变了，快捷开关的「生效值」可能跟着变
 
   $('cfg-interval').value = c.interval;
   $('cfg-interval-out').textContent = formatInterval(c.interval);
@@ -2362,7 +2408,8 @@ function applyConfigToUI() {
   $('cfg-duration').value = c.duration;
   $('cfg-duration-out').textContent = `${c.duration} ms`;
   $('cfg-recursive').checked = c.recursive;
-  $('cfg-auto-scan').value = String(c.autoScanMinutes || 0);
+  // 自动扫描档位已搬顶栏 Auto ▾ 菜单（r41）：这里只刷「上次扫描」时刻 + 记住非零档。
+  if ((Number(c.autoScanMinutes) || 0) > 0) lastAutoScanMinutes = Number(c.autoScanMinutes);
   renderAutoScanHint();
   $('cfg-apply').checked = c.applyToSystem;
   $('cfg-apply-on-start').checked = c.applyOnStart !== false;
@@ -2372,7 +2419,6 @@ function applyConfigToUI() {
   $('cfg-live-wallpaper').checked = c.liveWallpaper === true;
   // 桌面手势切壁纸（54 轮追记五）：顶层键 swipeSwitch，默认开
   $('cfg-swipe-switch').checked = c.swipeSwitch !== false;
-  $('cfg-video-play-full').checked = c.videoPlayFull === true;
   $('cfg-breath').checked = c.breath === true;
   // 呼吸节奏（主树 47 轮同款）：周期秒 / 幅度 %
   const bp = Math.round(Number(c.breathPeriod));
@@ -2399,7 +2445,7 @@ function applyConfigToUI() {
   $('cfg-particle-cursor').checked = c.particleCursor !== false;
 
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
-  $('cfg-depth-parallax').checked = c.depthParallax !== false;
+  // 总开关已搬顶栏快捷开关（r41）：这里只留设备/模型/参数等细粒度项。
   $('cfg-depth-device').value = c.depthDevice === 'cpu' ? 'cpu' : 'gpu';  // 缺省 = GPU(DML)
   $('cfg-depth-model').value = ['da3', 'v2'].includes(c.depthModel) ? c.depthModel : 'auto';  // 缺省 = 自动(DA3 优先)
   const flowKeys = [
@@ -2662,12 +2708,7 @@ function bindSettings() {
     toast(e.target.checked ? '已开启子目录扫描' : '已关闭子目录扫描');
   });
 
-  $('cfg-auto-scan').addEventListener('change', async (e) => {
-    const min = Number(e.target.value) || 0;
-    await save({ autoScanMinutes: min });
-    renderAutoScanHint();
-    toast(min ? `已开启自动扫描：${describeScanMinutes(min)}一次` : '已关闭自动扫描');
-  });
+  // 自动扫描相簿监听已随设置页下拉一起搬走（r41），见顶栏 autoscanMenu 点击处理。
 
   $('cfg-apply').addEventListener('change', async (e) => {
     await save({ applyToSystem: e.target.checked });
@@ -2693,11 +2734,6 @@ function bindSettings() {
   $('cfg-swipe-switch').addEventListener('change', async (e) => {
     await save({ swipeSwitch: e.target.checked });
     toast(e.target.checked ? '桌面手势切壁纸已开启' : '桌面手势切壁纸已关闭');
-  });
-
-  $('cfg-video-play-full').addEventListener('change', async (e) => {
-    await save({ videoPlayFull: e.target.checked });
-    toast(e.target.checked ? '视频将播放完整再切下一张' : '视频恢复按间隔时间切换');
   });
 
   $('cfg-breath').addEventListener('change', async (e) => {
@@ -2812,15 +2848,7 @@ function bindSettings() {
   // ---- 深度视差（第十一轮）----
   // r21：联动从「置灰」改为「隐藏」——总开关关 → 子项全收起；
   // 流模式关 → 流专属项（风格/幅度/质量/进阶）收起，漂移速度与帧率仍显示（单平面平移也吃这两项）
-  function updateDepthDisabled() {
-    syncConditionalUI();
-  }
-  updateDepthDisabled();
-  $('cfg-depth-parallax').addEventListener('change', async (e) => {
-    updateDepthDisabled();
-    await save({ depthParallax: e.target.checked });
-    toast(e.target.checked ? '深度视差已开启' : '深度视差已关闭（回退普通平移缩放）');
-  });
+  // 深度视差总开关已搬顶栏快捷开关（r41），设置页不再挂全局勾选。
   // 深度推理设备（GPU(DML)/CPU）：写配置即生效 —— 主进程 applyConfigChange 实时
   // 转发给 depthService，旧会话立刻释放、下一张图按新设备重建，不用重启。
   $('cfg-depth-device').addEventListener('change', async (e) => {
@@ -3194,16 +3222,8 @@ function bindSettings() {
     }
     else if (e.target.type === 'range') await pushProfile(id, { [field]: Number(e.target.value) });
     else if (e.target.type === 'checkbox') {
-      if (field === 'depthSwitch') {
-        // 每屏深度视差开关（r24）：勾 = 显式开（覆盖 true），取消 = 显式关（覆盖 false）；
-        // 开关状态显示的是「生效值」（跟随全局时反映全局总开关），一动就变成显式覆盖。
-        // 风格下拉随生效值显隐 —— 卡片整体重绘后自然到位。
-        await pushProfile(id, { depthParallax: e.target.checked });
-        state.config = await window.wp.getConfig();
-        renderCards();
-      } else {
-        await pushProfile(id, { [field]: e.target.checked });
-      }
+      // 每屏深度视差开关已搬顶栏快捷开关（r41），卡片不再有 depthSwitch 分支。
+      await pushProfile(id, { [field]: e.target.checked });
     }
   });
 
@@ -3398,6 +3418,51 @@ function bindEvents() {
     if (result && result.channels) applyChannelInfo({ channels: result.channels });
     toast('已重新扫描', false);
   });
+
+  /* ---- 「重新扫描 ▾」自动扫描档位菜单（r41 从设置页搬来） ---- */
+
+  const AUTOSCAN_OPTIONS = [
+    [0, '关闭'], [5, '每 5 分钟'], [15, '每 15 分钟'], [30, '每 30 分钟'],
+    [60, '每 1 小时'], [180, '每 3 小时'], [720, '每 12 小时'],
+  ];
+
+  function renderAutoscanMenu() {
+    const cur = (state.config || {}).autoScanMinutes || 0;
+    $('autoscan-items').innerHTML = AUTOSCAN_OPTIONS.map(([min, text]) => `
+      <button type="button" class="pm-item${min === cur ? ' active' : ''}" data-min="${min}">
+        <span>${text}</span>${min === cur ? '<span class="pm-meta">✓</span>' : ''}
+      </button>`).join('');
+    renderAutoScanHint();  // 脚注（上次扫描时刻）是静态 DOM，id 不变直接复用
+  }
+
+  els.btnRescanCaret.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (els.autoscanMenu.hidden) {
+      renderAutoscanMenu();
+      els.autoscanMenu.hidden = false;
+      // 左缘对齐 ▾ 按钮（offsetParent 与菜单同为 rescan-group，直接用 offsetLeft）
+      els.autoscanMenu.style.left = `${els.btnRescanCaret.offsetLeft}px`;
+    } else {
+      els.autoscanMenu.hidden = true;
+    }
+  });
+
+  els.autoscanMenu.addEventListener('click', async (event) => {
+    const item = event.target.closest('.pm-item');
+    if (!item) return;
+    const min = Number(item.dataset.min) || 0;
+    state.config = await window.wp.setConfig({ autoScanMinutes: min });
+    applyConfigToUI();
+    els.autoscanMenu.hidden = true;
+    toast(min ? `已开启自动扫描：${describeScanMinutes(min)}一次` : '已关闭自动扫描');
+  });
+
+  // 点菜单外任意处收起（点 caret 自身由上面的 stopPropagation 挡住）
+  document.addEventListener('click', (event) => {
+    if (!els.autoscanMenu.hidden && !els.autoscanMenu.contains(event.target)) {
+      els.autoscanMenu.hidden = true;
+    }
+  });
   $('btn-settings').addEventListener('click', toggleSettings);
   $('btn-albums').addEventListener('click', toggleAlbumsPage);
   $('btn-albums-close').addEventListener('click', closeAlbumsPage);
@@ -3451,6 +3516,48 @@ function bindEvents() {
     if (!b) return;
     event.stopPropagation();
     setPreview(b.dataset.previewId);
+  });
+
+  /* ---- 顶栏快捷开关（r41）：视频轮播 / 深度视差 / 粒子，绑当前预览显示器 ----
+     状态刷新函数 updateQuickToggles 在顶层（resolvedParticles 旁），频道/配置/预览变化都调。 */
+
+  els.quickToggles.addEventListener('click', async (event) => {
+    const btn = event.target.closest('.qchip');
+    if (!btn || !state.previewId) return;
+    const id = state.previewId;
+    let note = '';
+    if (btn === els.qtVideo) {
+      const on = !resolvedVideoFull(id);
+      await pushProfile(id, { videoPlayFull: on });
+      note = on ? '这块屏视频将播完再切下一张' : '这块屏视频恢复按间隔时间切换';
+    } else if (btn === els.qtDepth) {
+      const on = !resolvedDepth(id);
+      await pushProfile(id, { depthParallax: on });
+      note = on ? '这块屏深度视差已开启' : '这块屏深度视差已关闭（回退普通平移缩放）';
+    } else if (btn === els.qtParticles) {
+      // 粒子是「种类值」不是布尔：关 = 覆盖写 ''（显式关）；开 = 有全局种类就跟全局（null），
+      // 全局也关着就给 random 兜底 —— 一键点亮总有粒子看。
+      const cur = resolvedParticles(id);
+      const next = cur !== '' ? '' : (((state.config || {}).particles || '') !== '' ? null : 'random');
+      await pushProfile(id, { particles: next });
+      note = next === '' ? '这块屏粒子特效已关闭' : '这块屏粒子特效已开启';
+    }
+    // Auto 已搬进 rescan-group（r41），不在本组监听范围内 —— 单独挂，见下。
+    state.config = await window.wp.getConfig();
+    updateQuickToggles();
+    renderCards();  // 设置页每屏卡片读同一份数据，顺手同步（未打开时零开销）
+    if (note) toast(note);
+  });
+
+  /* Auto 是全局开关（亮→灭写 0；灭→亮回上次间隔，会话内记住缺省 1 小时）。
+     搬进 rescan-group 后不在 quickToggles 组内，组监听收不到点击 —— 必须单独挂。 */
+  els.qtAuto.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const cur = (state.config || {}).autoScanMinutes || 0;
+    const next = cur > 0 ? 0 : lastAutoScanMinutes;
+    state.config = await window.wp.setConfig({ autoScanMinutes: next });
+    applyConfigToUI();
+    toast(next ? `已开启自动扫描：${describeScanMinutes(next)}一次` : '已关闭自动扫描');
   });
 
   $('btn-next').addEventListener('click', () => command('next'));

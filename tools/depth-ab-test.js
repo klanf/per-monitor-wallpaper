@@ -89,7 +89,7 @@ async function runVariant(session, variant, imgPath) {
     inputW = s.nw; inputH = s.nh;
     raw = await src.resize(inputW, inputH, { kernel: 'cubic', fit: 'fill' }).toColourspace('srgb').raw().toBuffer();
     feeds = { pixel_values: new ort.Tensor('float32', toNchw(raw, inputW, inputH), [1, 3, inputH, inputW]) };
-  } else if (variant === 'da3' || variant === 'da3-rep') {
+  } else if (variant === 'da3' || variant === 'da3-rep' || variant === 'da3-gf') {
     plan = letterboxPlan(w0, h0);
     if (variant === 'da3') {
       // 旧实现：灰板 letterbox（撕裂来源，留作对照）
@@ -97,7 +97,7 @@ async function runVariant(session, variant, imgPath) {
         .extend({ top: plan.top, bottom: plan.bottom, left: plan.left, right: plan.right, background: LETTERBOX })
         .toColourspace('srgb').raw().toBuffer();
     } else {
-      // 新实现：边缘复制填充 —— 直接用引擎同源实现（__test 导出）
+      // 新实现（da3-rep / da3-gf）：边缘复制填充 —— 直接用引擎同源实现（__test 导出）
       raw = await engineTest.letterboxReplicate(sharp, src, plan);
     }
     feeds = { image: new ort.Tensor('uint8', raw, [1, SIDE, SIDE, 3]) };
@@ -120,14 +120,21 @@ async function runVariant(session, variant, imgPath) {
   else if (variant === 'da3') { const c = cropLetterboxDepth(data, dims, plan); depth = c.depth; sw = c.width; sh = c.height; }
   else { depth = data; sw = dims[dims.length - 1]; sh = dims[dims.length - 2]; }
 
-  // 与引擎一致的后处理：归一化(8bit) → 半分辨率 cubic → dilate2x → 再归一化
+  // 与引擎一致的后处理：归一化(8bit) → 半分辨率 cubic → featherDilate →（da3-gf 追加 RGB 引导滤波）→ 再归一化
   const norm = normalizeDepth(depth, variant !== 'v2');
   const dw = Math.max(1, Math.floor(w0 / 2)), dh = Math.max(1, Math.floor(h0 / 2));
   const mid = await sharp(norm, { raw: { width: sw, height: sh, channels: 1 } })
     .resize(dw, dh, { kernel: 'cubic', fit: 'fill' }).toColourspace('b-w').raw().toBuffer();
   const g = new Float32Array(dw * dh);
   for (let i = 0; i < g.length; i++) g[i] = mid[i];
-  const fin = normalizeDepth(engineTest.featherDilate(g, dw, dh), false);
+  let fin = engineTest.featherDilate(g, dw, dh);
+  if (variant === 'da3-gf') {
+    const gbuf = await sharp(imgPath).removeAlpha()
+      .resize(dw, dh, { kernel: 'cubic', fit: 'fill' }).toColourspace('b-w').raw().toBuffer();
+    const guide = new Float32Array(dw * dh);
+    for (let i = 0; i < guide.length; i++) guide[i] = gbuf[i];
+    fin = engineTest.rgbGuided(fin, guide, dw, dh);
+  }
   return { fin, dw, dh, tInf, meta: { w0, h0 } };
 }
 
@@ -159,7 +166,7 @@ function sobelStats(g, w, h) {
   const rows = [];
   for (const img of picks) {
     const base = path.basename(img).replace(/\.[^.]+$/, '').slice(0, 40);
-    for (const variant of ['v2', 'da3', 'da3-rep', 'da3-crop']) {
+    for (const variant of ['v2', 'da3', 'da3-rep', 'da3-crop', 'da3-gf']) {
       const sess = sessions[variant === 'v2' ? 'v2' : 'da3'];
       const r = await runVariant(sess, variant, img);
       const st = sobelStats(r.fin, r.dw, r.dh);

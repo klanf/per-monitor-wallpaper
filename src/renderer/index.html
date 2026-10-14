@@ -30,8 +30,18 @@
 </div>
 
 <header id="topbar" class="bar top">
-  <div class="bar-group">
+  <div class="bar-group rescan-group">
     <button class="btn" id="btn-rescan" title="重新扫描（Ctrl+R）">重新扫描</button>
+    <!-- 自动扫描（全局，r41 从设置页搬来）：点亮=按间隔自动刷新目录；旁边的 ▾ 选间隔，熄灭即藏 -->
+    <button type="button" class="qchip qchip-text" id="qt-auto" aria-label="自动扫描相簿开关" title="自动扫描相簿：定时刷新目录（新图接尾、已删自动清，当前这张不动）。点亮后点旁边的 ▾ 选间隔">Auto</button>
+    <button type="button" class="qchip qchip-caret" id="btn-rescan-caret" aria-label="选择自动扫描间隔" title="选自动扫描间隔" hidden>
+      <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+    </button>
+    <!-- 自动扫描档位菜单：锚定 ▾ 按钮（JS 按 offsetLeft 对齐） -->
+    <div class="preview-menu autoscan-menu" id="autoscan-menu" hidden>
+      <div id="autoscan-items"></div>
+      <div class="autoscan-hint" id="cfg-auto-scan-hint"></div>
+    </div>
     <span class="muted ellipsis" id="folder-label">未选择相簿</span>
   </div>
   <div class="bar-group">
@@ -43,6 +53,19 @@
     </button>
     <!-- 预览目标：所有显示器一字排开，点谁预览谁（不再单个徽章轮换） -->
     <span id="preview-badges" class="badge-group"></span>
+    <!-- 快捷开关组（r41）：绑当前预览的显示器，高亮=开、熄灭=关；
+         点击写该屏 profile 覆盖，桌面立刻生效。搬自设置页（视频轮播/深度视差/粒子）。 -->
+    <span id="quick-toggles" class="badge-group" hidden>
+      <button type="button" class="qchip" id="qt-video" aria-label="视频轮播开关（当前预览的显示器）" title="视频轮播（当前预览的显示器）：开启后视频播完再切下一张，图片仍按间隔切换">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="3.5" width="12.4" height="9" rx="1.6"/><path d="M6.8 6.2l3.4 1.8-3.4 1.8z" fill="currentColor" stroke="none"/></svg>
+      </button>
+      <button type="button" class="qchip" id="qt-depth" aria-label="深度视差开关（当前预览的显示器）" title="深度视差（当前预览的显示器）：有深度图的壁纸镜头流动；耗 GPU，可只给主力屏开">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2l5.8 3.1L8 8.4 2.2 5.3z"/><path d="M2.2 8.6L8 11.7l5.8-3.1"/><path d="M2.2 11.4L8 14.5l5.8-3.1" opacity="0.55"/></svg>
+      </button>
+      <button type="button" class="qchip" id="qt-particles" aria-label="粒子特效开关（当前预览的显示器）" title="粒子特效（当前预览的显示器）：种类/数量等细节在设置 › 外观">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8l1.5 4.7L14.2 8l-4.7 1.5L8 14.2 6.5 9.5 1.8 8l4.7-1.5z"/></svg>
+      </button>
+    </span>
     <button class="btn" id="btn-albums" title="相簿管理（添加目录在这里）">相簿</button>
     <button class="btn" id="btn-settings" title="设置（Ctrl+,）">设置</button>
   </div>
@@ -143,25 +166,9 @@
         </div>
       </div>
 
-      <div class="field">
-        <label class="field-label">自动扫描相簿 <span class="info-dot" tabindex="0" data-tip="定时重新扫描相簿目录：新图接在列表末尾、已删的图自动清掉，当前正在显示的那张和播放顺序都不动。关闭后只有手动「重新扫描」或重启程序才会更新图片列表。"></span></label>
-        <select class="select" id="cfg-auto-scan">
-          <option value="0">关闭</option>
-          <option value="5">每 5 分钟</option>
-          <option value="15">每 15 分钟</option>
-          <option value="30">每 30 分钟</option>
-          <option value="60">每 1 小时</option>
-          <option value="180">每 3 小时</option>
-          <option value="720">每 12 小时</option>
-        </select>
-        <div class="field-hint" id="cfg-auto-scan-hint"></div>
-      </div>
+      <!-- 自动扫描相簿已搬顶栏「重新扫描 ▾」菜单（r41）：这里不再重复显示 -->
 
-      <!-- 视频播完再切（r21 从「动态桌面」搬来：本质是切换时机，归轮播管） -->
-      <div class="field">
-        <label class="field-label">视频轮播 <span class="info-dot" tabindex="0" data-tip="开启后视频播放完整才切下一张（不按间隔时间）；图片仍按间隔切换。仅动态桌面开启时可见视频行为。"></span></label>
-        <label class="check"><input type="checkbox" id="cfg-video-play-full"><span>视频播完再切下一个</span></label>
-      </div>
+      <!-- 视频轮播开关已搬顶栏快捷开关（r41）：这里不再重复显示 -->
 
       <!-- 每屏模式：一排显示器胶囊切换 + 只渲染当前编辑的那张卡（r21 合并，4 张长卡 → 1 张） -->
       <div class="field per-monitor-only">
@@ -325,10 +332,9 @@
 
       <!-- 深度视差（r21 从「系统」搬来：视觉参数归外观；子项联动从置灰改为隐藏） -->
       <div class="field" id="field-depth">
-        <label class="field-label">深度视差 <span class="info-dot" tabindex="0" data-tip="有深度图的壁纸生效，没有深度图的自动走普通模式。镜头走电影感 DepthFlow 流动（替代左右平移）；鼠标在桌面移动会临时接管镜头。多显示器时可以在「轮播 › 每屏卡片」里单独关掉耗性能的那块屏。改「进阶参数」后若画面怪异，把三个值调回 0.6 / 0.3 / 0.2 即可。"></span></label>
-        <label class="check"><input type="checkbox" id="cfg-depth-parallax"><span>深度视差总开关（关掉后回退普通平移缩放）</span></label>
+        <label class="field-label">深度视差 <span class="info-dot" tabindex="0" data-tip="有深度图的壁纸生效，没有深度图的自动走普通模式。镜头走电影感 DepthFlow 流动（替代左右平移）；鼠标在桌面移动会临时接管镜头。每屏开关在顶栏快捷开关组（绑定预览的那块屏）。改「进阶参数」后若画面怪异，把三个值调回 0.6 / 0.3 / 0.2 即可。"></span></label>
         <div class="field-hint mono" id="depth-status"></div>
-        <div class="cond" data-cond="cfg-depth-parallax">
+        <div class="cond">
           <div class="field-row sub">
             <span class="field-label" style="flex:0 0 84px">推理设备</span>
             <select class="select" id="cfg-depth-device" style="flex:1">

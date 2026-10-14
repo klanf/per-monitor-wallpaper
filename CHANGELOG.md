@@ -4115,3 +4115,81 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
   （electron 解包完 351MB 后零 CPU 零 IO 停滞，r34 直接 npm run dist 无此问题，未定罪），
   按 PID 树杀掉后清理 dist/win-unpacked.tmp 与 .lock（目录）残留，改走 npm run dist 完成。
   对外说明：用户双击 bat 不经本会话环境，卡死与 bat 无关，属 agent 会话环境问题。
+
+## 第六十轮：顶栏快捷开关三枚 + Auto 搬到重新扫描旁（2026-10-13~14）
+
+### 现象
+
+- 深度视差/视频轮播/粒子这三个高频开关埋在设置页深处，每次切换要点开面板翻页。
+- Auto（自动扫描）藏在设置页，与「重新扫描」按钮天各一方。
+
+### 改动
+
+- 顶栏 preview-badges 旁新增快捷开关组：视频轮播/深度视差/粒子三枚 SVG 图标 chip
+  （on 态 accent 高亮），绑定当前预览显示器，走现成 pushProfile（PROFILE_KEYS 全覆盖），
+  调度器零改动；粒子关=覆盖空串、开=有全局种类跟全局否则 random 兜底。
+- 每屏卡片删 depthSwitch 块、轮播页删「视频轮播」块，设置页三块对应移除（配置跟显示器走）。
+- Auto 独立 qchip 挪进 rescan-group（重新扫描旁），亮=autoScanMinutes>0，
+  ▾ 菜单七档间隔；点外收起；灭→亮回落会话内记住的最近非零档。
+- 过程坑三连：菜单 display:flex 类规则压过 hidden 属性（补 [hidden]{display:none} 全菜单受益）；
+  Auto 搬进 rescan-group 后脱离快捷开关组的事件委托范围成死代码（单独挂 click+stopPropagation）；
+  split-caret 菜单对齐改按 caret.offsetLeft 左缘对齐。
+
+### 验证
+
+- node --check、check-wiring 56/0、cfg-* 残留引用清零；真机三轮 UI 修复后可用。
+- 修复过程中 discovered：.preview-menu 关不上与 Auto 点不动的根因均属上列坑，修后复测通过。
+
+## 第六十一轮：RGB 引导滤波压 DA3 深度爬线（缓存 schema r6）（2026-10-14）
+
+### 现象
+
+- DA3 深度在背景纹理强边处「爬线」——引导滤波强度全开时背景画线被跟随进深度图，
+  视差放大后侧面角色变形（用户反馈）。
+
+### 根因与修法
+
+- 前序 self-guided 版（已随三项回退）引导图用深度自身，纹理强边仍会爬。
+- 本轮改 He et al. **外部引导**：引导图 = 原图亮度直缩到深度分辨率（fresh sharp 管线，
+  避开 resizeSource 链 resize 语义坑），boxMean 可分离滑动均值（Float64 累加防量化）。
+- 参数定版：eps 1600→2400（提高纹理/背景画线跟随门槛）+ strength=0.5 线性混合
+  （q'=p+0.5(q-p)，误拉偏减半）。DEPTH_CACHE_SCHEMA r4→r6 全量失效重生成。
+
+### 验证
+
+- node --check x3、check-wiring 56/0；合成性质 4 场景（纹理不爬入 0.00/台阶保持/恒等）；
+  真图 A/B 锐边占比 0.05~0.26% → ~0.00%（tools/depth-ab-test.js da3-gf 变体）。
+- 用户真机验收：「比之前好，轻微锯齿可接受」—— 定版保留。
+
+## 第六十二轮：冷开机探测超时一票否决 —— 45s + 自愈重探（2026-10-14）
+
+### 现象
+
+- 用户报：本机开机后壁纸切了好几张，全都没进深度视差。
+- live-debug.log 实锤：10:36:32（开机启动时刻）一条
+  「深度功能不可用 —— JS 引擎不可用（深度引擎线程被终止（probe-timeout）），
+  且缺少 深度模型（models\depth-anything）」，之后整场零深度生成（depth-cache 当日零写入）。
+
+### 根因
+
+- 开机冷启动时磁盘风暴+杀毒扫描把 worker 线程里 require(onnxruntime-node/sharp)
+  拖过 20s 探测超时 → 线程被 terminate → probe 判负。
+- 而「缺少 深度模型」是 Python 回退引擎在找 model.safetensors（HF 权重，从未存在），
+  纯误导性提示；真模型 da3_small.onnx/v2 onnx 都在盘上。
+- 结构性缺陷：probe 失败 → Python 回退也缺 → enabled=false **一票否决到会话结束**，
+  只有下次 configure（改设置）才重探，会话内永不自愈。
+
+### 改动
+
+- 探测超时 20s → 45s（真坏的情况 require 秒失败，不吃超时；放大无副作用）。
+- 自愈重探 armProbeRetry：probe 失败且 ONNX 模型文件还在盘上 → 退避重探
+  （30s 起每次 ×2，封顶 5 次；放弃只打一次日志，下次 configure 重置预算）；
+  成功即恢复 js 引擎并 pump 排空 disabled 期间攒下的 miss 队列，视差自动追上。
+- 测试钩子 WP_PROBE_RETRY_MS 可把退避压到毫秒级（沿用 WP_* 钩子惯例）。
+
+### 验证
+
+- 负向控制（WP_NO_JS_DEPTH=1 模拟探测必败）：5 次退避重探依次出现 → 放弃日志只一次 →
+  再 configure 计数重置再来 5 次。
+- 正向对照（真模型在盘）：probe 直接过、就绪 [engine=js·worker]、不武装重探。
+- node --check、check-wiring 56/0、单测 185/0 + 14/14 + 20/0（test-depth-service 全绿）。

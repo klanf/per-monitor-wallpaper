@@ -35,6 +35,17 @@ const IDLE_KILL_MS = 10 * 60 * 1000;
 const JOB_TIMEOUT_MS = 90 * 1000; // 8K 图 + 冷启动也要不了这么久；超时按坏 worker 处理
 const SPAWN_FAIL_LIMIT = 3;
 
+/* ---- 探测超时与失败自愈（10-14 冷开机实锤）----
+ * 冷开机时杀毒/磁盘风暴能把 require(ort/sharp) 拖过 20s → probe 判负 →
+ * Python 回退也缺 → enabled=false 一票否决到会话结束，视差整场消失。
+ * 改两刀：超时放大到 45s（真坏的情况 require 秒失败，不吃超时）；
+ * 失败后若模型文件还在就退避重探（30s 起指数退避，封顶次数），成功即 pump 排空队列。
+ */
+const PROBE_TIMEOUT_MS = 45 * 1000;
+const PROBE_RETRY_MAX = 5;              // 自愈重探次数上限，用尽后等下次 configure 重置
+// 首次 30s，之后 ×2（30s/1min/2min/4min/8min）；WP_PROBE_RETRY_MS 测试钩子可缩到毫秒级
+const PROBE_RETRY_BASE_MS = Number(process.env.WP_PROBE_RETRY_MS) || 30 * 1000;
+
 /* ---- 缓存 LRU 上限（第十九轮）----
  * 实测 2026-10-09：2016 张深度图 ≈ 204MB（约 104KB/张），全图库 ~2.5 万张
  * 全部生成也就 ~2.6GB。定 2GB 上限 = 覆盖全库绰绰有余，又保证极端情况
@@ -59,7 +70,7 @@ const LEGACY_PATHS = {
 };
 
 // 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
-const DEPTH_CACHE_SCHEMA = 'depth-png-r4';  // r4：dilate2x 方形核→十字核×1+高斯羽化（旧缓存深度图带楼梯齿，须全量失效重生成）
+const DEPTH_CACHE_SCHEMA = 'depth-png-r6';  // r6：引导滤波 eps 2400+强度 0.5（压角色变形，旧 r5 缓存是全强度输出须失效重生成）
 
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {
@@ -102,6 +113,10 @@ const state = {
   wtWaiter: null,              // 在途任务的 resolve 钩子（job-result 到达时兑现）
   probeSeq: 0,                 // 在途探测的 seq
   probeWaiter: null,           // 在途探测的 resolve 钩子
+  // 探测失败自愈（冷开机 probe-timeout 一票否决问题的修复）
+  reprobeTries: 0,             // 已安排的自愈重探次数
+  reprobeTimer: null,          // 待触发的重探定时器
+  reprobeGaveUpLog: false,     // 放弃日志只打一次的闸
 };
 
 /**
@@ -271,7 +286,7 @@ function terminateJsWorker(why) {
   try { w.terminate(); } catch (_) { /* 已死 */ }
 }
 
-/** 探测 JS 引擎（在 worker 线程里 require ort/sharp + 查模型）；20s 超时判负 */
+/** 探测 JS 引擎（在 worker 线程里 require ort/sharp + 查模型）；超时判负 */
 function probeJs(onnxModel) {
   return new Promise((resolve) => {
     let settled = false;
@@ -284,8 +299,8 @@ function probeJs(onnxModel) {
     };
     const timer = setTimeout(() => {
       terminateJsWorker('probe-timeout');
-      finish({ ok: false, reason: 'JS 引擎线程探测超时（20s）' });
-    }, 20000);
+      finish({ ok: false, reason: `JS 引擎线程探测超时（${PROBE_TIMEOUT_MS / 1000}s）` });
+    }, PROBE_TIMEOUT_MS);
     if (timer.unref) timer.unref();
     try {
       // 已有在途探测（快速连发 configure）：先落定为「被取代」，让前一个
@@ -681,6 +696,10 @@ function configure(patch) {
   state.engine = 'probing';
   state.enabled = true;
   state.disabledReason = '';
+  // 用户主动 configure = 全新一轮探测预算：清掉在途重探定时器、清零计数
+  if (state.reprobeTimer) { clearTimeout(state.reprobeTimer); state.reprobeTimer = null; }
+  state.reprobeTries = 0;
+  state.reprobeGaveUpLog = false;
   probeJs(state.onnxModel).then((r) => {
     if (r && r.superseded) return;   // 已被更新的 configure 接管，别在这里改引擎归属
     if (r.ok) {
@@ -692,6 +711,7 @@ function configure(patch) {
         `model=${state.modelInfo && state.modelInfo.version || '待首张图识别'}`);
     } else {
       applyPythonAvailability(r.reason);
+      armProbeRetry(r.reason);   // 探测失败自愈：模型还在盘上就退避重探
     }
     pump();   // 探测期间攒下的队列现在派活
   });
@@ -715,6 +735,50 @@ function applyPythonAvailability(jsReason) {
     log('深度功能就绪 [engine=python]: python=', state.python, ' model=', state.modelDir,
       '（JS 引擎回落原因:', jsReason, '）');
   }
+}
+
+/**
+ * 探测失败自愈（10-14 冷开机实锤：杀毒把 require(ort/sharp) 拖过超时 → probe 判负
+ * → Python 回退也缺 → enabled=false 一票否决到会话结束，视差整场消失）。
+ * 只要 ONNX 模型文件还在盘上，就按退避间隔重探；成功即恢复 js 引擎，
+ * pump 把 disabled 期间攒下的 miss 任务排空，视差自动追上。
+ * 退避 30s 起每次 ×2、封顶 PROBE_RETRY_MAX 次；用尽后停手（下次 configure 重置预算）。
+ */
+function armProbeRetry(jsReason) {
+  if (state.reprobeTimer) return;   // 已有重探在路上
+  if (!state.onnxModel || !fs.existsSync(state.onnxModel)) return;   // 模型真缺，重探无意义
+  if (state.reprobeTries >= PROBE_RETRY_MAX) {
+    if (!state.reprobeGaveUpLog) {
+      state.reprobeGaveUpLog = true;
+      log(`深度引擎重探连续失败 ${PROBE_RETRY_MAX} 次，放弃自动重试（改设置或重启应用可再触发）`);
+    }
+    return;
+  }
+  state.reprobeTries += 1;
+  const delay = PROBE_RETRY_BASE_MS * Math.pow(2, state.reprobeTries - 1);
+  log(`深度引擎不可用（${jsReason}），${Math.round(delay / 1000)}s 后自动重探（第 ${state.reprobeTries}/${PROBE_RETRY_MAX} 次）`);
+  state.reprobeTimer = setTimeout(() => {
+    state.reprobeTimer = null;
+    if (state.engine === 'js') return;   // 其他路径已恢复，不必再探
+    state.engine = 'probing';
+    probeJs(state.onnxModel).then((r) => {
+      if (r && r.superseded) return;   // 期间来了新 configure，归属归它管
+      if (r.ok) {
+        state.engine = 'js';
+        state.enabled = true;
+        state.disabledReason = '';
+        state.reprobeTries = 0;
+        state.reprobeGaveUpLog = false;
+        if (r.modelInfo) state.modelInfo = r.modelInfo;
+        log('深度引擎重探成功，视差自愈恢复 [engine=js·worker] onnx=', state.onnxModel);
+      } else {
+        applyPythonAvailability(r.reason);
+        armProbeRetry(r.reason);
+      }
+      pump();   // disabled 期间攒下的队列现在派活
+    });
+  }, delay);
+  if (state.reprobeTimer.unref) state.reprobeTimer.unref();
 }
 
 function stats() {
@@ -756,6 +820,7 @@ function status() {
  * 不经过 Chromium 的卸载路径 —— 退出挂死的根因整体消失。taskkill 引信保留当保险。
  */
 function shutdown() {
+  if (state.reprobeTimer) { clearTimeout(state.reprobeTimer); state.reprobeTimer = null; }
   terminateJsWorker('quit');
   log('深度引擎已释放（quit shutdown）');
 }
