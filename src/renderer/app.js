@@ -40,6 +40,7 @@ const els = {
   quickToggles: $('quick-toggles'),
   qtVideo: $('qt-video'),
   qtDepth: $('qt-depth'),
+  qtIdle: $('qt-idle'),
   qtParticles: $('qt-particles'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
@@ -1452,6 +1453,14 @@ function resolvedParticles(chId) {
   return cfg.particles || '';
 }
 
+/** idle 微动画（r62）生效值：与 resolvedVideoFull 同构（布尔 profile 键，不写 = 默认关） */
+function resolvedIdle(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (ov.idleFx === true || ov.idleFx === false) return ov.idleFx;
+  return cfg.idleFx === true;
+}
+
 /* Auto 开关「灭→亮」时回落的间隔：会话内记住最后一次非零档位（缺省 1 小时） */
 let lastAutoScanMinutes = 60;
 
@@ -1464,6 +1473,7 @@ function updateQuickToggles() {
   const set = (el, on) => { el.classList.toggle('on', on); el.setAttribute('aria-pressed', String(on)); };
   set(els.qtVideo, resolvedVideoFull(ch.id));
   set(els.qtDepth, resolvedDepth(ch.id));
+  set(els.qtIdle, resolvedIdle(ch.id));
   set(els.qtParticles, resolvedParticles(ch.id) !== '');
   // Auto 是全局开关（不跟屏）：亮=autoScanMinutes>0；▾ 只在亮时显示
   const autoOn = ((state.config || {}).autoScanMinutes || 0) > 0;
@@ -3534,6 +3544,11 @@ function bindEvents() {
       const on = !resolvedDepth(id);
       await pushProfile(id, { depthParallax: on });
       note = on ? '这块屏深度视差已开启' : '这块屏深度视差已关闭（回退普通平移缩放）';
+    } else if (btn === els.qtIdle) {
+      // idle 微动画（r62）：前景呼吸+飘动+差速视差；需要 mask（深度缓存 r7 起自带）与视差开
+      const on = !resolvedIdle(id);
+      await pushProfile(id, { idleFx: on });
+      note = on ? '这块屏 idle 微动画已开启（角色呼吸/衣摆飘动/前景差速）' : '这块屏 idle 微动画已关闭';
     } else if (btn === els.qtParticles) {
       // 粒子是「种类值」不是布尔：关 = 覆盖写 ''（显式关）；开 = 有全局种类就跟全局（null），
       // 全局也关着就给 random 兜底 —— 一键点亮总有粒子看。

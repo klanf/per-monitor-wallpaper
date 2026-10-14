@@ -4193,3 +4193,42 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
   再 configure 计数重置再来 5 次。
 - 正向对照（真模型在盘）：probe 直接过、就绪 [engine=js·worker]、不武装重探。
 - node --check、check-wiring 56/0、单测 185/0 + 14/14 + 20/0（test-depth-service 全绿）。
+
+## 第六十三轮：低成本让角色动起来 —— idle 微动画（A 呼吸+飘动 / B 差速视差）（2026-10-14）
+
+### 背景
+
+- DA3 调研定方向：不上 AI 图生视频（每张需人工挑循环点），走「shader 对采样 UV 做微扭曲」——
+  前景/背景运动不一致，人眼即解读为「活」。A=分层 idle（深度阈值切前景 mask → 呼吸+发丝衣摆
+  正弦扭曲），B=差速视差（角色层移动系数>背景层）；闲置相机轨迹已有（depthDrift 自动漂移）不重做。
+
+### 改动
+
+- **A1 mask 生成**（depthEngineJs.js + depthService.js）：深度落盘后同会话顺手派生前景 mask ——
+  Otsu 自动阈值（256 bin 类间方差）切前景（深度值大=近）+ 2.5σ 高斯羽化，与深度图同分辨率
+  同缓存键（`<key>.mask.png`）。退化保护：单值深度（Otsu 无峰）/前景占比 <2% 或 >95% → 不写
+  mask，渲染端优雅降级。失败绝不影响已落盘的深度本体。DEPTH_CACHE_SCHEMA r6→r7 全量失效
+  （旧缓存无 mask），首日按需懒生成。
+- **A2 shader idle**（stage.js DEPTH_FS）：新增 uMask(unit 2)/uHasMask/uIdle 三 uniform +
+  idleWarp —— ①呼吸：垂直微移 ±0.0012 gluv（≈2px@2160p）3s 周期 + 亮度 ±2% 脉动，
+  mask 加权整前景同相；②飘动：双频水平 sin，权重 ∝ mask 边缘梯度（4 邻域差分，发丝衣摆动、
+  躯干内部梯度≈0 不变形）；③B 差速：前景层额外吃 12% 相机位移。所有幅度为真机调参起点。
+  mask 采样锚定未扭曲基准坐标（stB），扭曲不游走。
+- **管线**：glLoadLayer 按深度路径派生 mask 路径（`.depth.png`→`.mask.png`，非此命名→null
+  优雅降级）；glFreeLayer 释放 maskTex；pump 派任务带 `job.outMask`（Python 引擎不认识，无害）；
+  拼接路径不带 mask（uHasMask=0）。
+- **A3 顶栏开关**：快捷开关组加第 4 枚 qchip（人形图标），profile 键 `idleFx`（默认关，跟显示器
+  走），resolvedIdle 与 resolvedVideoFull 同构，点击 pushProfile 即时生效。
+- shader 无法无头编译（GPU 会话无头必炸的前车之鉴）：CPU 侧静态自证 = 括号配平 0/0、
+  uniform 清单含 uMask/uHasMask/uIdle、idleWarp 定义先于调用、调用点签名匹配；
+  glInit 失败兜底仍是降级 2D 绝不黑屏。
+
+### 验证
+
+- node --check x5、check-wiring 56/0、单测 185/0 + 14/14 + 20/0（含 onnx 真机推理链全绿）。
+- mask 性质三断言（tools/tmp-mask-verify.js，合成深度 CPU 侧自证）：双峰 40/60 → mask 前景占比
+  38%（±噪声内）且羽化过渡带存在、分辨率与深度一致；单值平坦 → Otsu 返 -1 不写文件；
+  全前景 → 占比超界不写文件。测试分母坑：sharp raw 默认展开 3 通道，值占比=像素占比须除
+  buffer 总长而非像素数。
+- 真机待验收：idle chip 点亮后角色呼吸/衣摆/差速观感，幅度三参数（0.0012/0.0035/0.12）按
+  反馈定版；差速方向符号（+off 同向=人物更动，反向则翻转常数符号）。

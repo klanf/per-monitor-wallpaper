@@ -397,6 +397,54 @@ async function writeAtomic(sharpInst, out) {
   fs.renameSync(tmp, out);
 }
 
+/** Otsu 自动阈值（256 bin 直方图类间方差最大）：返回最优阈值；无可分峰返回 -1 */
+function otsuThreshold(u8) {
+  const hist = new Float64Array(256);
+  for (let i = 0; i < u8.length; i++) hist[u8[i]] += 1;
+  const total = u8.length;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0;
+  let wB = 0;
+  let best = -1;
+  let thr = -1;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > best) { best = v; thr = t; }
+  }
+  return thr;
+}
+
+/**
+ * 前景 mask（idle 微动画用，第六十二轮方案 A）：深度图 Otsu 阈值切前景 + 高斯羽化。
+ * 纯 f(depth) 派生品 —— 与深度图同分辨率同缓存键；生成失败/阈值退化只影响该图的
+ * idle 动画（渲染端 uHasMask=0 自动跳过），绝不影响深度本体（已先落盘）。
+ * 深度值大 = 离镜头近（两个模型契约同向），前景取 > 阈值一侧。
+ */
+async function writeMask(sharp, depth8, w, h, outPath) {
+  const thr = otsuThreshold(depth8);
+  if (thr < 0) return;   // 深度近乎平坦：没有可分前景，跳过
+  const bin = Buffer.allocUnsafe(w * h);
+  let fg = 0;
+  for (let i = 0; i < depth8.length; i++) {
+    const on = depth8[i] > thr;
+    bin[i] = on ? 255 : 0;
+    if (on) fg += 1;
+  }
+  // 前景占比过小/过大 = 阈值切飞了（纯背景/全图特写没有「分层」可言）—— 宁可不做 idle
+  const ratio = fg / (w * h);
+  if (ratio < 0.02 || ratio > 0.95) return;
+  // 2.5σ 高斯羽化：0/255 二值 → 边缘平滑坡道（渲染端扭曲的过渡带，防硬边撕裂感）
+  await writeAtomic(sharp(bin, { raw: { width: w, height: h, channels: 1 } }).blur(2.5), outPath);
+}
+
 function toNchwFloat(raw, w, h) {
   const n = w * h;
   if (raw.length !== n * 3) throw new Error(`RGB 输入长度 ${raw.length} != ${n * 3}`);
@@ -504,6 +552,12 @@ async function generate(job) {
   for (let i = 0; i < guide.length; i++) guide[i] = gbuf[i];
   const out8 = normalizeDepth(rgbGuided(dil, guide, dw, dh), false);
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
+  // mask 顺手派生（同一次会话里省一次解码）：失败不影响上面已落盘的深度
+  if (job.outMask) {
+    try { await writeMask(sharp, out8, dw, dh, job.outMask); } catch (err) {
+      log('mask 生成失败（该图 idle 降级关闭）:', path.basename(job.path), err.message);
+    }
+  }
   armReleaseTimer();
 }
 
@@ -616,5 +670,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask },
 };

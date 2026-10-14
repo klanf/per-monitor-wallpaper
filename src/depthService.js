@@ -70,7 +70,7 @@ const LEGACY_PATHS = {
 };
 
 // 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
-const DEPTH_CACHE_SCHEMA = 'depth-png-r6';  // r6：引导滤波 eps 2400+强度 0.5（压角色变形，旧 r5 缓存是全强度输出须失效重生成）
+const DEPTH_CACHE_SCHEMA = 'depth-png-r7';  // r7：同键追加前景 mask（idle 微动画，第六十二轮）；旧 r6 无 mask 须全量重生成
 
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {
@@ -568,6 +568,7 @@ function pump() {
   if (!trio) { pump(); return; }
   if (fs.existsSync(trio.depth)) { pump(); return; }
   job.out = trio.depth;
+  job.outMask = trio.mask;   // r62：前景 mask 与深度同键派生（渲染端 idle 微动画用；Python 引擎不认识该键，无害）
   state.currentJob = job;
   state.busy = true;
   // ── JS 引擎（r26）：进程内异步推理，不走子进程协议 ──

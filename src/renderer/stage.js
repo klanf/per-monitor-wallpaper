@@ -93,6 +93,7 @@ const cfg = {
   flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
   flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
+  idleFx: false,               // idle 微动画（r62，profile.idleFx）：呼吸+飘动+差速视差（mask 前景）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
 };
 
@@ -652,11 +653,42 @@ uniform float uFlowFocus;   // 对焦点（focus：0=视差绕 z=1 面，Orbital
 uniform float uFlowZoom;    // 图像缩放（zoom：1=满幅，Orbital 0.98/Dolly 0.95 留露边余量）
 uniform float uFit;         // 填充：0=cover（铺满裁切）1=contain（核心外透明，透出 2D 模糊底）2=mirror（核心外镜像延展）
 uniform vec4  uCore;        // contain/mirror 的核心矩形（屏幕像素，xy=左上角顶为 0，zw=宽高）——每层按自己宽高比现算
+uniform sampler2D uMask;    // 前景 mask（Otsu+羽化，与深度图同分辨率同缓存键；r62 idle 方案）
+uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
+uniform float uIdle;        // idle 微动画总开关（profile.idleFx）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
 vec4 texMirror(sampler2D tex, vec2 stuv) {
   return texture2D(tex, 1.0 - abs(1.0 - mod(stuv, 2.0)));
+}
+
+// ---- idle 微动画（r62：让角色「活」起来的低成本方案）----
+// A 呼吸+飘动：mask 加权只作用前景 —— 呼吸 = 垂直微移（整前景同相，3s 周期）；
+//   飘动 = 水平 sin 扭曲，权重 ∝ mask 边缘梯度（发丝衣摆动、躯干内部梯度≈0 不变形）。
+// B 差速视差：前景层额外吃一份相机位移（角色层移动系数 > 背景层 → 分层感更强）。
+// stF：最终图像采样坐标（stuv，原地改）；stB：未扭曲基准坐标（mask 采样锚点）；
+// off：相机屏幕位移（gluv）；breathM：呼吸相位×mask（供亮度脉动，0 = 不动）。
+// 幅度起步值（gluv，y 全幅 = 2.0）：呼吸 ±0.0012（≈2px@2160p）、飘动峰值 ±0.0035、
+// 差速系数 0.12 —— 全部是真机调参起点，验收后按观感定版。
+void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float breathM) {
+  breathM = 0.0;
+  if (uIdle < 0.5 || uHasMask < 0.5) return;
+  float m = texMirror(uMask, stB).r;
+  if (m <= 0.003) return;
+  // mask 边缘梯度（4 邻域差分）：边缘大、平坦区趋零
+  vec2 mpx = vec2(1.5 / imgAspect, 1.5) * 0.5;
+  float mgx = texMirror(uMask, stB + vec2(mpx.x, 0.0)).r - texMirror(uMask, stB - vec2(mpx.x, 0.0)).r;
+  float mgy = texMirror(uMask, stB + vec2(0.0, mpx.y)).r - texMirror(uMask, stB - vec2(0.0, mpx.y)).r;
+  float grad = clamp(length(vec2(mgx, mgy)) * 2.0, 0.0, 1.0);
+  // 呼吸：2π/3s，sin 全前景同相
+  float br = sin(uTime * 2.0943951);
+  // 飘动：双频叠加，相位随高度推进（波沿身体向上传）
+  float sway = sin(uTime * 1.7 + stB.y * 9.0) * 0.6 + sin(uTime * 0.9 + stB.y * 4.0) * 0.4;
+  vec2 dispG = vec2(sway * grad * 0.0035, br * 0.0012);
+  stF += dispG * m / vec2(imgAspect, 1.0) * 0.5;
+  stF += off * (0.12 * m) / vec2(imgAspect, 1.0) * 0.5;
+  breathM = m * br;
 }
 
 // DepthFlow POM 主路径（语义 1:1 对齐 depthflow.glsl + shaderflow camera.glsl）
@@ -702,7 +734,13 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
     }
   }
   vec2 stF = guv / vec2(imgAspect, 1.0) * 0.5 + 0.5;
-  return texMirror(uImg, stF).rgb;
+  // idle 微动画（r62）：呼吸/飘动/差速都改采样坐标，基准点采样 mask 保证稳定不游走
+  vec2 stB = g0 / vec2(imgAspect, 1.0) * 0.5 + 0.5;
+  float breathM;
+  idleWarp(stF, stB, off, imgAspect, breathM);
+  vec3 col = texMirror(uImg, stF).rgb;
+  if (breathM != 0.0) col *= 1.0 + 0.02 * breathM;   // 呼吸亮度脉动 ±2%
+  return col;
 }
 
 void main() {
@@ -825,9 +863,10 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uMask', 'uHasMask', 'uIdle']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
+    gl.uniform1i(U.uMask, 2);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
     glState.ok = true;
   } catch (err) {
@@ -850,9 +889,18 @@ function glMakeTex(unit, src) {
   return t;
 }
 
+/** mask 缓存路径（r62 idle 方案）：与深度图同缓存键派生（与 depthService trioFor
+ *  同一套命名约定）。路径不是 .depth.png 结尾（异常/第三方路径）→ 返回 null，
+ *  渲染端优雅降级为无 mask（idle 关），绝不影响视差本体。 */
+function maskPathOf(depthPath) {
+  return typeof depthPath === 'string' && /\.depth\.png$/i.test(depthPath)
+    ? depthPath.slice(0, -'.depth.png'.length) + '.mask.png'
+    : null;
+}
+
 function glFreeLayer(L) {
   if (!L || !glState.gl) return;
-  for (const t of [L.imgTex, L.depTex]) if (t) glState.gl.deleteTexture(t);
+  for (const t of [L.imgTex, L.depTex, L.maskTex]) if (t) glState.gl.deleteTexture(t);
   if (L._bmp) { try { L._bmp.close(); } catch (_) { /* 已关 */ } L._bmp = null; }
 }
 
@@ -868,16 +916,20 @@ async function glLayerFor(imagePath, depthPath) {
 /** 同 glLayerFor，但把原图位图一并带回（不关）—— showFrame 给 2D 层垫底用 */
 async function glLoadLayer(imagePath, depthPath) {
   try {
-    const [bmp, depBmp] = await Promise.all([
+    const maskPath = maskPathOf(depthPath);
+    const [bmp, depBmp, maskBmp] = await Promise.all([
       fetchBitmap({ path: imagePath }),
       depthPath ? fetchBitmap({ path: depthPath }).catch(() => null) : Promise.resolve(null),
+      maskPath ? fetchBitmap({ path: maskPath }).catch(() => null) : Promise.resolve(null),
     ]);
     const layer = {
       imgTex: glMakeTex(0, bmp),
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
+      maskTex: maskBmp ? glMakeTex(2, maskBmp) : null,   // r62：前景 mask（加载失败=null → idle 关）
       aspect: bmp.width / bmp.height,
     };
     if (depBmp) depBmp.close();
+    if (maskBmp) maskBmp.close();
     return { layer, bmp };   // 原图位图不关：调用方 2D 垫底后自行 close
   } catch (err) {
     console.warn('[stage] 视差纹理加载失败（本帧回退 2D）:', imagePath, err.message);
@@ -955,6 +1007,8 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.bindTexture(gl.TEXTURE_2D, L.imgTex);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, L.depTex || L.imgTex);   // 无深度时占位（uHasDepth 压平）
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, L.maskTex || L.depTex || L.imgTex);   // 无 mask 占位（uHasMask 关 idle）
   const { w, h } = canvasSize(glState.canvas);
   gl.viewport(0, 0, w, h);
   gl.uniform2f(glState.U.uCanvas, w, h);
@@ -970,6 +1024,8 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uLight, cfg.depthLight);
   gl.uniform1f(glState.U.uLightsOn, 1);
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
+  gl.uniform1f(glState.U.uHasMask, L.maskTex ? 1 : 0);
+  gl.uniform1f(glState.U.uIdle, cfg.idleFx ? 1 : 0);
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uFlowIso, flowIso);
@@ -1555,6 +1611,8 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowHeight)) cfg.flowHeight = p.flowHeight;
   if (typeof p.flowStyle === 'string' && FLOW_STYLE_PARAMS[p.flowStyle]) cfg.flowStyle = p.flowStyle;
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
+  // idle 微动画（r62，profile 不写 = 默认关）
+  if (p.idleFx !== undefined) cfg.idleFx = Boolean(p.idleFx);
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）

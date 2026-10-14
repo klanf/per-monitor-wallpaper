@@ -264,6 +264,7 @@ const PROFILE_KEYS = [
   'flowHeight',                // 流模式视差强度主旋钮（0.2）
   'flowStyle',                 // 流模式动效轨迹：circle/orbital/dolly（不写 = circle）
   'flowQuality',               // 流模式 POM 步进质量 0.15~1（0.5=CLI 默认，低=省 GPU）
+  'idleFx',                    // idle 微动画（r62）：前景呼吸+飘动+差速视差（不写 = 默认关）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */
