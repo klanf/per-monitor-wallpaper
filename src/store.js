@@ -247,9 +247,7 @@ const PROFILE_KEYS = [
   'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
   'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
   'particlePool',              // 粒子随机池（r21）：random 时只抽池内种类；空数组 = 全部参与
-  'timeOfDay',                 // 时段滤镜：morning/noon/overcast/dusk/night（不写 = 无）
-  'todRandom',                 // 时段滤镜随机（r21）：每次换图抽一种（true 时无视 timeOfDay 固定值）
-  'todPool',                   // 时段滤镜随机池（r21）：空数组 = 全部参与
+  // timeOfDay/todRandom/todPool 已退役（r73 精简）：与氛围调色板重复，移出白名单后旧配置残留值无人读取
   // ---- 深度视差（第十一轮起进设置面板；不写 = stage.js 内置默认）----
   'depthParallax',             // 深度视差总开关
   // depthFlow 键已退役（r23）：流动模式恒开（用户实测关掉效果非常差）。
@@ -395,7 +393,6 @@ const BOOL_KEYS = new Set([
   'videoPlayFull', 'swipeSwitch',
   'videoOptimize',
   'depthParallax',             // 深度视差总开关（不写 = 默认开）
-  'todRandom',                 // 时段滤镜随机开关（r21）
 ]);
 
 /** 热键字段：值必须是非空字符串或空串，别让 undefined / 数字混进来 */
@@ -422,7 +419,7 @@ function normalizeConfig(obj) {
   if ('settingsTab' in out) out.settingsTab = clampSettingsTab(out.settingsTab);
   if ('liveStage' in out) out.liveStage = clampLiveStage(out.liveStage);
   if ('particlePool' in out) out.particlePool = clampStringArray(out.particlePool, PARTICLE_KIND_WHITELIST);
-  if ('todPool' in out) out.todPool = clampStringArray(out.todPool, TOD_KIND_WHITELIST);
+  // todPool 清洗已随时段滤镜退役（r73）
   // 界面记忆键（r24）：只收字符串，不校验有效性（失效时渲染端自动回落）
   for (const k of ['lastPreviewId', 'settingsEditMonitor']) {
     if (k in out && typeof out[k] !== 'string') out[k] = '';
@@ -435,9 +432,6 @@ const PARTICLE_KIND_WHITELIST = [
   'rain', 'sakura', 'snow', 'fireflies', 'stars', 'bubbles', 'leaves',
   'confetti', 'fireworks', 'embers', 'splash', 'raindrops',
 ];
-
-/** 时段滤镜白名单（r21，与 stage.js TOD_FILTERS 的键一致） */
-const TOD_KIND_WHITELIST = ['morning', 'noon', 'overcast', 'dusk', 'night'];
 
 /** 随机池收紧：只留白名单内的字符串，去重（空数组 = 全部参与，语义在消费端兜底） */
 function clampStringArray(value, whitelist) {

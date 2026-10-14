@@ -22,9 +22,6 @@
        滤镜连粒子一起调色。pointer-events:none 不吃鼠标；由 stage.js 的 rAF gate
        块驱动，关 = display:none。z-index:4 高于视差层(3)。 -->
   <canvas id="particles" style="position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none;"></canvas>
-  <!-- 时段滤镜图层：盖在两个图层之上，pointer-events:none 不吃鼠标。
-       纯 CSS 渐变 + mix-blend-mode，无 rAF 参与（静态），开销为零。 -->
-  <div id="tod"></div>
 </div>
 <script src="particles.js"></script>
 <script src="stage.js"></script>

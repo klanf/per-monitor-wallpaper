@@ -48,15 +48,6 @@ const KEN = { period: 45_000, amplitude: 0.045 };
  */
 const BREATH = { period: 6_000, amplitude: 0.02 };
 
-/** 时段滤镜：色温罩在 #tod（CSS 渐变 + mix-blend-mode），去饱和/压暗写在 .layer 的 filter */
-const TOD_FILTERS = {
-  morning:  'brightness(1.04) saturate(1.05)',
-  noon:     'brightness(1.06) contrast(1.02)',
-  overcast: 'saturate(0.6) brightness(0.93) contrast(0.97)',
-  dusk:     'brightness(0.96) saturate(1.12)',
-  night:    'brightness(0.72) saturate(0.82)',
-};
-
 /** resize 后重绘的防抖 */
 const RESIZE_DEBOUNCE = 200;
 
@@ -75,9 +66,6 @@ const cfg = {
   kenBurns: true,              // Ken Burns 微缩放开关（profile.kenBurns=false 关）
   videoPlayFull: false,        // 视频播完再切（profile.videoPlayFull；开=不循环，ended 通知调度器）
   breath: false,               // 呼吸缩放（profile.breath；与 Ken Burns 叠加）
-  timeOfDay: '',               // 时段滤镜（profile.timeOfDay：morning/noon/overcast/dusk/night）
-  todRandom: false,            // 时段滤镜随机（r21 profile.todRandom；开=每次换图抽一种，无视固定值）
-  todPool: [],                 // 时段滤镜随机池（r21；空数组 = 全部参与）
   particles: '',               // 粒子特效（profile.particles；'random' = 每次换图抽一种）
   particlePool: [],            // 粒子随机池（r21 profile.particlePool；空数组 = 全部参与）
   depthEnabled: true,          // 深度视差（profile.depthParallax=false 关；默认开）
@@ -140,7 +128,6 @@ function atmoSelNow() {
 const layers = {
   A: null, B: null,            // { root, canvas, ctx }，init 时填充
 };
-let todEl = null;              // 时段滤镜罩层（#tod，init 时填充）
 let active = 'B';
 
 let animToken = 0;             // 过渡令牌：新过渡让进行中的旧过渡作废
@@ -662,7 +649,7 @@ function stopLayerVideo(layer) {
  * 没有依赖 Three.js —— 单 quad + 片元着色器，深度图由主进程 depthService 离线
  * 生成（depth:lookup 命中返回缓存路径）。任何环节失败都退回 2D 路径，绝不黑屏。
  *
- * 与 2D 路径的分工：本层盖在 layerA/B 之上（z-index 3，#tod 是 4）。
+ * 与 2D 路径的分工：本层盖在 layerA/B 之上（z-index 3）。
  *   - 有深度：2D 图层不上屏，GL 负责（含过渡交叉淡入）
  *   - 无深度：GL 只负责把旧视差画面淡出（若刚才是视差），2D 动画照常
  * 过渡说明：视差帧进/出统一用交叉淡入（slide/zoom 等变换型动画只作用于 2D 层，
@@ -1404,19 +1391,6 @@ function panTick(now) {
   }
 }
 
-/** 应用时段滤镜：#tod 罩色温 + .layer 根上写 filter（去饱和/压暗） */
-function applyTod(mode) {
-  const m = TOD_FILTERS[mode] ? mode : '';
-  cfg.timeOfDay = m;
-  for (const key of ['A', 'B']) {
-    const layer = layers[key];
-    if (layer && layer.root) layer.root.style.filter = m ? TOD_FILTERS[m] : '';
-  }
-  // 视差层同样吃色温（GL canvas 上写 filter，与 .layer 同一套字符串）
-  if (glState.canvas) glState.canvas.style.filter = m ? TOD_FILTERS[m] : '';
-  if (todEl) todEl.className = m ? `tod-on tod-${m}` : '';
-}
-
 function animTick(now) {
   if (!anim) return;
   const p = Math.min(1, (now - anim.t0) / anim.duration);
@@ -1789,12 +1763,8 @@ function applyChannelConfig() {
   if (Number.isFinite(Number(p.breathAmplitude))) {
     cfg.breathAmplitude = Math.min(Math.max(Number(p.breathAmplitude), 0.5), 5);
   }
-  // 时段滤镜（profile 不写 = 无）。r21：todRandom 开 = 每次换图从池里抽一种（池空 = 全部），
-  // 抽签只在换图时机发生（见 onTick 的 rollTod），profile 回放时也抽一次保证首帧有滤镜
-  if (p.todRandom !== undefined) cfg.todRandom = Boolean(p.todRandom);
-  if (Array.isArray(p.todPool)) cfg.todPool = p.todPool.filter((v) => typeof v === 'string');
-  if (p.timeOfDay !== undefined) applyTod(String(p.timeOfDay || ''));
-  if (cfg.todRandom) applyTod(pickTod());
+  // 时段滤镜已退役（r73 精简）：与氛围调色板重复且全图罩色观感差，按时段上色统一走 depthAtmo 调色板。
+  // 旧键（timeOfDay/todRandom/todPool）已移出 PROFILE_KEYS 白名单，config 残留值无人读取，无害。
   // 粒子特效：种类白名单与数量收紧都在 particles.js 里做，这里透传。
   // setConfig 幂等（种类数量都没变 = 无操作），channels:changed 每次调过来也无妨。
   if (p.particles !== undefined) cfg.particles = String(p.particles || '');
@@ -1817,15 +1787,6 @@ function rollParticles() {
     ? all.filter((k) => cfg.particlePool.includes(k))
     : all);
   cfg.particlesActive = pool[(Math.random() * pool.length) | 0] || 'rain';
-}
-
-/** r21：时段滤镜随机池（池空 = 全部参与） */
-function pickTod() {
-  const all = Object.keys(TOD_FILTERS);
-  const pool = (Array.isArray(cfg.todPool) && cfg.todPool.length
-    ? all.filter((k) => cfg.todPool.includes(k))
-    : all);
-  return pool[(Math.random() * pool.length) | 0] || '';
 }
 
 async function applyChannels(list) {
@@ -1895,7 +1856,6 @@ async function init() {
   };
   layers.A.ctx = layers.A.canvas.getContext('2d');
   layers.B.ctx = layers.B.canvas.getContext('2d');
-  todEl = document.getElementById('tod');
   // 粒子层（particles.js 先于本文件加载）。缺了不致命：粒子开关静默失效，其余照常
   if (window.WPParticles && document.getElementById('particles')) {
     particleFx = window.WPParticles.createParticles(document.getElementById('particles'));
@@ -2061,7 +2021,6 @@ async function init() {
         rollParticles();
         if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
       }
-      if (cfg.todRandom) applyTod(pickTod());   // r21：随机时段滤镜同拍重抽
       showFrame(payload.entry, payload.dir, true);
     } else {
       currentEntry = null;   // 频道空了（相簿被清空）→ 黑屏

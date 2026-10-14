@@ -266,6 +266,30 @@ store.js PROFILE_KEYS 补 4 键（atmoPalette/atmoFog/depthDof/godRays）。
 - 真机待验收：氛围 = 顶栏太阳开关 + 设置页调色板（auto 按时间白天/黄昏 / 黄金时刻 / 青橙 / 赛博朋克 / 月光蓝 / 褪色胶片）
 
 
+## 第七十三轮收尾：时段滤镜（r21）整体退役 —— 与氛围调色板合并（2026-10-14）
+
+### 需求
+
+用户指出设置里「时段滤镜」与「氛围调色板」重复。确认属实：两者都是按时段给画面上色——旧 tod 是全图罩层（DOM #tod 渐变 + .layer CSS filter，用户此前评「效果没法看，把整个图片的颜色都改了」），新 depthAtmo 是深度感知 shader 调色，同时开互相污染。
+
+### 退役清单（四端全清）
+
+- stage.js：删 TOD_FILTERS、cfg 默认三键（timeOfDay/todRandom/todPool）、applyTod、pickTod、applyProfile 解析、换图同拍重抽、#tod 元素查询；.profile 解析处留退役注释
+- app.js：删 TOD_KINDS、三行回填、两个监听（随机开关/随机池）、TOD_LABEL + timeOfDay 监听；renderPoolChips 保留（粒子池共用）
+- index.html：画面动效组删时段滤镜下拉/随机开关/池 chips，data-tip 改为指引「按时段上色用深度视差 › 氛围调色板」
+- stage.html：删 #tod 罩层元素；stage.css：删 #tod 全部样式块与分区注释（47 行）
+- store.js：PROFILE_KEYS 删三键、BOOL_KEYS 删 todRandom、删 todPool 清洗与 TOD_KIND_WHITELIST
+
+### 兼容性
+
+旧配置里 timeOfDay/todRandom/todPool 残留值：移出白名单后 resolveProfile 不透传、sanitize 不再清洗——无人读取，无害。
+
+### 验证
+
+- node --check ×3；全仓 grep 零残留（仅存三条退役注释）；check-wiring 56/0；六套单测 345 项全 0 失败
+- 真机待验收：设置 › 画面动效只剩呼吸缩放；按时段/风格上色统一在深度视差 › 氛围调色板（顶栏太阳总开关）
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

@@ -1398,12 +1398,6 @@ const PARTICLE_KINDS = [
   ['fireworks', '烟花'], ['embers', '火焰灰烬'], ['splash', '雨落水花'], ['raindrops', '雨滴挂屏'],
 ];
 
-/** 时段滤镜种类表（r21）：随机池共用 */
-const TOD_KINDS = [
-  ['morning', '早晨 · 暖金'], ['noon', '中午 · 通透'], ['overcast', '阴天 · 灰蓝'],
-  ['dusk', '黄昏 · 橙紫'], ['night', '夜晚 · 压暗'],
-];
-
 /**
  * 随机池勾选 chips（r21）：池空 = 全部参与（防止一个不剩时随机失灵），
  * chip 上「亮」= 参与。存盘时把空池仍存成空数组（语义由消费端兜底）。
@@ -2457,10 +2451,7 @@ function applyConfigToUI() {
   const ba = Number(c.breathAmplitude);
   $('cfg-breath-amplitude').value = String(Number.isFinite(ba) ? Math.min(Math.max(ba, 0.5), 5) : 2);
   $('cfg-breath-amplitude-out').textContent = `±${$('cfg-breath-amplitude').value}%`;
-  $('cfg-timeofday').value = typeof c.timeOfDay === 'string' && c.timeOfDay ? c.timeOfDay : '';
-  // 时段滤镜随机（r21）：开关 + 随机池勾选
-  $('cfg-tod-random').checked = c.todRandom === true;
-  renderPoolChips('tod-pool', TOD_KINDS, c.todPool);
+  // 时段滤镜已退役（r73）：与氛围调色板重复，按时段上色统一走深度视差区的调色板下拉
   // 暂停时藏舞台窗口（主树 52 轮；liveStage 嵌套键 hideOnPaused，默认关）
   $('cfg-live-hide-paused').checked = (c.liveStage || {}).hideOnPaused === true;
   // 粒子特效（主树 52 轮移植）：随机开关 + 固定种类 + 随机池 + 数量；绕开鼠标 = 顶层键默认开
@@ -2796,23 +2787,6 @@ function bindSettings() {
       : '已关闭：暂停时保留画面（若独占全屏游戏黑屏请重新开启）');
   });
 
-  // 时段滤镜随机（r21）：开关 + 随机池排除
-  $('cfg-tod-random').addEventListener('change', async (e) => {
-    syncConditionalUI();
-    await save({ todRandom: e.target.checked });
-    toast(e.target.checked ? '时段滤镜改为随机：每次换图抽一种' : '时段滤镜回到固定选择');
-  });
-  $('tod-pool').addEventListener('click', async (e) => {
-    const chip = e.target.closest('.pool-chip');
-    if (!chip) return;
-    const all = TOD_KINDS.map(([v]) => v);
-    const pool = new Set(Array.isArray(state.config.todPool) && state.config.todPool.length ? state.config.todPool : all);
-    if (pool.has(chip.dataset.kind)) pool.delete(chip.dataset.kind); else pool.add(chip.dataset.kind);
-    if (!pool.size) { toast('至少保留一种滤镜，全空按「全部参与」处理'); return; }
-    await save({ todPool: all.filter((v) => pool.has(v)) });
-    renderPoolChips('tod-pool', TOD_KINDS, state.config.todPool);
-  });
-
   // 粒子特效（主树 52 轮移植）：随机开关 + 固定种类 + 随机池
   $('cfg-particles-random').addEventListener('change', async (e) => {
     syncConditionalUI();
@@ -2948,16 +2922,6 @@ function bindSettings() {
       }
     }
     toast(`动效风格：${FLOW_STYLE_LABEL[v] || v}`);
-  });
-
-  const TOD_LABEL = {
-    morning: '早晨 · 暖金斜阳', noon: '中午 · 顶光通透', overcast: '阴天 · 灰蓝低饱和',
-    dusk: '黄昏 · 落日橙紫', night: '夜晚 · 深蓝压暗',
-  };
-  $('cfg-timeofday').addEventListener('change', async (e) => {
-    const v = e.target.value;
-    await save({ timeOfDay: v });
-    toast(v ? `时段滤镜：${TOD_LABEL[v] || v}` : '时段滤镜已关闭');
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {
