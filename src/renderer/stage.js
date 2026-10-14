@@ -666,7 +666,8 @@ vec4 texMirror(sampler2D tex, vec2 stuv) {
 // ---- idle 微动画（r62：让角色「活」起来的低成本方案）----
 // A 呼吸+飘动：mask 加权只作用前景 —— 呼吸 = 垂直微移（整前景同相，3s 周期）；
 //   飘动 = 水平 sin 扭曲，权重 ∝ mask 边缘梯度（发丝衣摆动、躯干内部梯度≈0 不变形）。
-// B 差速视差：前景层额外吃一份相机位移（角色层移动系数 > 背景层 → 分层感更强）。
+// B 差速视差：前景层额外吃一份相机位移（角色层移动系数 > 背景层 → 分层感更强），
+//   权重吃 mask G 通道宽羽化（紧带会撕裂，见 idleWarp 内注释）。
 // stF：最终图像采样坐标（stuv，原地改）；stB：未扭曲基准坐标（mask 采样锚点）；
 // off：相机屏幕位移（gluv）；breathM：呼吸相位×mask（供亮度脉动，0 = 不动）。
 // 幅度起步值（gluv，y 全幅 = 2.0）：呼吸 ±0.0012（≈2px@2160p）、飘动峰值 ±0.0035、
@@ -674,8 +675,9 @@ vec4 texMirror(sampler2D tex, vec2 stuv) {
 void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float breathM) {
   breathM = 0.0;
   if (uIdle < 0.5 || uHasMask < 0.5) return;
-  float m = texMirror(uMask, stB).r;
-  if (m <= 0.003) return;
+  vec2 m2 = texMirror(uMask, stB).rg;   // r=紧羽化 2.5σ（呼吸/飘动） g=宽羽化 10σ（差速权重）
+  float m = m2.r;
+  if (m2.r <= 0.003 && m2.g <= 0.003) return;
   // mask 边缘梯度（4 邻域差分）：边缘大、平坦区趋零
   vec2 mpx = vec2(1.5 / imgAspect, 1.5) * 0.5;
   float mgx = texMirror(uMask, stB + vec2(mpx.x, 0.0)).r - texMirror(uMask, stB - vec2(mpx.x, 0.0)).r;
@@ -687,7 +689,9 @@ void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float bre
   float sway = sin(uTime * 1.7 + stB.y * 9.0) * 0.6 + sin(uTime * 0.9 + stB.y * 4.0) * 0.4;
   vec2 dispG = vec2(sway * grad * 0.0035, br * 0.0012);
   stF += dispG * m / vec2(imgAspect, 1.0) * 0.5;
-  stF += off * (0.12 * m) / vec2(imgAspect, 1.0) * 0.5;
+  // 差速吃宽羽化 G 通道：0.12×off 的位移差若压在紧羽化 2~4px 带上会撕出锯齿
+  // （离屏复现 1.26px/px 剪切），摊到 ~60px 宽带后与纯 POM 基线持平（0.55px/px）
+  stF += off * (0.12 * m2.g) / vec2(imgAspect, 1.0) * 0.5;
   breathM = m * br;
 }
 

@@ -70,7 +70,7 @@ const LEGACY_PATHS = {
 };
 
 // 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
-const DEPTH_CACHE_SCHEMA = 'depth-png-r7';  // r7：同键追加前景 mask（idle 微动画，第六十二轮）；旧 r6 无 mask 须全量重生成
+const DEPTH_CACHE_SCHEMA = 'depth-png-r8';  // r8：mask 双通道化（R=紧羽化 G=宽羽化，差速防撕裂，第六十四轮）；旧 r7 全量失效重生成
 
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {

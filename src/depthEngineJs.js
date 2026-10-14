@@ -441,8 +441,21 @@ async function writeMask(sharp, depth8, w, h, outPath) {
   // 前景占比过小/过大 = 阈值切飞了（纯背景/全图特写没有「分层」可言）—— 宁可不做 idle
   const ratio = fg / (w * h);
   if (ratio < 0.02 || ratio > 0.95) return;
-  // 2.5σ 高斯羽化：0/255 二值 → 边缘平滑坡道（渲染端扭曲的过渡带，防硬边撕裂感）
-  await writeAtomic(sharp(bin, { raw: { width: w, height: h, channels: 1 } }).blur(2.5), outPath);
+  // 双通道：R=2.5σ 紧羽化（呼吸/飘动/亮度脉动），G=10σ 宽羽化（差速视差权重）。
+  // 差速 0.12×off 的位移差若压在紧羽化 2~4px 过渡带上会撕出锯齿（复现 1.26px/px 剪切），
+  // 摊到宽羽化 ~60px 带上后与纯 POM 基线持平（0.55px/px）。
+  const raw1 = { raw: { width: w, height: h, channels: 1 } };
+  // 注意：sharp 的 blur 会把 1ch 输入升成 3ch（R=G=B），必须 toColourspace('b-w') 锁回单通道再 raw
+  const [rBuf, gBuf] = await Promise.all([
+    sharp(bin, raw1).clone().blur(2.5).toColourspace('b-w').raw().toBuffer(),
+    sharp(bin, raw1).clone().blur(10).toColourspace('b-w').raw().toBuffer(),
+  ]);
+  const rgb = Buffer.allocUnsafe(w * h * 3);
+  for (let i = 0; i < bin.length; i++) {
+    rgb[i * 3] = rBuf[i];
+    rgb[i * 3 + 1] = gBuf[i];
+  }
+  await writeAtomic(sharp(rgb, { raw: { width: w, height: h, channels: 3 } }), outPath);
 }
 
 function toNchwFloat(raw, w, h) {

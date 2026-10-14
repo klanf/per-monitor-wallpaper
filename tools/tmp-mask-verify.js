@@ -31,13 +31,23 @@ async function main() {
   const p1 = path.join(outDir, 'dual.mask.png');
   await writeMask(sharp, dual, W, H, p1);
   const { data: m1, info: i1 } = await sharp(p1).raw().toBuffer({ resolveWithObject: true });
+  // 双通道（第六十四轮）：R=紧羽化 G=宽羽化。按 R 通道统计前景/过渡带
+  const ch = i1.channels;
   let fg = 0;
   let mid = 0;
-  for (const v of m1) { if (v > 200) fg += 1; else if (v > 20 && v < 235) mid += 1; }
-  const ratio = fg / m1.length;   // 每像素 channels 个通道值同色，值占比 = 像素占比
-  console.log(`① 双峰: thr=${thr1} fg占比=${(ratio * 100).toFixed(1)}% 过渡带=${mid}px mask尺寸=${i1.width}x${i1.height}`);
+  let wideMid = 0;
+  for (let i = 0; i < m1.length / ch; i++) {
+    const r = m1[i * ch];
+    if (r > 200) fg += 1; else if (r > 20 && r < 235) mid += 1;
+    const g = m1[i * ch + 1];
+    if (g > 20 && g < 235) wideMid += 1;
+  }
+  const ratio = fg / (m1.length / ch);
+  console.log(`① 双峰: thr=${thr1} fg占比=${(ratio * 100).toFixed(1)}% 紧羽化过渡带=${mid}px 宽羽化过渡带=${wideMid}px 通道=${ch} mask尺寸=${i1.width}x${i1.height}`);
+  if (ch < 2) throw new Error('mask 应为双通道（R 紧羽化 / G 宽羽化）');
   if (Math.abs(ratio - 0.4) > 0.05) throw new Error(`前景占比 ${ratio} 偏离 0.4`);
   if (mid === 0) throw new Error('羽化过渡带缺失');
+  if (wideMid <= mid) throw new Error('宽羽化过渡带应显著宽于紧羽化');
   if (i1.width !== W || i1.height !== H) throw new Error('mask 分辨率与深度不一致');
 
   // ② 真平坦深度（单值）：直方图无第二峰 → Otsu 返回 -1 → 不写 mask
