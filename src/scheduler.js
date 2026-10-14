@@ -40,6 +40,9 @@ const MAX_WRITE_ATTEMPTS = 4;          // 一次切换最多试几张（全读�
 const MASS_SKIP = 12;                  // 一次切换里连续摘掉这么多张 → 列表大概率整体过期，触发重扫
 const MASS_RESCAN_COOLDOWN_MS = 60000; // 两次「大面积失效重扫」之间的最小间隔
 
+/** 拼接邻居（r38）：拼格里只放得下静态图，这些扩展名之外的（视频/网页）跳过 */
+const COLLAGE_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif', '.gif', '.tif', '.tiff']);
+
 /** 写失败的错误文案算不算「文件已经没了」 */
 function isMissingError(text) {
   return typeof text === 'string' && (text.includes('文件不存在') || text.includes('ENOENT'));
@@ -1024,6 +1027,38 @@ class MonitorScheduler {
     if (!ch || ch.retired) return;
     const p = Math.round(Number(page) || 1);
     ch.collageStep = Math.max(1, Math.min(4, p));
+  }
+
+  /**
+   * 拼接邻居（r38 起，r75 修序 + 从 main.js 搬来可单测）：给舞台取「当前张前后的
+   * 邻居条目」，跳过视频/网页只给图片。左右各走 span 格还凑不齐就少给——
+   * 渲染端用中心图兜底（重复不上黑格）。
+   *
+   * **r75 修序**：left 此前被 `.reverse()` 翻成「由远到近」，而渲染端拼格是从内到外
+   * 取（paths[centerIdx-k] = left[k-1]，k=1 是最内格）——结果最内格拿到的是**最远**
+   * 那张：中心 3 号显示成 1 3 4 而不是 2 3 4。现在 left/right 统一「距中心由近到远」。
+   */
+  collageNeighbors(id, index, span = 2) {
+    const ch = this.channels.get(id);
+    if (!ch || !ch.files.length) return { center: null, left: [], right: [] };
+    const n = ch.files.length;
+    const idx = Math.max(0, Math.min(n - 1, Number(index) || 0));
+    const spanN = Math.max(1, Math.min(3, Number(span) || 2));
+    const isImg = (ent) => ent && COLLAGE_IMAGE_EXT.has(String(ent.ext || '').toLowerCase());
+    const walk = (dir) => {
+      const list = [];
+      for (let s = 1; s <= n && list.length < spanN; s += 1) {
+        const ent = ch.files[((idx + dir * s) % n + n) % n];
+        if (isImg(ent)) list.push({ path: ent.path, name: ent.name, ext: ent.ext, url: ent.url });
+      }
+      return list;                       // s=1 是最近邻 → 列表天然「由近到远」
+    };
+    const center = ch.files[idx];
+    return {
+      center: isImg(center) ? { path: center.path, name: center.name, ext: center.ext, url: center.url } : null,
+      left: walk(-1),                    // 左右都由近到远：渲染端拼格从内到外取，内格=最近邻
+      right: walk(1),
+    };
   }
 
   /**

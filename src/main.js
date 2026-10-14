@@ -1648,31 +1648,8 @@ function registerIpc() {
     };
   });
 
-  // 拼接填充（r38）：给舞台取「当前张前后的邻居条目」，跳过视频/网页只给图片
-  //（拼格里只放得下静态图）。左右各走 span 格还凑不齐就用中心图兜底（重复不上黑格）。
-  const COLLAGE_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif', '.gif', '.tif', '.tiff']);
-  ipcMain.handle('channel:neighbors', (_e, id, index, span = 2) => {
-    const ch = scheduler.channels.get(id);
-    if (!ch || !ch.files.length) return { center: null, left: [], right: [] };
-    const n = ch.files.length;
-    const idx = Math.max(0, Math.min(n - 1, Number(index) || 0));
-    const spanN = Math.max(1, Math.min(3, Number(span) || 2));
-    const isImg = (ent) => ent && COLLAGE_IMAGE_EXT.has(String(ent.ext || '').toLowerCase());
-    const walk = (dir) => {
-      const list = [];
-      for (let s = 1; s <= n && list.length < spanN; s += 1) {
-        const ent = ch.files[((idx + dir * s) % n + n) % n];
-        if (isImg(ent)) list.push({ path: ent.path, name: ent.name, ext: ent.ext, url: ent.url });
-      }
-      return list;
-    };
-    const center = ch.files[idx];
-    return {
-      center: isImg(center) ? { path: center.path, name: center.name, ext: center.ext, url: center.url } : null,
-      left: walk(-1).reverse(),   // 距中心由近到远 → 拼格从内到外
-      right: walk(1),
-    };
-  });
+  // 拼接填充（r38）：邻居条目逻辑在 scheduler.collageNeighbors（r75 修序 + 搬过去可单测）
+  ipcMain.handle('channel:neighbors', (_e, id, index, span = 2) => scheduler.collageNeighbors(id, index, span));
 
   ipcMain.handle('channel:command', (_e, id, command, payload) => runChannelCommand(id, command, payload));
 

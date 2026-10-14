@@ -1409,6 +1409,20 @@ async function main() {
     schedP.setPlaying('MON-A', true);
     check('8 张图就绪', chP.files.length === 8, `实际 ${chP.files.length}`);
 
+    // 邻居修序（r75 追记）：left/right 必须由近到远 —— 中心 5 号（index 4）→ 左邻 4 号、右邻 6 号
+    const nb = schedP.collageNeighbors('MON-A', 4, 2);
+    check('邻居中心=当前张', nb.center && path.basename(nb.center.path) === 'p-5.bmp');
+    check('左邻由近到远（内格=4 号不是 3 号）',
+      nb.left.map((x) => path.basename(x.path)).join(',') === 'p-4.bmp,p-3.bmp',
+      `left=${nb.left.map((x) => path.basename(x.path)).join(',')}`);
+    check('右邻由近到远（内格=6 号）',
+      nb.right.map((x) => path.basename(x.path)).join(',') === 'p-6.bmp,p-7.bmp',
+      `right=${nb.right.map((x) => path.basename(x.path)).join(',')}`);
+    const nb0 = schedP.collageNeighbors('MON-A', 0, 2);
+    check('左邻跨列表头尾回绕（0 号的左邻是 8 号）',
+      nb0.left.map((x) => path.basename(x.path)).join(',') === 'p-8.bmp,p-7.bmp',
+      `left=${nb0.left.map((x) => path.basename(x.path)).join(',')}`);
+
     schedP.setCollagePage('MON-A', 3);
     check('页宽已记录', chP.collageStep === 3, `step=${chP.collageStep}`);
     schedP.setCollagePage('MON-A', 99);
