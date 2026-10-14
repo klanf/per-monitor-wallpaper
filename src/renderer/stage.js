@@ -271,6 +271,43 @@ function variantFor(animation, dir) {
 const RANDOM_POOL = ['fade', 'zoom', 'slide', 'zoom-in', 'zoom-out', 'slide-zoom',
   'wipe', 'iris', 'blur-dissolve', 'clock', 'blinds', 'split'];
 
+/** 抽本次过渡的动画名（2D 与 GL 共用；random 每次独立抽签，同一次过渡内不变） */
+function pickAnimName() {
+  return cfg.animation === 'random'
+    ? RANDOM_POOL[Math.floor(Math.random() * RANDOM_POOL.length)]
+    : (cfg.animation || 'fade');
+}
+
+/** GL 侧变体（r76）：GL 过渡此前写死交叉淡化 —— 深度管线稳定后几乎每张图都走 GL，
+ *  设置里选的切换动画（尤其 random）在桌面上等于失效。变换型（zoom/slide 系）用
+ *  「核心矩形平移+缩放」在 GL 里等价复刻（参数与 2D variantFor 对齐，见 glDrawLayer）；
+ *  自绘型（wipe/iris 等 clip 系）GL 片元表达不了，降级 fade —— 视差连续性优先，
+ *  少了擦除花样也不能让整幅瞬跳。返回 null = 现行交叉淡化。 */
+const GL_VARIANT_DOWNGRADE_LOGGED = new Set();
+function glVariantFor(animation, dir) {
+  const sign = dir >= 0 ? 1 : -1;
+  switch (animation) {
+    case 'fade':
+      return null;
+    case 'zoom':
+      return { from: { dx: 0, dy: 0, s: 1.07 }, fromO: 0, to: { dx: 0, dy: 0, s: 0.985 }, toO: 0 };
+    case 'zoom-in':   // 新图从中心放大收进来盖住旧图
+      return { from: { dx: 0, dy: 0, s: 1.18 }, fromO: 0, to: { dx: 0, dy: 0, s: 1 }, toO: 0 };
+    case 'zoom-out':  // 新图从小放大到满屏
+      return { from: { dx: 0, dy: 0, s: 0.72 }, fromO: 0, to: { dx: 0, dy: 0, s: 1 }, toO: 0 };
+    case 'slide':     // 平移换位，全程不透明（进出两侧用同一缓动 → 边缘严丝合缝）
+      return { from: { dx: sign, dy: 0, s: 1 }, fromO: 1, to: { dx: -sign, dy: 0, s: 1 }, toO: 1 };
+    case 'slide-zoom':
+      return { from: { dx: sign, dy: 0, s: 1.12 }, fromO: 1, to: { dx: -sign, dy: 0, s: 1 }, toO: 1 };
+    default:          // wipe/iris/blur-dissolve/clock/blinds/split → 降级 fade（只提示一次）
+      if (!GL_VARIANT_DOWNGRADE_LOGGED.has(animation)) {
+        GL_VARIANT_DOWNGRADE_LOGGED.add(animation);
+        slog(`GL 过渡：${animation} 暂不支持，降级 fade（视差连续性优先）`);
+      }
+      return null;
+  }
+}
+
 /** 过渡结束/被打断后清掉所有自绘型残留（clip/mask/filter/z 序），回到干净静止态 */
 function clearFx(el) {
   el.style.clipPath = '';
@@ -694,6 +731,7 @@ uniform float uFlowFocus;   // 对焦点（focus：0=视差绕 z=1 面，Orbital
 uniform float uFlowZoom;    // 图像缩放（zoom：1=满幅，Orbital 0.98/Dolly 0.95 留露边余量）
 uniform float uFit;         // 填充：0=cover（铺满裁切）1=contain（核心外透明，透出 2D 模糊底）2=mirror（核心外镜像延展）
 uniform vec4  uCore;        // contain/mirror 的核心矩形（屏幕像素，xy=左上角顶为 0，zw=宽高）——每层按自己宽高比现算
+uniform vec4  uXf;          // 切换动画层变换（r76，cover 专用）：xy=平移（屏幕宽/高占比），z=绕中心缩放；identity=(0,0,1,0)
 uniform sampler2D uMask;    // 前景 mask（Otsu+羽化，与深度图同分辨率同缓存键；r62 idle 方案）
 uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
 uniform float uIdle;        // idle 微动画总开关（profile.idleFx）
@@ -928,16 +966,24 @@ void main() {
       gl_FragColor = vec4(col, uAlpha * aEdge);
       return;
     }
-    // cover（r35 之前的行为原样）
+    // cover（r35 之前的行为原样）+ 切换动画层变换（r76）：uv01 → 层本地坐标
+    // （平移 + 绕中心缩放）。slide 两层用同一缓动 → 可见区严丝合缝互补；层本地
+    // 越界输出 alpha 0（zoom 收进时层外区域透出底层，而不是拉伸的边缘像素）
+    vec2 uvS = (uv01 - 0.5 - uXf.xy) / uXf.z + 0.5;
+    if (uvS.x < 0.0 || uvS.x > 1.0 || uvS.y < 0.0 || uvS.y > 1.0) { gl_FragColor = vec4(0.0); return; }
     vec2 off = uFlowOff * crop;   // 屏幕位移 → 图像 gluv 空间（cover 裁切同比缩放）
-    vec2 g0 = (vec2(0.5) + (uv01 - 0.5) * crop - 0.5) * 2.0 * vec2(uImgAspect, 1.0);
+    vec2 g0 = (vec2(0.5) + (uvS - 0.5) * crop - 0.5) * 2.0 * vec2(uImgAspect, 1.0);
     gl_FragColor = vec4(flowSample(g0, off, uImgAspect), uAlpha);
     return;
   }
 
+  // 层变换采样坐标（r76）：uXf 为 identity（(0,0,1,0)）时 uvS ≡ uv01，零行为变化
+  vec2 uvS = (uv01 - 0.5 - uXf.xy) / uXf.z + 0.5;
+  if (uvS.x < 0.0 || uvS.x > 1.0 || uvS.y < 0.0 || uvS.y > 1.0) { gl_FragColor = vec4(0.0); return; }
+
   float margin = uAmp * 0.55 + 0.015;
   vec2 zoom = crop * (1.0 - 2.0 * margin);
-  vec2 uv = vec2(0.5) + (uv01 - 0.5) * zoom;
+  vec2 uv = vec2(0.5) + (uvS - 0.5) * zoom;
 
   float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 无深度=平面
   vec2 par = uCam * (d - 0.5) * uAmp;
@@ -1014,7 +1060,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uMask', 'uHasMask', 'uIdle', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uIdle', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1181,7 +1227,7 @@ function glCamFlow(tSec, nowMs) {
   };
 }
 
-function glDrawLayer(L, alpha, cam, tSec) {
+function glDrawLayer(L, alpha, cam, tSec, xf) {
   const gl = glState.gl;
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, L.imgTex);
@@ -1219,16 +1265,38 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uFlowQ, Math.min(1, Math.max(0.15, cfg.flowQuality || 0.5)));
   // 填充方式（r36）：contain/mirror 的核心矩形按**本层**图像宽高比现算（两层各自不同），
   // 与 2D containRect 同一套数学 —— GL 核心必须和下层 2D 画的完整核心逐像素对齐
+  let uFit = 0;
+  let core;
   if ((cfg.fit === 'contain' || cfg.fit === 'mirror') && !Array.isArray(cam)) {
     const ca = w / h;
     let cw2, ch2;
     if (L.aspect > ca) { cw2 = w; ch2 = w / L.aspect; } else { ch2 = h; cw2 = h * L.aspect; }
-    gl.uniform1f(glState.U.uFit, cfg.fit === 'mirror' ? 2 : 1);
-    gl.uniform4f(glState.U.uCore, (w - cw2) / 2, (h - ch2) / 2, cw2, ch2);
+    core = [(w - cw2) / 2, (h - ch2) / 2, cw2, ch2];
+    uFit = cfg.fit === 'mirror' ? 2 : 1;
   } else {
-    gl.uniform1f(glState.U.uFit, 0);
-    gl.uniform4f(glState.U.uCore, 0, 0, w, h);
+    core = [0, 0, w, h];
   }
+  // 切换动画变体（r76）：两条路各走各的 ——
+  //   contain/mirror：shader 认 uCore，直接平移/缩放核心矩形（核心外本就 alpha 0）；
+  //   cover：shader 不读 uCore，采样变换走 uXf（xy=平移屏占比，z=绕中心缩放）。
+  if (xf && (xf.dx || xf.dy || xf.s !== 1)) {
+    if (uFit > 0.5) {
+      const bw2 = core[2] * xf.s;
+      const bh2 = core[3] * xf.s;
+      core = [
+        core[0] + (core[2] - bw2) / 2 + xf.dx * w,
+        core[1] + (core[3] - bh2) / 2 + xf.dy * h,
+        bw2, bh2,
+      ];
+      gl.uniform4f(glState.U.uXf, 0, 0, 1, 0);
+    } else {
+      gl.uniform4f(glState.U.uXf, xf.dx, xf.dy, xf.s, 0);
+    }
+  } else {
+    gl.uniform4f(glState.U.uXf, 0, 0, 1, 0);
+  }
+  gl.uniform1f(glState.U.uFit, uFit);
+  gl.uniform4f(glState.U.uCore, core[0], core[1], core[2], core[3]);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -1243,20 +1311,41 @@ function glTick(now) {
   const cam = cfg.depthFlow ? glCamFlow(tSec, now) : glCam(tSec, now);
   gl.disable(gl.BLEND);
   if (glState.anim) {
-    const p = Math.min(1, (now - glState.anim.t0) / Math.max(1, glState.anim.duration));
+    const A = glState.anim;
+    const p = Math.min(1, (now - A.t0) / Math.max(1, A.duration));
     const e = easeCubicBezier(p);
+    // 切换动画变体（r76）：A.glv = null → 交叉淡化（现行行为）；有值 → 核心矩形
+    // 平移/缩放 + 透明度按 2D variantFor 同款语义插值
+    let aIn = e;
+    let aOut = 1;
+    let xfIn = null;
+    let xfOut = null;
+    if (A.glv) {
+      aIn = lerp(A.glv.fromO, 1, e);
+      aOut = lerp(1, A.glv.toO, e);
+      xfIn = {
+        dx: lerp(A.glv.from.dx, 0, e),
+        dy: lerp(A.glv.from.dy, 0, e),
+        s: lerp(A.glv.from.s, 1, e),
+      };
+      xfOut = {
+        dx: lerp(0, A.glv.to.dx, e),
+        dy: lerp(0, A.glv.to.dy, e),
+        s: lerp(1, A.glv.to.s, e),
+      };
+    }
     // contain 的 2D 模糊底随 GL 核心同步淡入（bgFade 由 showFrame 挂上）
-    if (glState.anim.bgFade) setLayer(glState.anim.bgFade.root, REST, e, 'px');
-    if (glState.anim.out) glDrawLayer(glState.anim.out, 1, cam, tSec);   // 底：完全不透明
-    if (glState.anim.in) {
+    if (A.bgFade) setLayer(A.bgFade.root, REST, e, 'px');
+    if (A.out) glDrawLayer(A.out, aOut, cam, tSec, xfOut);   // 底层
+    if (A.in) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      glDrawLayer(glState.anim.in, e, cam, tSec);                        // 顶层淡入（src-over，正确合成不压暗）
+      glDrawLayer(A.in, aIn, cam, tSec, xfIn);               // 顶层淡入（src-over，正确合成不压暗）
     }
     if (p >= 1) {
-      if (glState.anim.bgFade) setLayer(glState.anim.bgFade.root, REST, 1, 'px');
-      glFreeLayer(glState.anim.out);
-      glState.cur = glState.anim.in;
+      if (A.bgFade) setLayer(A.bgFade.root, REST, 1, 'px');
+      glFreeLayer(A.out);
+      glState.cur = A.in;
       glState.anim = null;
       if (!glState.cur) { glActive = false; glState.canvas.style.display = 'none'; }
     }
@@ -1287,7 +1376,7 @@ function glFadeOutIfAny() {
  *  token：showFrame 的过渡令牌 —— 纹理加载期间被更新的 showFrame 抢走就放弃（防旧盖新）。
  *  ⚠️ 整体 try/catch：这里任何异常都会跳过 showFrame 的 2D 回退 → 桌面黑屏
  *  （2026-10-09 启动黑屏排查追加，失败原因全部落 live-debug.log）。 */
-async function glShowFrame(entry, outgoingPath, token) {
+async function glShowFrame(entry, outgoingPath, token, opts = {}) {
   try {
     glInit();
     if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return { ok: false }; }
@@ -1309,7 +1398,15 @@ async function glShowFrame(entry, outgoingPath, token) {
       glFreeLayer(glState.anim.in);
       glState.anim = null;
     }
-    glState.anim = { t0: performance.now(), duration: Math.max(0, cfg.duration || 0), out: outLayer, in: inLayer };
+    // 切换动画（r76）：animate=false（启动/自愈/接管首帧）= 瞬上（与 2D 语义一致）；
+    // variant=false（depth:ready 升级）= 淡化 —— 同一张图加视差，平移缩放会穿帮
+    const animate = opts.animate !== false;
+    glState.anim = {
+      t0: performance.now(),
+      duration: animate ? Math.max(0, cfg.duration || 0) : 0,
+      out: outLayer, in: inLayer,
+      glv: animate && opts.variant !== false ? glVariantFor(pickAnimName(), currentDir) : null,
+    };
     inLayer.imgPath = entry.path;   // depth:ready 升级判定 / 出场快照复用判定用
     glState.cur = null;
     glActive = true;
@@ -1325,7 +1422,7 @@ async function glShowFrame(entry, outgoingPath, token) {
 /** 拼接版 GL 上屏（r38）：画布已在外部拼好，纹理直接从 canvas 建（texImage2D 收 canvas）。
  *  出场底复用规则与 glShowFrame 一致：上一帧是 GL（单图或上一次拼接）就复用它的纹理，
  *  都没有就纯淡入盖在 2D 上。拼接画布恰好铺满屏幕 → aspect==canvas → shader 走 cover 全幅。 */
-async function glShowFrameCollage(col, token) {
+async function glShowFrameCollage(col, token, opts = {}) {
   try {
     glInit();
     if (!glState.ok) { slog('gl: 初始化失败，回退 2D'); return { ok: false }; }
@@ -1343,7 +1440,15 @@ async function glShowFrameCollage(col, token) {
       glFreeLayer(glState.anim.in);
       glState.anim = null;
     }
-    glState.anim = { t0: performance.now(), duration: Math.max(0, cfg.duration || 0), out: outLayer, in: inLayer };
+    // 变体规则与 glShowFrame 一致（r76）：升级（variant:false）走淡化 ——
+    // 拼的是同一幅画面，平移缩放会穿帮
+    const animate = opts.animate !== false;
+    glState.anim = {
+      t0: performance.now(),
+      duration: animate ? Math.max(0, cfg.duration || 0) : 0,
+      out: outLayer, in: inLayer,
+      glv: animate && opts.variant !== false ? glVariantFor(pickAnimName(), currentDir) : null,
+    };
     glState.cur = null;
     glActive = true;
     everRendered = true;
@@ -1569,7 +1674,7 @@ async function showFrame(entry, dir, animate) {
       if (col) reportCollagePage(col.n);   // r75：回报页宽，调度器整页推进防重复
       if (col && col.n > 1) {
         if (col.depCanvas) {
-          const gl = await glShowFrameCollage(col, token);
+          const gl = await glShowFrameCollage(col, token, { animate });
           if (gl.ok) {
             hideIframe(incoming);
             hideIframe(outgoing);
@@ -1600,7 +1705,7 @@ async function showFrame(entry, dir, animate) {
       slog(`tick ${depthPath ? 'hit ' : 'miss'} ${String(entry.path).split(/[\\/]/).pop()}`);
       if (depthPath && entry.depth !== false) {
         const depthEntry = { ...entry, depth: depthPath };
-        const gl = await glShowFrame(depthEntry, currentEntry && currentEntry !== entry ? currentEntry.path : null, token);
+        const gl = await glShowFrame(depthEntry, currentEntry && currentEntry !== entry ? currentEntry.path : null, token, { animate });
         if (gl.ok) {
           hideIframe(incoming);
           hideIframe(outgoing);
@@ -1728,10 +1833,8 @@ function finish2D(incoming, outgoing, src, sw, sh, kind, animate, incomingKey, o
     return;
   }
 
-  // random：每次换图随机抽一种（profile.animation='random' 时）
-  const animName = cfg.animation === 'random'
-    ? RANDOM_POOL[Math.floor(Math.random() * RANDOM_POOL.length)]
-    : cfg.animation;
+  // random：每次换图随机抽一种（与 GL 路径共用 pickAnimName，语义一致）
+  const animName = pickAnimName();
   const v = variantFor(animName, currentDir);
   // 清掉上一次过渡可能残留的自绘样式（快速连切时上一次可能没走到收尾分支）
   clearFx(incoming.root);
@@ -2035,7 +2138,7 @@ async function init() {
     const { w: W, h: H } = canvasSize(layers.A.canvas);
     const comp = composeCollageCanvases(collage.slots, W, H);
     if (!comp.allReady) return;
-    const gl = await glShowFrameCollage({ ...comp, aspect: W / H, n: collage.n }, animToken);
+    const gl = await glShowFrameCollage({ ...comp, aspect: W / H, n: collage.n }, animToken, { variant: false });
     if (gl.ok) {
       collage.active = false;
       const cur2D = layers[active];

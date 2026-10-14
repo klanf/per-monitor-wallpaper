@@ -310,6 +310,27 @@ store.js PROFILE_KEYS 补 4 键（atmoPalette/atmoFog/depthDof/godRays）。
 - 真机待验收：开雨/雪/樱花 + 有深度图的壁纸，粒子应被前景物体挡住；设置 › 外观 › 粒子特效可关
 
 
+## 第七十六轮：切换动画在深度视差帧上生效 —— GL 过渡不再写死交叉淡化（r76）（2026-10-14）
+
+### 现象（用户真机反馈）
+
+「切换动画没有在舞台生效」。排查实锤：GL 路径（深度视差帧）的过渡**从 r38 起就写死交叉淡化**，从不读 `cfg.animation`——`variantFor`/`RANDOM_POOL` 只有 2D 路径在用。master 同样如此（不是 r74/r75 回归）：以前深度生成不稳、常掉 2D 路径时动画能看到；现在深度管线稳了，几乎每张图都走 GL，设置里的切换动画（两块屏都是 random + 1500ms）等于整体失效。
+
+### 方案：变换型在 GL 等价复刻，自绘型降级 fade
+
+| 变体族 | GL 实现 |
+|---|---|
+| fade / zoom / zoom-in / zoom-out / slide / slide-zoom | 新 uniform `uXf`（cover：采样坐标平移+绕中心缩放+层外 alpha 0）；contain/mirror 走 uCore 核心矩形变换（shader 不读 uCore 的 cover 必须单独走 uXf，这是实现中发现的关键）——参数与 2D variantFor 逐项对齐，slide 两层同一缓动 → 可见区严丝合缝互补 |
+| wipe / iris / blur-dissolve / clock / blinds / split | clip 系片元表达不了 → 降级 fade（slog 只提示一次），视差连续性优先 |
+
+调度规则：`glShowFrame`/`glShowFrameCollage` 挂 `glv`（animate=false → duration 0 瞬上，与 2D 语义对齐；**depth:ready 升级 variant=false → 保持淡化**——同一张图加视差，平移缩放会穿帮）；`glTick` 按 glv 插值，glv=null 恒等于现行交叉淡化。2D 与 GL 共用新的 `pickAnimName()` 抽签。
+
+### 验证（含一次负向哑弹修复）
+
+- **tmp-glsl-gen-page.js 的 --neg 负向控制实为哑弹**：r71 的注入目标串被 r73 重构删掉后 `replace` 静默 no-op，「负向通过」验了个寂寞。改为 main() 注入未声明变量（任何后端必炸）——现在正向 `GLSL-COMPILE-OK`、负向 `RESULT-FAIL: undeclared identifier`，对照闭环
+- Edge headless 真实编译通过（uXf 全 GLSL ES 1.0 合规）；check-wiring 56/0；verify:unit 全链 0 失败（调度 199/0）；node --check
+- 真机待验收：动画选 random → GL 帧上应能看到 zoom/slide 系花样（clip 系显示为淡化属预期）；单选 slide/zoom 逐个对比 2D 观感
+
 ## 第七十五轮：拼接整页推进 —— 相邻两幅拼图零重复（r75）（2026-10-14）
 
 ### 现象（用户真机反馈）
