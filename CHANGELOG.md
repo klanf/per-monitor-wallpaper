@@ -4261,3 +4261,32 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
 - 离屏四变体对拍：纯 POM 0.55 / +差速 1.26 / 全开 1.26 / 宽羽化修复 0.55（px/px 峰值剪切）。
 - 旧缓存 r7 的单通道 mask 若残留在纹理里 .g=0（灰度 PNG 解码 R=G=B 时=g=r），行为同旧版；
   schema r8 已强制重生成，无兼容死角。
+
+## 第六十五轮：mask 换人像分割 —— u2netp 贴轮廓（r9）（2026-10-14）
+
+### 现象
+
+- r8 宽羽化验收仍不过：用户直觉「图没扣干净」实锤——mask 叠回原图，特写图的 Otsu 深度阈值
+  mask 把头整个切掉、轮廓从手臂/大腿/胸口身体中间穿过。idle 位移在角色内部不连续 = 形变根源。
+  Otsu 只懂「深度近」不懂「人物」，这一层修不好，只能换分割。
+
+### 改动
+
+- depthEngineJs 接入 **u2netp 人像分割**（models/segmentation/u2netp.onnx，4.5MB，
+  gitignore 同深度模型待遇；来源 rembg release）：
+  - ensureSegSession：**恒 CPU EP**（单张 ~220ms，只在该图首次生成时跑一次就进缓存），
+    不与 ComfyUI 等显卡负载抢算力；会话驻留 worker 生命周期（模型小不设回收）。
+  - segmentPerson：320×320 RGB → NCHW ImageNet 归一化 → sigmoid → min-max 拉伸
+    （原始输出动态范围仅 0.5~0.73，不拉伸 Otsu 切不干净）→ 缩到深度分辨率。
+  - generate 的 mask 分支：分割优先，模型缺失/加载失败回落 Otsu 深度阈值（保守降级），
+    失败仍不影响深度本体落盘。
+  - writeMask 双通道羽化（R 紧 G 宽）原样复用——喂的东西从深度图换成显著图而已。
+- DEPTH_CACHE_SCHEMA r8→r9 全量失效（旧 mask 全是深度阈值产物），按需懒生成。
+- u2netp 输出名非固定（本例 input.1/d0 探测版）：session.inputNames/outputNames[0] 动态取。
+
+### 验证
+
+- 真图叠加：特写图与女仆图的分割 mask 均贴住人物全身（含头/发/四肢），背景干净排除
+  （tools/out/idle-sim/seg_overlay.png）；对比 Otsu 版切头穿身为质变。
+- CPU 推理耗时 217ms/张（i5 级），会话创建 124ms。
+- node --check ×3、tmp-mask-verify 三断言、check-wiring 56/0、全单测套件通过。

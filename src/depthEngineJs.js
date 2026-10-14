@@ -35,6 +35,8 @@ const state = {
   depthDevice: 'gpu',
   failed: false,
   failReason: '',
+  segSession: null,            // u2netp 人像分割会话（恒 CPU EP，不抢深度引擎的 GPU）
+  segFailed: false,            // 模型缺失/加载失败 → 本 worker 生命周期内回落 Otsu 深度 mask
 };
 
 function log(...args) {
@@ -458,8 +460,71 @@ async function writeMask(sharp, depth8, w, h, outPath) {
   await writeAtomic(sharp(rgb, { raw: { width: w, height: h, channels: 3 } }), outPath);
 }
 
-function toNchwFloat(raw, w, h) {
-  const n = w * h;
+// ---- u2netp 人像分割（第六十五轮）：mask 从「深度阈值近似」升级为「贴人物轮廓」 ----
+// Otsu 深度阈值在特写图上会把头切掉、轮廓从身体中间穿过 → idle 位移在角色内部不连续
+// （用户真机验收实锤）。u2netp 仅 4.5MB，恒跑 CPU EP（单张 ~220ms，只在该图首次生成时
+// 执行一次就进缓存），不与 ComfyUI 等显卡负载抢算力。失败回落 Otsu 深度 mask。
+function segModelPath() {
+  return path.join(__dirname, '..', 'models', 'segmentation', 'u2netp.onnx');
+}
+
+async function ensureSegSession() {
+  if (state.segSession) return state.segSession;
+  if (state.segFailed) throw new Error('u2netp 此前加载失败（本 worker 不再重试）');
+  const modelPath = segModelPath();
+  if (!fs.existsSync(modelPath)) {
+    state.segFailed = true;
+    throw new Error(`缺少分割模型 ${modelPath}`);
+  }
+  try {
+    state.segSession = await state.ort.InferenceSession.create(modelPath, { executionProviders: ['cpu'] });
+  } catch (err) {
+    state.segFailed = true;
+    throw new Error(`u2netp 会话创建失败：${err.message}`);
+  }
+  return state.segSession;
+}
+
+/** 跑 u2netp 出人像显著图，缩放到深度分辨率并做 min-max 拉伸，返回 u8 Buffer（亮=人物）。 */
+async function segmentPerson(sharp, imgPath, dw, dh) {
+  const session = await ensureSegSession();
+  const SEG = 320;
+  const img = await sharp(imgPath).removeAlpha()
+    .resize(SEG, SEG, { kernel: 'cubic', fit: 'fill' })
+    .toColourspace('srgb').raw().toBuffer();
+  const n = SEG * SEG;
+  const px = new Float32Array(3 * n);
+  const MEAN = [0.485, 0.456, 0.406];
+  const STD = [0.229, 0.224, 0.225];
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < n; i++) px[c * n + i] = (img[i * 3 + c] / 255 - MEAN[c]) / STD[c];
+  }
+  const inputName = session.inputNames[0];
+  const outName = session.outputNames[0];
+  const out = await session.run({ [inputName]: new state.ort.Tensor('float32', px, [1, 3, SEG, SEG]) });
+  const tensor = out[outName];
+  if (!tensor || !tensor.data) throw new Error('u2netp 无输出');
+  const logits = tensor.data;
+  let mn = Infinity;
+  let mx = -Infinity;
+  const sig = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = 1 / (1 + Math.exp(-logits[i]));
+    sig[i] = s;
+    if (s < mn) mn = s;
+    if (s > mx) mx = s;
+  }
+  const stretched = Buffer.allocUnsafe(n);
+  const span = mx - mn;
+  for (let i = 0; i < n; i++) {
+    stretched[i] = span > 1e-6 ? Math.round(((sig[i] - mn) / span) * 255) : 0;
+  }
+  return sharp(stretched, { raw: { width: SEG, height: SEG, channels: 1 } })
+    .resize(dw, dh, { kernel: 'cubic', fit: 'fill' })
+    .toColourspace('b-w').raw().toBuffer();
+}
+
+function toNchwFloat(raw, w, h) {  const n = w * h;
   if (raw.length !== n * 3) throw new Error(`RGB 输入长度 ${raw.length} != ${n * 3}`);
   const px = new Float32Array(3 * n);
   for (let i = 0; i < n; i++) {
@@ -567,8 +632,15 @@ async function generate(job) {
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
   // mask 顺手派生（同一次会话里省一次解码）：失败不影响上面已落盘的深度
   if (job.outMask) {
-    try { await writeMask(sharp, out8, dw, dh, job.outMask); } catch (err) {
-      log('mask 生成失败（该图 idle 降级关闭）:', path.basename(job.path), err.message);
+    // 优先人像分割（贴轮廓）；u2netp 缺失/失败回落 Otsu 深度阈值（深度近似，切不准）
+    try {
+      const seg = await segmentPerson(sharp, job.path, dw, dh);
+      await writeMask(sharp, seg, dw, dh, job.outMask);
+    } catch (err) {
+      log('人像分割不可用，回落 Otsu 深度 mask:', err.message);
+      try { await writeMask(sharp, out8, dw, dh, job.outMask); } catch (err2) {
+        log('mask 生成失败（该图 idle 降级关闭）:', path.basename(job.path), err2.message);
+      }
     }
   }
   armReleaseTimer();
