@@ -201,6 +201,29 @@ DepthFlow 官方无时段光照/雾（仅 vignette/DOF/镜头畸变，且均未�
 - 夜档暗部保留率数值对照（灰像素）：luma 0.02 深阴影 0.66→0.86（+30%）、0.80 高光 0.66→0.88（不再压死）、0.30 中间调 0.67（夜景压暗力度保持）
 - check-wiring 56/0；六套单测 345 项全 0 失败；真机待验收（重点看夜档暗部与白天是否还整体提亮）
 
+\n## 第七十三轮：氛围改调色板体系 + 雾浓度滑杆 + 景深虚化 + 丁达尔光束（2026-10-14）
+
+### 需求（用户五条）
+
+① 清晨/白天观感不明显→合并、夜晚档删（auto 只剩白天/黄昏）；② 雾看不出用、没开关→加浓度滑杆 0~2×（0=关）；③ 时段滤镜改成社区调色板预设，工具栏只留总开关、具体效果设置页选（含 auto）；④ 景深加开关体验对比；⑤ 丁达尔也做。
+
+### 社区调研（选型依据）
+
+DepthFlow 官方仅 vignette/DOF/镜头畸变且无时段语义；调色板选社区公认六大盘中五个（luttie.app/Motion Array/Bitcut 评价页）：黄金时刻 Golden Hour、好莱坞青橙 Teal & Orange（影史最稳：肤色暖橙+环境推青，色轮对位）、赛博朋克 Cyberpunk（品红青霓虹）、月光蓝 Moody Blue（暗而不闷）、褪色胶片 Faded Film（抬黑低饱和）。丁达尔=Mitchell 2004/Crysis Sun Shafts 屏幕空间径向采样（GDC 经典，游戏业十余年标准）。
+
+### 实现
+
+- shader：atmoParams 4 档→7 档（0=白天 1=黄昏 auto 用；2~6=固定调色板），AtmoP 增 lift（抬黑）/sat（饱和）成员；godRays 函数（向 SUN_POS 右上 20 步径向采样，亮度阈值 smoothstep(0.70,0.92) 提亮源，每步 mask 遮挡×(1-mask*0.85)→光柱不打人，衰减 w*=0.93 归一 *0.035）；DOF（焦点=屏幕中心深度，CoC=|该点深度-焦点|*uDof，黄金角螺旋 16 tap，CoC<0.015 保原图，rad 上限 9px/uCanvas.y）；uniforms uAtmoPhase→uAtmoSel（连续档位）+uFogK/uDof/uGodR
+- JS：ATMO_AUTO_FRAMES 改白天/黄昏两档（[[0,0],[6,0],[16.5,0],[18,1],[20.5,1],[21.5,0],[24,0]]，清晨并入白天、夜晚档删）；atmoSel 每帧 0.08 缓动（调色板切换不跳变）；调色板链路 save() 全局键→stage profile 合并（同 flowIntensity）
+- 设置页（深度视差区）：氛围调色板下拉（auto+5）、雾浓度滑杆 0~2×、景深虚化 checkbox、丁达尔光束 checkbox；顶栏太阳图标仍是总开关（跟显示器），设置页管「开起来之后长什么样」
+- store 不加键（全局 config 透传，同 flowIntensity 先例）
+
+### 验证
+
+- node --check ×2；Edge headless 真实编译 GLSL-COMPILE-OK（const vec2/struct 出参/三新 uniform 全合规）；grep atmoPhaseNow|uAtmoPhase 零残留
+- check-wiring 56/0；六套单测 345 项全 0 失败
+- 真机待验收：①调色板五档逐个切看观感（顶栏氛围先点亮）②雾拉 2× 看远景空气透视、0 看无雾 ③景深开关对比人物清晰/背景糊 ④丁达尔对天空/窗光类壁纸看光柱，人物图若无亮源属预期（光柱需要画面里有亮的天空/窗口）
+
 \n## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

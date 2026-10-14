@@ -2492,6 +2492,13 @@ function applyConfigToUI() {
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
   $('cfg-flow-style').value = ['circle', 'orbital', 'dolly'].includes(c.flowStyle) ? c.flowStyle : 'circle';
+  // 氛围调色板/雾/景深/丁达尔（r73；不写 = 默认值）
+  $('cfg-atmo-palette').value = ['golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(c.atmoPalette) ? c.atmoPalette : 'auto';
+  const fogK = Number.isFinite(c.atmoFog) ? Math.min(2, Math.max(0, c.atmoFog)) : 1;
+  $('cfg-atmo-fog').value = fogK;
+  $('cfg-atmo-fog-out').textContent = `${fogK.toFixed(1)}×`;
+  $('cfg-depth-dof').checked = c.depthDof === true;
+  $('cfg-god-rays').checked = c.godRays === true;
   // 开关联动显隐重算（r21：隐藏代替置灰；applyConfigToUI 回填后必须跑一遍）
   syncConditionalUI();
 
@@ -2908,6 +2915,34 @@ function bindSettings() {
       toast(`${label}：${fmt(Number(input.value))}`);
     });
   }
+
+  // ---- 氛围调色板 / 雾浓度 / 景深 / 丁达尔（r73）----
+  // 总开关在顶栏太阳图标（depthAtmo，跟显示器）；这里只管「开起来之后长什么样」。
+  $('cfg-atmo-palette').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    await save({ atmoPalette: v });
+    const names = { auto: '自动（按时间：白天/黄昏）', golden: '黄金时刻', tealorange: '好莱坞青橙', cyberpunk: '赛博朋克', moonlight: '月光蓝', faded: '褪色胶片' };
+    toast(`氛围调色板：${names[v] || v}（需顶栏氛围开关点亮）`);
+  });
+  {
+    const input = $('cfg-atmo-fog');
+    input.addEventListener('input', () => {
+      $('cfg-atmo-fog-out').textContent = `${Number(input.value).toFixed(1)}×`;
+    });
+    input.addEventListener('change', async () => {
+      const v = Number(input.value);
+      await save({ atmoFog: v });
+      toast(v <= 0.01 ? '雾已关闭' : `雾浓度：${v.toFixed(1)}×`);
+    });
+  }
+  $('cfg-depth-dof').addEventListener('change', async (e) => {
+    await save({ depthDof: e.target.checked });
+    toast(e.target.checked ? '景深虚化已开启（远处焦外模糊）' : '景深虚化已关闭');
+  });
+  $('cfg-god-rays').addEventListener('change', async (e) => {
+    await save({ godRays: e.target.checked });
+    toast(e.target.checked ? '丁达尔光束已开启（画面右上为光源方向）' : '丁达尔光束已关闭');
+  });
 
   $('cfg-fps-cap').addEventListener('change', async (e) => {
     const v = Number(e.target.value);
