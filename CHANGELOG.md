@@ -112,6 +112,25 @@ DA3 弃用（方案一），候选链还原 master 只认 V2；repair 保留（V
 - 负向控制（负向对照实证撤干净）：重跑 tmp-ab24-gen.js 四格，带 mask 管线深度与裸深度 md5 逐字节一致（A=B=cb51e86c、C=D=c4011b50）——深度本体零后处理
 
 
+## 第七十轮：顶栏新增「鼠标影响动效」开关（pointerFx）（2026-10-14）
+
+### 需求
+
+用户：顶栏加一个开关控制「鼠标能否影响动效风格的运作」——开=受鼠标影响（现状），关=不管鼠标怎么动都按预设轨迹运行。
+
+### 实现（与 idleFx 完全同构，跟显示器走）
+
+- 新 profile 键 `pointerFx`（不写 = 默认开，保持现状行为）：store.js PROFILE_KEYS 透传
+- stage.js：cfg 默认 true；闸门放在两个鼠标喂入口（本地 mousemove + 主进程 GetCursorPos 轮询）——只挡 glState.mouse/mouseUntil 喂送，粒子避让光标喂送不受此闸门管（独立开关 particleCursor）；关闭时立即清 mouseUntil=0，混合权重 mouseW 按 0.02/帧平滑衰减（~2s 无跳变回到预设轨迹）
+- 顶栏第 5 枚 qchip `qt-pointer`（光标图标）：开关走 quickToggles 组监听新增分支，pushProfile 写 profile 实时生效
+- app.js：resolvedPointerFx（不写 = 默认开，与 stage 默认一致）+ updateQuickToggles 点亮态
+
+### 验证
+
+- node --check ×3；check-wiring 56/0；单测 depth-service 20 + desktop-host 41 + fullscreen-watch 43 + live-desktop 42 + scheduler 185 + slideshow-guard 14 全 0 失败
+- 真机待验收：关闭后鼠标狂动镜头应恒走预设轨迹（含 idle 目标喂送同源失效）；重开立即恢复跟随
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

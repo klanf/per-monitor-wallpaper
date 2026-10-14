@@ -94,6 +94,7 @@ const cfg = {
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
   flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
   idleFx: false,               // idle 微动画（r62，profile.idleFx）：呼吸+飘动+差速视差（mask 前景）
+  pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
 };
 
@@ -1617,6 +1618,13 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
   // idle 微动画（r62，profile 不写 = 默认关）
   if (p.idleFx !== undefined) cfg.idleFx = Boolean(p.idleFx);
+  // 鼠标影响动效（r70，profile 不写 = 默认开）：关 = 两个喂入口闸门不更新
+  // glState.mouse，并立刻清 mouseUntil —— 混合权重 mouseW 按 0.02/帧平滑衰减，
+  // ~2s 内镜头无跳变地回到预设轨迹。
+  if (p.pointerFx !== undefined) {
+    cfg.pointerFx = Boolean(p.pointerFx);
+    if (!cfg.pointerFx) glState.mouseUntil = 0;
+  }
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
@@ -1778,8 +1786,11 @@ async function init() {
   // ⚠️ raised-WorkerW 挂载后这条本地 mousemove 收不到（见下方 onStageMouse）——
   // 保留它作为「挂载拓扑允许原生输入到达舞台」时的兜底，两条路并存不冲突。
   window.addEventListener('mousemove', (e) => {
-    glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
-    glState.mouseUntil = performance.now() + 2500;
+    // pointerFx 关（r70）：不喂视差镜头（粒子避让光标喂送不受此闸门管，独立开关）
+    if (cfg.pointerFx !== false) {
+      glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
+      glState.mouseUntil = performance.now() + 2500;
+    }
     if (particleFx && cfg.particleCursor) particleFx.setCursor(e.clientX, e.clientY);
   }, { passive: true });
   // raised-WorkerW 挂载后桌面空白点的输入被图标层（SHELLDLL_DefView）截走，
@@ -1790,8 +1801,11 @@ async function init() {
   if (window.wp.onStageMouse) {
     window.wp.onStageMouse((p) => {
       if (!p || typeof p.nx !== 'number') return;
-      glState.mouse = [p.nx, p.ny];
-      glState.mouseUntil = performance.now() + 2500;
+      // pointerFx 关（r70）：同本地 mousemove 的闸门 —— 只挡视差镜头喂送
+      if (cfg.pointerFx !== false) {
+        glState.mouse = [p.nx, p.ny];
+        glState.mouseUntil = performance.now() + 2500;
+      }
       if (particleFx && cfg.particleCursor) particleFx.setCursor(p.x, p.y);
     });
   }

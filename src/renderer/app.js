@@ -42,6 +42,7 @@ const els = {
   qtDepth: $('qt-depth'),
   qtIdle: $('qt-idle'),
   qtParticles: $('qt-particles'),
+  qtPointer: $('qt-pointer'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
   counter: $('counter'),
@@ -1461,6 +1462,14 @@ function resolvedIdle(chId) {
   return cfg.idleFx === true;
 }
 
+/** 鼠标影响动效（r70）生效值：布尔 profile 键，不写 = 默认开（与 stage.js cfg 默认一致） */
+function resolvedPointerFx(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (ov.pointerFx === true || ov.pointerFx === false) return ov.pointerFx;
+  return cfg.pointerFx !== false;
+}
+
 /* Auto 开关「灭→亮」时回落的间隔：会话内记住最后一次非零档位（缺省 1 小时） */
 let lastAutoScanMinutes = 60;
 
@@ -1475,6 +1484,7 @@ function updateQuickToggles() {
   set(els.qtDepth, resolvedDepth(ch.id));
   set(els.qtIdle, resolvedIdle(ch.id));
   set(els.qtParticles, resolvedParticles(ch.id) !== '');
+  set(els.qtPointer, resolvedPointerFx(ch.id));
   // Auto 是全局开关（不跟屏）：亮=autoScanMinutes>0；▾ 只在亮时显示
   const autoOn = ((state.config || {}).autoScanMinutes || 0) > 0;
   set(els.qtAuto, autoOn);
@@ -3548,6 +3558,11 @@ function bindEvents() {
       const next = cur !== '' ? '' : (((state.config || {}).particles || '') !== '' ? null : 'random');
       await pushProfile(id, { particles: next });
       note = next === '' ? '这块屏粒子特效已关闭' : '这块屏粒子特效已开启';
+    } else if (btn === els.qtPointer) {
+      // 鼠标影响动效（r70）：开=鼠标临时接管镜头；关=恒走预设轨迹（关→开立即恢复喂送）
+      const on = !resolvedPointerFx(id);
+      await pushProfile(id, { pointerFx: on });
+      note = on ? '这块屏鼠标影响动效已开启（鼠标动时镜头临时跟随，停手回落自动轨迹）' : '这块屏鼠标影响动效已关闭（镜头恒走预设轨迹）';
     }
     // Auto 已搬进 rescan-group（r41），不在本组监听范围内 —— 单独挂，见下。
     state.config = await window.wp.getConfig();
