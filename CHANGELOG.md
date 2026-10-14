@@ -224,7 +224,28 @@ DepthFlow 官方仅 vignette/DOF/镜头畸变且无时段语义；调色板选�
 - check-wiring 56/0；六套单测 345 项全 0 失败
 - 真机待验收：①调色板五档逐个切看观感（顶栏氛围先点亮）②雾拉 2× 看远景空气透视、0 看无雾 ③景深开关对比人物清晰/背景糊 ④丁达尔对天空/窗光类壁纸看光柱，人物图若无亮源属预期（光柱需要画面里有亮的天空/窗口）
 
-\n## 第四轮：四个新功能
+\n## 第七十三轮修复：r73 四个新设置键被 resolveProfile 白名单过滤 —— 开关全无效果（2026-10-14）
+
+### 现象
+
+用户真机反馈 r73「开启和关闭都看不出来」。设置页写全局 config 正常，但 stage 永远收不到。
+
+### 根因
+
+store.js resolveProfile 的 base 只从 PROFILE_KEYS 逐键拷贝（`for (const key of PROFILE_KEYS) base[key] = config[key]`）——r73 四个新键（atmoPalette/atmoFog/depthDof/godRays）未加进白名单，被整体过滤。r73 决策「不加 store 键、同 flowIntensity 先例」是误记：flowIntensity 恰恰在 PROFILE_KEYS 里（第 261 行）。
+
+### 修复
+
+store.js PROFILE_KEYS 补 4 键（atmoPalette/atmoFog/depthDof/godRays）。
+
+### 验证
+
+- node --check ×2；check-wiring 56/0；六套单测 345 项全 0 失败
+- 真机待验收：设置页改调色板/雾/景深/丁达尔应立即生效（save→config→推送→applyProfile）
+- 附注：auto 档白天时段近无操作是 r72 设计（用户嫌「只增亮度压暗部」），白天空看氛围请选固定调色板或等黄昏窗
+
+
+## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条
 
