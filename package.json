@@ -76,7 +76,7 @@
         "from": "models/depth-anything",
         "to": "models/depth-anything",
         "filter": [
-          "da3_small.onnx"
+          "depth_anything_v2_small.onnx"
         ]
       }
     ],

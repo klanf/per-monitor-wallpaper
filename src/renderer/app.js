@@ -2457,7 +2457,6 @@ function applyConfigToUI() {
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
   // 总开关已搬顶栏快捷开关（r41）：这里只留设备/模型/参数等细粒度项。
   $('cfg-depth-device').value = c.depthDevice === 'cpu' ? 'cpu' : 'gpu';  // 缺省 = GPU(DML)
-  $('cfg-depth-model').value = ['da3', 'v2'].includes(c.depthModel) ? c.depthModel : 'auto';  // 缺省 = 自动(DA3 优先)
   const flowKeys = [
     ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', 0.5, (v) => v.toFixed(2)],
     ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', 1.0, (v) => `${v.toFixed(1)}×`],
@@ -2867,15 +2866,8 @@ function bindSettings() {
     toast(v === 'cpu' ? '深度推理已切到 CPU（下一张图生效）' : '深度推理已切到 GPU（下一张图生效）');
     refreshDepthStatus();
   });
-  // 深度模型切换（自动/DA3/V2）：主进程实时转发 depthService 重排候选链；
-  // 引擎线程发现下一个任务的 onnxModel 变了会自动释放旧会话、按新模型重建。
-  // 深度缓存按模型系列命名空间隔离，切来切去不会串缓存。
-  $('cfg-depth-model').addEventListener('change', async (e) => {
-    const v = e.target.value === 'v2' ? 'v2' : e.target.value === 'da3' ? 'da3' : 'auto';
-    await save({ depthModel: v });
-    toast(v === 'auto' ? '深度模型：自动（DA3 优先，缺失回落 V2）' : v === 'da3' ? '深度模型：DA3-SMALL（V3）' : '深度模型：V2-Small（兼容模式）');
-    refreshDepthStatus();
-  });
+  // （深度模型切换（自动/DA3/V2）选项已移除（r68）：DA3 弃用 —— 2×2 隔离对拍实锤
+  //   人物区深度扁平 15~18%「2D 纸片」观感是模型特性，候选链还原 master 只认 V2）
   // （DepthFlow 流动模式开关已移除（r23）：恒开 —— 用户实测关掉效果非常差，
   //   没有存在的价值；store 层也不再读写 depthFlow 键）
   const FLOW_SLIDERS = [

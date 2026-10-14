@@ -58,6 +58,39 @@ npm run restore-wallpaper  # 还原壁纸（不带参数＝按存档逐屏还原
 npm run dist               # 打包（需先 npm i -D electron-builder）
 ```
 
+## 第六十八轮：DA3 弃用 —— 深度模型还原 V2（方案一）（2026-10-14）
+
+### 现象
+
+用户真机 A/B 对照（git 切 master vs feature/newbiz 重启实测）：V2 老效果全面好于 DA3——①形变轻（DA3 发丝穿透梳齿）；②立体感强（V2 动起来很立体，DA3 像「2D 图在原地旋转」）。用户质疑「接入 V3 后改了不少代码，形变可能是后处理引入的」。
+
+### 归因（2×2 隔离对拍，tmp-ab24-gen.js + tmp-ab24-sim.py）
+
+同图（Anima-20260823163326_00011_.png）四格深度：A=V2裸（master 做法）/ B=V2+repair / C=DA3裸 / D=DA3+repair（现状），右上发丝区+躯干区双区域、纯 POM 同视差量化：
+
+- **「2D 纸片」是 DA3 模型特性**：裸深度（C 格）人物区深度σ就比 V2 低 18%（右上 0.186 vs 0.227）~15%（躯干 0.081 vs 0.095）——DA3 把人物当整体几何面压平内部起伏、只拉开前后景，与后处理无关。深度图对比一目了然：V2 猫耳发丝/锁骨结构清晰，DA3 人物内部糊成一片。
+- **repair（r10）在 V2 上无害微益**：B≈A（σ 微升 0.227→0.229，场剪切 P99.9 4.95→2.29），保留给 V2 细发丝留保险。
+- **repair 在 DA3 上帮倒忙**：躯干区σ 0.081→0.073，把本已扁平的人物区再抹平 10%。
+- **指标修正**：场剪切 P99.9 把「立体锐边」也算剪切——V2 裸 4.95 最高但渲染边缘锐利干净发丝根根分明，r67 用它判 repair -81% 有水分；该指标单看会误判，需配渲染图对拍。
+
+### 决定
+
+DA3 弃用（方案一），候选链还原 master 只认 V2；repair 保留（V2 实测无害微益）；idle/相簿等新业务全不动。不行再退回彻底还原（方案二，repair 也撤）。
+
+### 改动
+
+- depthService.js：resolveRuntime 候选链删 DA3 分支与 depthModel 偏好逻辑（V2：override → 打包布局 → legacy）；configure 删 depthModel 键与白名单
+- main.js：删 depthModel 实时转发块与初始 configure 传参
+- renderer/app.js + index.html：删设置页「深度模型」下拉及 change 监听
+- package.json：extraResources filter da3_small.onnx → depth_anything_v2_small.onnx（100MB DA3 不再进安装包）
+
+### 验证
+
+- node --check ×3；grep 无 depthModel/cfg-depth-model 残留（depthModelDir 为另一键保留）
+- check-wiring 56/0；单测 depth-service 20/0 + desktop-host 41/0 + fullscreen-watch 43/0 + live-desktop 42/0 + scheduler 185/0 + slideshow-guard 14/0
+- 真机待验收：重启后深度按 V2 候选链重生成（缓存键含模型路径自动隔离，DA3 旧缓存不串）
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

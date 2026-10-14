@@ -145,21 +145,10 @@ function resolveRuntime() {
     ],
     onnxModel: [
       state.overrides && state.overrides.onnxModel,
-      // depthModel 用户偏好：'v2'=V2 优先（兼容模式），其余（'auto'/'da3'/未设）= DA3 优先。
-      // 偏好系列缺失时自然回落到另一个系列 —— 不会因为选了 V2 而 V2 文件不在就整体不可用。
-      ...((state.depthModel === 'v2')
-        ? [
-            (overrideModelDir && path.join(overrideModelDir, 'depth_anything_v2_small.onnx')) || '',
-            path.join(appRoot, 'models', 'depth-anything', 'depth_anything_v2_small.onnx'),
-            (overrideModelDir && path.join(overrideModelDir, 'da3_small.onnx')) || '',
-            path.join(appRoot, 'models', 'depth-anything', 'da3_small.onnx'),
-          ]
-        : [
-            (overrideModelDir && path.join(overrideModelDir, 'da3_small.onnx')) || '',
-            path.join(appRoot, 'models', 'depth-anything', 'da3_small.onnx'),
-            (overrideModelDir && path.join(overrideModelDir, 'depth_anything_v2_small.onnx')) || '',
-            path.join(appRoot, 'models', 'depth-anything', 'depth_anything_v2_small.onnx'),
-          ]),
+      // 第六十八轮定版：DA3 弃用（2×2 隔离对拍实锤 —— 人物区深度σ比 V2 低 15~18%，
+      // 「2D 纸片原地转」观感是模型特性不是后处理），候选链还原 master 只认 V2。
+      (overrideModelDir && path.join(overrideModelDir, 'depth_anything_v2_small.onnx')) || '',
+      path.join(appRoot, 'models', 'depth-anything', 'depth_anything_v2_small.onnx'),
       LEGACY_PATHS.onnxModel,
     ],
   };
@@ -656,11 +645,9 @@ function lookup(entryPath) {
 
 function configure(patch) {
   const previousOnnx = state.onnxModel;
-  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot', 'depthDevice', 'depthModel']) {
+  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot', 'depthDevice']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
-  // 模型偏好白名单：只认 'v2' / 'da3'，其余（含未设）一律按 'auto'（DA3 优先）
-  if (state.depthModel !== 'v2' && state.depthModel !== 'da3') state.depthModel = 'auto';
   // 设备偏好落 state（r33 起随每个任务下发到引擎线程；引擎线程存活时这里
   // 同步推一条 configure —— 让「切换设备」立刻释放旧会话，下张按新设备重建）
   if (state.wt && state.engine === 'js') {
