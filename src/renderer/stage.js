@@ -689,9 +689,9 @@ void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float bre
   float sway = sin(uTime * 1.7 + stB.y * 9.0) * 0.6 + sin(uTime * 0.9 + stB.y * 4.0) * 0.4;
   vec2 dispG = vec2(sway * grad * 0.0035, br * 0.0012);
   stF += dispG * m / vec2(imgAspect, 1.0) * 0.5;
-  // 差速吃宽羽化 G 通道：0.12×off 的位移差若压在紧羽化 2~4px 带上会撕出锯齿
-  // （离屏复现 1.26px/px 剪切），摊到 ~60px 宽带后与纯 POM 基线持平（0.55px/px）
-  stF += off * (0.12 * m2.g) / vec2(imgAspect, 1.0) * 0.5;
+  // B 差速（mask × 0.12×off）已撤销（第六十六轮）：POM 深度本身就让前景动得多，
+  // mask 差速是叠床架屋 —— 且无论紧羽化还是宽羽化，都在轮廓带叠加 28px/px 级剪切
+  // （离屏复现 v1 楼梯度 18.9% vs 纯 POM 14.5%），用户两轮真机截图实锤撕边。
   breathM = m * br;
 }
 
