@@ -310,6 +310,32 @@ store.js PROFILE_KEYS 补 4 键（atmoPalette/atmoFog/depthDof/godRays）。
 - 真机待验收：开雨/雪/樱花 + 有深度图的壁纸，粒子应被前景物体挡住；设置 › 外观 › 粒子特效可关
 
 
+## 第七十四轮追记：粒子遮挡首帧 rand 未定义炸掉 rAF 循环 —— 视差被粒子拖死（2026-10-14）
+
+### 现象（用户真机反馈）
+
+「粒子特效有可能卡死深度视差的效果」——雨/雪/樱花 + 深度壁纸时视差冻结，无深度图或别的粒子种类则正常。
+
+### 根因（实锤）
+
+两层叠加：
+
+1. **直接根因**：stage.js 的 `createParticles(canvas)` 是单参调用，particles.js 闭包里 `rand=undefined`。既有的 `step()`/`spawn()` 都做了 `rand || Math.random` 兜底，r74 新加的 `applyDepthOcclusion` 漏了——深度帧喂入后首帧判定，第一颗无 z 粒子走到 `p.z = rand()` → TypeError。
+2. **杀伤半径（架构弱点）**：`ensureRaf` 的循环体没有任何 try/catch，任一 tick 抛异常 → 结尾的 `requestAnimationFrame(loop)` 不执行 → **整个循环死透**，视差/过渡/粒子全冻结且无人重启（下一次换图 showFrame 才 ensureRaf，原异常再炸再死，确定性循环）。
+
+单测没抓到它：test-particles.js 是纯函数测试，每处都显式传了 mulberry32 种子 rng，恰恰漏了浏览器绑定的 undefined 路径。
+
+### 修复
+
+- particles.js：`applyDepthOcclusion` 补 `const rr = rand || Math.random`（与 step/spawn 同款兜底）
+- stage.js：ensureRaf 循环体加固——五个 tick（anim/ken/gl/pan/video/粒子）各自包 `safeTick` 独立隔离，一个挂了别的照跑、循环必续，异常落 slog 限频（前 5 次）。装饰性 tick 从此不可能拖死视差本体
+
+### 验证
+
+- test-particles.js 补 2 项负向用例（rand=undefined 不炸 + z 仍懒分配）→ 19/19；check-wiring 56/0；node --check ×3
+- 真机待验收：雨/雪/樱花 + 深度壁纸，视差应正常流动且粒子被前景遮挡
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

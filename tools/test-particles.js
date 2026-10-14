@@ -119,6 +119,19 @@ check('rain/snow/sakura 注册表带 occl 标记（draw 分支按它走）',
   check('dep=null / 缺 data：不炸且不误设 _o', parts.length === 1 && parts[0]._o === undefined);
 }
 
+// 8b. 浏览器绑定路径：createParticles 单参调用 → 闭包 rand=undefined（r74 追记实锤：
+// 直接调 rand() 抛 TypeError → 杀死 stage 整个 rAF 循环 → 视差被粒子拖死）
+{
+  const dep = flatDepth(4, 4, 0.5);
+  const parts = [{ x: 50, y: 50 }, { x: 60, y: 60 }];
+  let threw = false;
+  try {
+    WP.applyDepthOcclusion(parts, { ...dep, bw: 4, bh: 4 }, 100, 100, undefined);
+  } catch (_) { threw = true; }
+  check('rand=undefined（浏览器绑定路径）不炸', !threw);
+  check('rand=undefined 时 z 仍被懒分配', parts.every((p) => p.z > 0 && p.z < 1));
+}
+
 console.log('—— 回归：既有纯逻辑不受影响 ——');
 
 // 9. 老别名迁移（r51）仍在

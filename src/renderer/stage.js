@@ -1451,21 +1451,32 @@ function animTick(now) {
 
 function ensureRaf() {
   if (rafId || frozen) return;
+  // rAF 兜底（r74 追记）：循环体没有任何 try/catch，任一 tick 抛异常 → 结尾的
+  // requestAnimationFrame 不执行 → 整个循环死透，视差/过渡/粒子全冻结且无人重启
+  // （showFrame 要等下一次换图才 ensureRaf，然后原异常再炸一次）。粒子遮挡首帧
+  // rand 未定义实锤过这条链。各 tick 独立隔离：一个挂了别的照跑，异常落 slog 限频。
+  let tickErrN = 0;
+  const safeTick = (label, fn) => {
+    try { fn(); } catch (err) {
+      if (tickErrN < 5) slog(`rAF ${label} 异常（循环续跑）——`, (err && (err.stack || err.message)) || String(err));
+      tickErrN += 1;
+    }
+  };
   const loop = (now) => {
     rafId = 0;
     if (gate(now)) {
-      animTick(now);
-      kenTick(now);
-      glTick(now);
-      panTick(now);
+      safeTick('animTick', () => animTick(now));
+      safeTick('kenTick', () => kenTick(now));
+      safeTick('glTick', () => glTick(now));
+      safeTick('panTick', () => panTick(now));
       // 视频壁纸：每帧把 <video> 的当前画面画进活动层（过渡动画是 root 的
       // CSS 样式，与 canvas 内容正交，两者并行不冲突）
       if (activeVideo && currentEntry && kindOf(currentEntry) === 'video') {
-        drawSource(layers[active], activeVideo, activeVideo.videoWidth, activeVideo.videoHeight);
+        safeTick('videoFrame', () => drawSource(layers[active], activeVideo, activeVideo.videoWidth, activeVideo.videoHeight));
       }
       // 粒子层与过渡/缓动共享同一个 fpsCap 闸门；stage:pause 停 rAF 即冻结，
       // 恢复后的时间跳变由 particles.js 的 DT_MAX 钳位兜住
-      if (particleFx) particleFx.frame(now);
+      if (particleFx) safeTick('particleFrame', () => particleFx.frame(now));
     }
     if (frozen) return;                    // 暂停：这一帧画完就停表
     if (anim || currentEntry || (particleFx && particleFx.isActive())) {

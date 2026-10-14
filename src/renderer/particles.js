@@ -852,13 +852,14 @@
    */
   function applyDepthOcclusion(parts, dep, W, H, rand) {
     if (!dep || !dep.data) return;
+    const rr = rand || Math.random;   // 浏览器绑定 createParticles 不传 rng（r74 追记：直接调 rand() 会炸掉整个 rAF 循环，与 step/spawn 同款兜底）
     const s = Math.max(W / dep.bw, H / dep.bh);        // 与 coverRect 同式
     const dw = dep.bw * s;
     const dh = dep.bh * s;
     const dx = (W - dw) / 2;
     const dy = (H - dh) / 2;
     for (const p of parts) {
-      if (p.z === undefined) p.z = rand();
+      if (p.z === undefined) p.z = rr();
       const u = (p.x - dx) / dw;
       const v = (p.y - dy) / dh;
       let o = 1;
