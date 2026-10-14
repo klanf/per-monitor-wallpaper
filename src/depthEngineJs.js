@@ -279,51 +279,6 @@ function featherDilate(gray, w, h) {
 }
 
 /**
- * mask 引导的深度修复（r67）：细发丝/毛边等细结构被 DA3 穿透成背景深度 —— POM 里
- * 钉死在背景层（steady 点位移≈0），人物移动时与身体之间被拉扯出梳齿（真机三轮截图
- * 实锤；离屏对拍 tools/tmp-idle-sim.py v6：峰值剪切 2.60→0.50，-81%）。
- * 人体 mask 内的深度洼地用十字 max 膨胀（r=6 texel）填平：发丝获得身体深度跟身体
- * 同动；mask 外与已高于膨胀值的像素不动。十字核而非方形（方形核斜轮廓产轴对齐
- * 楼梯齿，r4 教训）。只升不降。
- */
-function repairDepthWithMask(depth8, mask8, w, h) {
-  const R = 6;
-  const hmax = new Uint8ClampedArray(depth8.length);
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
-      let m = 0;
-      for (let k = -R; k <= R; k++) {
-        const xx = Math.min(w - 1, Math.max(0, x + k));
-        if (depth8[row + xx] > m) m = depth8[row + xx];
-      }
-      hmax[row + x] = m;
-    }
-  }
-  const vmax = new Uint8ClampedArray(depth8.length);
-  for (let x = 0; x < w; x++) {
-    for (let y = 0; y < h; y++) {
-      let m = 0;
-      for (let k = -R; k <= R; k++) {
-        const yy = Math.min(h - 1, Math.max(0, y + k));
-        if (depth8[yy * w + x] > m) m = depth8[yy * w + x];
-      }
-      vmax[y * w + x] = m;
-    }
-  }
-  const out = Buffer.allocUnsafe(depth8.length);
-  for (let i = 0; i < out.length; i++) {
-    const mv = mask8[i] / 255;
-    const wgt = mv > 0.5 ? Math.min(1, (mv - 0.5) * 2) : 0;   // 紧羽化带内 0→1 渐入
-    if (wgt <= 0) { out[i] = depth8[i]; continue; }
-    const cross = hmax[i] > vmax[i] ? hmax[i] : vmax[i];
-    const raised = depth8[i] > cross ? depth8[i] : cross;
-    out[i] = Math.round(depth8[i] * (1 - wgt) + raised * wgt);
-  }
-  return out;
-}
-
-/**
  * 可分离滑动窗口均值（边缘复制 clamp），O(1)/像素，Float64 累加防精度损失。
  * 返回 Float64Array（除以窗口数后），供引导滤波做二阶矩统计。
  */
@@ -674,14 +629,15 @@ async function generate(job) {
   const guide = new Float32Array(dw * dh);
   for (let i = 0; i < guide.length; i++) guide[i] = gbuf[i];
   let out8 = normalizeDepth(rgbGuided(dil, guide, dw, dh), false);
-  // 人像分割先行（r67）：mask 既用于 idle 前景层，也用于深度修复（发丝穿透填平）。
-  // 修复只升不降、失败保持原深度，绝不阻塞落盘。
+  // 深度本体在此定版（r69 撤销 r67 的 mask 引导修复）——与 master 的做法一致：
+  // 落盘前不再改深度。2×2 隔离对拍（tools/tmp-ab24-*.js）实锤 repair 会把人物区
+  // 深度σ再抹平 10%（0.081→0.073），「2D 纸片」观感有它一份。
+  // 人像分割（segmentPerson）只服务于 idle 前景层 mask，深度修复已撤。
   let seg = null;
   if (job.outMask) {
     try { seg = await segmentPerson(sharp, job.path, dw, dh); } catch (err) {
       log('人像分割不可用，mask 回落 Otsu 深度:', err.message);
     }
-    if (seg) out8 = repairDepthWithMask(out8, seg, dw, dh);
   }
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
   // mask 顺手派生（同一次会话里省一次解码）：失败不影响上面已落盘的深度
@@ -802,5 +758,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask, repairDepthWithMask },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask },
 };

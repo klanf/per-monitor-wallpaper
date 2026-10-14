@@ -70,7 +70,7 @@ const LEGACY_PATHS = {
 };
 
 // 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
-const DEPTH_CACHE_SCHEMA = 'depth-png-r10';  // r10：mask 引导的深度修复（发丝穿透填平，第六十七轮），旧 r9 深度带穿透洼地全量失效重生成
+const DEPTH_CACHE_SCHEMA = 'depth-png-r11';  // r69：撤销 r67 mask 引导深度修复（2×2 对拍实锤把人物区深度σ再抹平 10%），r10 深度带修复全量失效重生成；r68 深度模型还原 V2_small
 
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {

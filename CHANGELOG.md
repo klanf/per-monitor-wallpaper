@@ -91,6 +91,27 @@ DA3 弃用（方案一），候选链还原 master 只认 V2；repair 保留（V
 - 真机待验收：重启后深度按 V2 候选链重生成（缓存键含模型路径自动隔离，DA3 旧缓存不串）
 
 
+## 第六十九轮：r67 深度修复撤销 —— 深度管线彻底还原 master（方案二）（2026-10-14）
+
+### 现象
+
+第六十八轮（深度模型还原 V2 + repair 保留）真机验收仍不行，用户拍板「还原 master」。
+
+### 决定
+
+撤掉 r67 mask 引导的深度修复（repairDepthWithMask）：2×2 隔离对拍实锤 repair 在 V2 上虽无害微益，但「还原 master 的做法」要求深度本体落盘前零改动——现在与 master 完全一致（推理→归一化→引导滤波→落盘），seg 只服务于 idle 前景层 mask。深度缓存 schema r10→r11 全量失效重生成。
+
+### 改动
+
+- depthEngineJs.js：删 repairDepthWithMask 函数与 generate 内调用、__test 导出项；seg 注释改「只服务于 idle mask」
+- depthService.js：DEPTH_CACHE_SCHEMA 'depth-png-r10' → 'depth-png-r11'
+
+### 验证
+
+- node --check ×2；grep repairDepthWithMask 零残留；check-wiring 56/0；test-depth-service 20/0
+- 负向控制（负向对照实证撤干净）：重跑 tmp-ab24-gen.js 四格，带 mask 管线深度与裸深度 md5 逐字节一致（A=B=cb51e86c、C=D=c4011b50）——深度本体零后处理
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条
