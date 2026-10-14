@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('wp', {
   listChannels: () => ipcRenderer.invoke('channels:list'),
   channelFiles: (id) => ipcRenderer.invoke('channel:files', id),
   channelNeighbors: (id, index, span) => ipcRenderer.invoke('channel:neighbors', id, index, span),
+  channelCollagePage: (id, page) => ipcRenderer.invoke('channel:collage-page', id, page),
   channelCommand: (id, command, payload) => ipcRenderer.invoke('channel:command', id, command, payload),
   applyChannel: (id) => ipcRenderer.invoke('channel:apply', id),
   rebuildChannels: (forgetScanCache = false) => ipcRenderer.invoke('channels:rebuild', forgetScanCache),

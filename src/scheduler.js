@@ -731,14 +731,36 @@ class MonitorScheduler {
     if (n === 1) { this._schedule(ch); return; }
 
     /*
+     * 拼接整页步长（r75）：填充方式为拼接时，渲染端每建成一幅 n 格拼图就回报 n
+     * （setCollagePage / channel:collage-page），此后 timer 与手动推进都按 ±n 张
+     * 整页走 —— 否则上一幅的右格就是下一幅的中格，每张图必然连播两次。
+     * 例外：video-ended 保持 1（视频不进拼格，整页会跳过没播完的）；
+     * 页步长 clamp 到 n-1，防短列表一步跨回原地。
+     */
+    let step = 1;
+    if (reason !== 'video-ended') {
+      step = Math.max(1, Math.min(ch.collageStep || 1, n - 1));
+    }
+    /*
+     * 整页跳过的中间张也标「看过」：页面里每张都在屏幕上出现过，
+     * 胶片条的「看过」标记与「全部看过」判定不能把它们漏掉
+     * （正向跳到位的那张由 goTo 自己标）。反向不摘标记 —— 往回看不算没看过。
+     */
+    for (let s = 1; s < step; s += 1) {
+      ch.played.add(((ch.index + dir * s) % n + n) % n);
+    }
+
+    /*
      * 顺序推进。「随机」已经在定顺序那一步做完了（见 _orderFor），
      * 所以这里不需要区分模式 —— 列表顺序就是播放顺序，
      * 「上一张」永远在左边一格，胶片条可以直接当历史来读。
      *
-     * 唯一的例外：正向即将绕回开头 = 一轮走完 → 重洗一次，
+     * 唯一的例外：正向**跨过**列表末尾 = 一轮走完 → 重洗一次，
      * 让下一轮的顺序和这一轮不一样（用户要的「每轮不同」）。
+     * r75 前判定是「落点=开头」（步长恒 1 时等价）；页步长经常踩不准 n-1，
+     * 改成「本次前进会跨过末尾」。
      */
-    if (dir > 0 && ch.profile.shuffle && (ch.index + 1) % n === 0) {
+    if (dir > 0 && ch.profile.shuffle && ch.index + step >= n) {
       await this._startNextRound(ch);
       /*
        * 一轮走完重洗了列表 —— 这是「频道的文件顺序变了」，不是普通的推进，
@@ -751,7 +773,7 @@ class MonitorScheduler {
        */
       this._emit('channels', { reason: 'new-round', channels: this.list() });
     }
-    await this.goTo(ch.id, (ch.index + dir + n) % n, dir, reason);
+    await this.goTo(ch.id, (((ch.index + dir * step) % n) + n) % n, dir, reason);
   }
 
   /**
@@ -989,6 +1011,19 @@ class MonitorScheduler {
     if (!ch) return null;
     await this._advance(ch, dir >= 0 ? 1 : -1, 'command');
     return ch.files[ch.index] || null;
+  }
+
+  /**
+   * 拼接整页步长（r75）：渲染端每建成一幅 n 格拼图就回报 n（channel:collage-page），
+   * 调度器此后 timer / 手动推进按 ±n 张整页走，相邻两幅拼图零重复。
+   * 只存内存不落盘 —— 重启后首幅按 1 步进，渲染端首次回报即恢复整页
+   * （只影响重启后的第一次切换，不值得为它写盘）。
+   */
+  setCollagePage(id, page) {
+    const ch = this.channels.get(id);
+    if (!ch || ch.retired) return;
+    const p = Math.round(Number(page) || 1);
+    ch.collageStep = Math.max(1, Math.min(4, p));
   }
 
   /**

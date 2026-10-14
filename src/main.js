@@ -1676,6 +1676,11 @@ function registerIpc() {
 
   ipcMain.handle('channel:command', (_e, id, command, payload) => runChannelCommand(id, command, payload));
 
+  // 拼接整页步长（r75）：渲染端每建成一幅 n 格拼图就回报 n，调度器按整页推进
+  ipcMain.handle('channel:collage-page', (_e, id, page) => {
+    scheduler.setCollagePage(id, page);
+  });
+
   /** 忽略 applyToSystem 开关，强制把当前帧写到该频道对应的屏幕 */
   ipcMain.handle('channel:apply', async (_e, id) => {
     const ch = scheduler.channels.get(id);

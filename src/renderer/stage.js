@@ -420,6 +420,19 @@ function composeCollageCanvases(slots, W, H) {
   return { imgCanvas, depCanvas, allReady };
 }
 
+/** 拼接整页步长回报（r75）：把「本幅拼了几格」告诉调度器，此后调度器按整页推进，
+ *  相邻两幅拼图零重复。去重发送：同 n 不重复发；fit 离开拼接 / 退化单图回报 1。 */
+let collagePageSent = 0;
+function reportCollagePage(n) {
+  const page = Math.max(1, Math.min(4, Math.round(Number(n) || 1)));
+  if (page === collagePageSent) return;
+  collagePageSent = page;
+  try {
+    const r = window.wp.channelCollagePage(myChannel, page);
+    if (r && typeof r.catch === 'function') r.catch(() => { /* 步长回落 1：一格一格切 */ });
+  } catch (_) { /* IPC 不通就算了 */ }
+}
+
 /** 拼接帧构建：中心图先行解码定格数 → 邻居条目 → 并行取图+查深度 → 拼画布。
  *  返回 {n:1, bmpSrc} = 退化单图（调用方走普通单图路径）；null = 构建失败。 */
 async function buildCollageFrame(entry, token) {
@@ -1553,6 +1566,7 @@ async function showFrame(entry, dir, animate) {
     let prefetched = null;
     if (cfg.depthEnabled && cfg.fit === 'collage' && typeof window.wp.channelNeighbors === 'function') {
       const col = await buildCollageFrame(entry, token);
+      if (col) reportCollagePage(col.n);   // r75：回报页宽，调度器整页推进防重复
       if (col && col.n > 1) {
         if (col.depCanvas) {
           const gl = await glShowFrameCollage(col, token);
@@ -1758,6 +1772,7 @@ function applyChannelConfig() {
   // 离开 contain（回 cover / 切 mirror）则把 2D 层藏掉（mirror 由 GL 全屏自绘）
   if (p.fit && p.fit !== cfg.fit) {
     feedParticleDepth(null);   // r74：fit 换挡后屏幕↔深度映射不再成立，作废等下帧重喂
+    reportCollagePage(1);      // r75：离开拼接（或换新填充方式）先还原 1 格步长，拼图建成后再回报真实页宽
     cfg.fit = p.fit;
     if (glActive && glState.cur && glState.cur._bmp) {
       const cur2D = layers[active];
@@ -1779,7 +1794,12 @@ function applyChannelConfig() {
   // Ken Burns 开关（profile 不写 = 默认开）
   if (p.kenBurns !== undefined) cfg.kenBurns = Boolean(p.kenBurns);
   // 深度视差（profile 不写 = 默认开 —— 用户要求「所有壁纸自动有视差」）
-  if (p.depthParallax !== undefined) cfg.depthEnabled = Boolean(p.depthParallax);
+  if (p.depthParallax !== undefined && Boolean(p.depthParallax) !== cfg.depthEnabled) {
+    cfg.depthEnabled = Boolean(p.depthParallax);
+    // 拼接分支以深度管线为前提（r38 设计）：深度一关，拼图不再构建，
+    // 整页步长必须还原 1，否则调度器会整页跳过屏幕上没出现过的图
+    reportCollagePage(1);
+  }
   if (p.depthFlow !== undefined) cfg.depthFlow = Boolean(p.depthFlow);
   if (Number.isFinite(p.depthAmp)) cfg.depthAmp = p.depthAmp;
   if (Number.isFinite(p.depthDrift)) cfg.depthDrift = p.depthDrift;

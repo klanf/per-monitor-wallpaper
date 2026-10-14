@@ -1381,6 +1381,89 @@ async function main() {
     schedC.stop();
   }
 
+  /* ================= 拼接整页步进（r75） ================= */
+  console.log('\n===== 拼接整页步进：页宽回报 → 整页推进零重复 =====');
+  {
+    const dirP = path.join(tmpDir, 'dirP');
+    fs.mkdirSync(dirP, { recursive: true });
+    for (let i = 1; i <= 8; i += 1) fs.copyFileSync(RED, path.join(dirP, `p-${i}.bmp`));
+    const albumP = singleFolderAlbum('P', dirP);
+    const storeP = new Store(path.join(tmpDir, 'config-page.json'));
+    storeP.set({
+      albumId: albumP.id,
+      albums: [albumP],
+      perMonitor: true,
+      interval: 60,
+      applyToSystem: true,
+      applyOnStart: false,
+    });
+    const schedP = new MonitorScheduler({
+      store: storeP,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: [FAKE_MONITORS[0]] }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async () => ({ ok: true, method: 'test' }),
+    });
+    await schedP.rebuild('test');
+    const chP = schedP.channels.get('MON-A');
+    schedP.setPlaying('MON-A', true);
+    check('8 张图就绪', chP.files.length === 8, `实际 ${chP.files.length}`);
+
+    schedP.setCollagePage('MON-A', 3);
+    check('页宽已记录', chP.collageStep === 3, `step=${chP.collageStep}`);
+    schedP.setCollagePage('MON-A', 99);
+    check('页宽 clamp 到 4', chP.collageStep === 4, `step=${chP.collageStep}`);
+    schedP.setCollagePage('MON-A', 3);
+
+    await schedP.step('MON-A', 1);
+    check('手动下一张整页走（0→3）', chP.index === 3, `index=${chP.index}`);
+    const played1 = schedP.playedIndices('MON-A');
+    check('跳过的中间张也标看过（1/2/3）', [1, 2, 3].every((i) => played1.includes(i)),
+      `played=${played1.slice().sort((a, b) => a - b).join(',')}`);
+
+    await schedP.step('MON-A', -1);
+    check('手动上一张反向整页（3→0）', chP.index === 0, `index=${chP.index}`);
+
+    await schedP._advance(chP, 1, 'timer');
+    check('timer 推进同款整页（0→3）', chP.index === 3, `index=${chP.index}`);
+
+    await schedP._advance(chP, 1, 'video-ended');
+    check('video-ended 保持 1 格步进（3→4）', chP.index === 4, `index=${chP.index}`);
+
+    schedP.stop();
+
+    // 随机模式：页步长跨过末尾 → 触发重洗（旧判定「落点=开头」页步长踩不准）
+    const storeS = new Store(path.join(tmpDir, 'config-page-shuffle.json'));
+    storeS.set({
+      albumId: albumP.id,
+      albums: [albumP],
+      perMonitor: true,
+      interval: 60,
+      applyToSystem: true,
+      applyOnStart: false,
+      monitors: { 'MON-A': { shuffle: true, skipSizeTwin: false } },
+    });
+    const schedS = new MonitorScheduler({
+      store: storeS,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: [FAKE_MONITORS[0]] }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async () => ({ ok: true, method: 'test' }),
+    });
+    await schedS.rebuild('test');
+    const chS = schedS.channels.get('MON-A');
+    schedS.setPlaying('MON-A', true);
+    schedS.setCollagePage('MON-A', 3);
+    await schedS.goTo('MON-A', 6, 1, 'test');       // 停在倒数第二张
+    const rounds0 = chS.rounds || 0;
+    await schedS._advance(chS, 1, 'timer');         // 6+3=9 ≥ 8 → 跨过末尾
+    check('页步长跨过末尾触发重洗', (chS.rounds || 0) === rounds0 + 1,
+      `rounds ${rounds0}→${chS.rounds || 0}`);
+    check('重洗后落在开头区域（index<n-页宽+1）', chS.index <= chS.files.length - 1
+      && chS.index < 3 + 1, `index=${chS.index}`);
+    schedS.stop();
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);
