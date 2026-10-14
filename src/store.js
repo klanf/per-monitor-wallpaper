@@ -246,6 +246,7 @@ const PROFILE_KEYS = [
   'cropPan',                   // 鼠标平移裁切（r37，不写 = 默认开；只对铺满裁切且图片有溢出时生效）
   'particleCount',             // 舞台粒子数量（不写 = 渲染端默认 256；收紧 0~1000 在 particles.js）
   'particleCursor',            // 粒子绕开鼠标（不写 = 默认开；斥力实现在 particles.js）
+  'particleDepth',             // 粒子深度遮挡（r74）：前景挡住粒子，雨/雪/樱花首批（不写 = 默认开）
   'particlePool',              // 粒子随机池（r21）：random 时只抽池内种类；空数组 = 全部参与
   // timeOfDay/todRandom/todPool 已退役（r73 精简）：与氛围调色板重复，移出白名单后旧配置残留值无人读取
   // ---- 深度视差（第十一轮起进设置面板；不写 = stage.js 内置默认）----

@@ -2464,6 +2464,7 @@ function applyConfigToUI() {
   $('cfg-particle-count').value = String(Number.isFinite(pc) ? Math.min(Math.max(pc, 0), 1000) : 256);
   $('cfg-particle-count-out').textContent = `${$('cfg-particle-count').value} 粒`;
   $('cfg-particle-cursor').checked = c.particleCursor !== false;
+  $('cfg-particle-depth').checked = c.particleDepth !== false;
 
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
   // 总开关已搬顶栏快捷开关（r41）：这里只留设备/模型/参数等细粒度项。
@@ -2823,6 +2824,11 @@ function bindSettings() {
   $('cfg-particle-cursor').addEventListener('change', async (e) => {
     await save({ particleCursor: e.target.checked });
     toast(e.target.checked ? '粒子会绕开鼠标了' : '粒子不再避让鼠标');
+  });
+  // 粒子深度遮挡（r74）：顶层键 particleDepth，经 resolveProfile 流进各屏；默认开
+  $('cfg-particle-depth').addEventListener('change', async (e) => {
+    await save({ particleDepth: e.target.checked });
+    toast(e.target.checked ? '粒子会被前景遮挡' : '粒子不再被前景遮挡');
   });
 
   // 自动暂停（主树 57/58 轮移植）：无输入超时 / 电池

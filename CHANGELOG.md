@@ -290,6 +290,26 @@ store.js PROFILE_KEYS 补 4 键（atmoPalette/atmoFog/depthDof/godRays）。
 - 真机待验收：设置 › 画面动效只剩呼吸缩放；按时段/风格上色统一在深度视差 › 氛围调色板（顶栏太阳总开关）
 
 
+## 第七十四轮：粒子深度遮挡（r74）—— 樱花落进人物身后、雨丝被屋檐挡住（2026-10-14）
+
+### 需求
+
+用户带来外部提案两则：粒子深度遮挡（S 级）与粒子深度衰减（A 级）。评估修正两点后落地：① 提案说「V3 支撑 / V2 深度漂移会违和」不成立——r69 已定版 V2_small，遮挡只需要相对深度序，V2 足够；② 提案说「shader 里对比、零改动」不符合架构——粒子是独立 2D canvas（particles.js），不在深度 shader 里，实现走 CPU 查表。小步验收：本轮只做遮挡（雨/雪/樱花首批），纵深衰减（用同一个 z）留 r75。
+
+### 实现（数据流：depBmp → CPU 像素表 → 粒子逐粒判定 → draw 乘系数）
+
+- stage.js：`depthPixelsFor()` 把深度位图缩采样成长边 256 的 CPU 像素表（必须在 `depBmp.close()` 前抓，glLoadLayer 建完纹理就关位图）；layer 携带 `depthPx` + 原图 `iw/ih`；showFrame 入口默认 `feedParticleDepth(null)`（2D/拼接/网页/视频各路都不吃上一张的深度），GL 深度帧上屏且 fit=cover 才喂；fit 换挡与 particleDepth 值真变时也作废（后者只在值变时清——applyChannelConfig 每次广播带全量键，无脑清会把正在播的遮挡掐到下次换图）
+- particles.js：`applyDepthOcclusion()` 纯函数——粒子 z∈[0,1] 懒分配（近=1，与深度图同域），屏幕坐标反推 cover 映射采样深度 d（R 通道近=1 远=0，与 shader 同向），z<d 即「在物体后面」，软过渡带宽 0.10 线性淡出（防物体边缘硬消失闪烁）；深度图外出界恒可见（防御）；批量 drawAll（雨/雪）拆「全可见桶 / 被遮挡散画」两条路，常态边缘少数散画，批量路径不劣化
+- 排除项：stars（远景装饰）/raindrops（贴屏幕的水珠）不参与；无深度图自动失效（整层照旧）
+- 五端接线：store.js PROFILE_KEYS 补 `particleDepth`（r73 白名单教训）；stage.js cfg 默认开 + applyChannelConfig 守卫；index.html 粒子区加「粒子深度遮挡」checkbox；app.js 回填 + change 监听（照 particleCursor 模式）
+
+### 验证
+
+- node --check ×5（particles/stage/app/store/test-particles）；check-wiring 56/0；verify:unit 全链 0 失败
+- 新建 tools/test-particles.js（17 项，挂进 verify:unit）：遮挡判定 13 项（z 懒分配 / 天空恒可见 / 满屏前景挡 / 软过渡线性 / cover 超宽映射三点采样 / 出界防御 / 坏输入不炸）+ 回归 4 项（老别名迁移 / 脏值回落 / spawn 白名单）。期间抓到一处**测试自身坐标错**（x=95 → u=0.725 落在自涂的前景列），非实现错，已修
+- 真机待验收：开雨/雪/樱花 + 有深度图的壁纸，粒子应被前景物体挡住；设置 › 外观 › 粒子特效可关
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

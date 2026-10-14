@@ -85,6 +85,7 @@ const cfg = {
   depthAtmo: false,            // 分层氛围总开关（r71，profile.depthAtmo）：调色板光照+雾+金边
   atmoPalette: 'auto',         // 氛围调色板（r73）：auto=按时间（白天/黄昏）；golden/tealorange/cyberpunk/moonlight/faded=固定档
   pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
+  particleDepth: true,         // 粒子深度遮挡（r74，profile.particleDepth）：开=前景挡住粒子（雨/雪/樱花首批；需深度图，无深度自动跳过）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
 };
 
@@ -1035,6 +1036,32 @@ function maskPathOf(depthPath) {
     : null;
 }
 
+/** 粒子深度遮挡（r74）：把深度位图缩采样成 CPU 像素表（长边封顶 256，
+ *  粒子坐标精度 ~10px，比 V2 边缘糊还粗，查表零感知）。失败返回 null（遮挡自动跳过）。
+ *  ⚠️ 必须在 depBmp.close() 之前调 —— glLoadLayer 建完纹理就关位图。 */
+const DEPTH_SAMPLE_MAX = 256;
+function depthPixelsFor(depBmp) {
+  try {
+    const k = Math.min(1, DEPTH_SAMPLE_MAX / Math.max(depBmp.width, depBmp.height));
+    const w = Math.max(1, Math.round(depBmp.width * k));
+    const h = Math.max(1, Math.round(depBmp.height * k));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(depBmp, 0, 0, w, h);
+    return { data: cx.getImageData(0, 0, w, h).data, w, h };
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 深度帧喂给粒子层；src 为空或开关关了都等于清除（粒子层内部幂等） */
+function feedParticleDepth(src) {
+  if (!particleFx || !particleFx.setDepth) return;
+  particleFx.setDepth(cfg.particleDepth ? src : null);
+}
+
 function glFreeLayer(L) {
   if (!L || !glState.gl) return;
   for (const t of [L.imgTex, L.depTex, L.maskTex]) if (t) glState.gl.deleteTexture(t);
@@ -1064,6 +1091,9 @@ async function glLoadLayer(imagePath, depthPath) {
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
       maskTex: maskBmp ? glMakeTex(2, maskBmp) : null,   // r62：前景 mask（加载失败=null → idle 关）
       aspect: bmp.width / bmp.height,
+      iw: bmp.width,
+      ih: bmp.height,                // r74：粒子遮挡的 cover 映射用原图尺寸（位图关后仍在）
+      depthPx: (depBmp && cfg.particleDepth) ? depthPixelsFor(depBmp) : null,
     };
     if (depBmp) depBmp.close();
     if (maskBmp) maskBmp.close();
@@ -1487,6 +1517,7 @@ async function showFrame(entry, dir, animate) {
   const token = ++animToken;
   const kind = kindOf(entry);
   collage.active = false;   // 新帧默认不再是 2D 拼接（只有拼接 2D 分支会置回 true）
+  feedParticleDepth(null);  // r74：粒子遮挡默认清 —— 2D/拼接/网页/视频各路都别吃上一张的深度（GL 深度命中时会重喂）
 
   const incomingKey = active === 'A' ? 'B' : 'A';
   if (!showFrame._logged) {
@@ -1579,6 +1610,17 @@ async function showFrame(entry, dir, animate) {
             setLayer(outgoing.root, REST, 0, 'px');
           }
           active = incomingKey;
+          // r74 粒子深度遮挡：GL 深度帧上屏且 fit=cover 才喂（contain/mirror 的
+          // 屏幕映射不同；拼接帧每格一张深度，不在本轮范围）
+          if (cfg.fit === 'cover' && gl.layer && gl.layer.depthPx) {
+            feedParticleDepth({
+              data: gl.layer.depthPx.data,
+              w: gl.layer.depthPx.w,
+              h: gl.layer.depthPx.h,
+              bw: gl.layer.iw,
+              bh: gl.layer.ih,
+            });
+          }
           ensureRaf();
           return;
         }
@@ -1704,6 +1746,7 @@ function applyChannelConfig() {
   // 切到 contain 的瞬间核心外就透明了，底下没画模糊底就是一条黑缝；
   // 离开 contain（回 cover / 切 mirror）则把 2D 层藏掉（mirror 由 GL 全屏自绘）
   if (p.fit && p.fit !== cfg.fit) {
+    feedParticleDepth(null);   // r74：fit 换挡后屏幕↔深度映射不再成立，作废等下帧重喂
     cfg.fit = p.fit;
     if (glActive && glState.cur && glState.cur._bmp) {
       const cur2D = layers[active];
@@ -1773,6 +1816,12 @@ function applyChannelConfig() {
   if (Number.isFinite(Number(p.particleCount))) cfg.particleCount = Number(p.particleCount);
   // 粒子绕开鼠标（主树 54 轮追记六，profile 不写 = 默认开）：关了就不把光标喂给粒子层
   if (p.particleCursor !== undefined) cfg.particleCursor = Boolean(p.particleCursor);
+  // 粒子深度遮挡（r74）：只在值真变时作废当前深度帧 —— applyProfile 每次配置广播
+  // 都带全量键（resolveProfile 连 undefined 一起拷），无脑清会把正在播的遮挡掐到下次换图
+  if (p.particleDepth !== undefined && Boolean(p.particleDepth) !== cfg.particleDepth) {
+    cfg.particleDepth = Boolean(p.particleDepth);
+    feedParticleDepth(null);
+  }
   rollParticles();
   if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
   // 特效从关到开会把 rAF 循环唤醒（冻结时 ensureRaf 自己会挡）

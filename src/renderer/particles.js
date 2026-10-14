@@ -89,6 +89,7 @@
 
   /* 雨：短线段雨丝，快速下落带 8%~16% 风斜 */
   TYPES.rain = {
+    occl: true,                                   // 深度遮挡参与（r74）
     make(W, H, r, anywhere) {
       const v = 900 + r() * 500;                    // 900~1400 px/s
       return {
@@ -115,16 +116,22 @@
       ctx.strokeStyle = '#cfe4ff';                  // 偏冷白：夜晚滤镜压暗后仍读得出雨丝
     },
     draw(ctx, p) {
+      if (p._o !== undefined && p._o <= 0) return;   // 被前景完全挡住：一笔不画
       const k = p.vx / p.v;                         // 尾巴方向与速度相反，斜率一致
-      ctx.globalAlpha = p.alpha;
+      ctx.globalAlpha = p.alpha * (p._o === undefined ? 1 : p._o);
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
       ctx.lineTo(p.x - k * p.len, p.y - p.len);
       ctx.stroke();
     },
     /* 批量版（48 轮）：alpha 归并成 3 档、同档合并成一条 path ——
-       300 粒从 300 次 stroke 降到 3 次，观感差 <0.05 不可辨 */
+       300 粒从 300 次 stroke 降到 3 次，观感差 <0.05 不可辨。
+       深度遮挡（r74）：_o<1 的粒子拆出来散画（各乘各的可见系数），
+       全可见的照旧走桶 —— 常态被遮挡的是边缘少数，批量路径不劣化 */
     drawAll(ctx, parts) {
+      const full = [];
+      const faded = [];
+      for (const p of parts) ((p._o !== undefined && p._o < 0.995) ? faded : full).push(p);
       const lo0 = 0.20;                             // 与 make 的 alpha 区间保持一致
       const stepA = 0.28 / 3;
       ctx.lineCap = 'round';
@@ -136,7 +143,7 @@
         ctx.globalAlpha = lo + stepA / 2;
         ctx.beginPath();
         let any = false;
-        for (const p of parts) {
+        for (const p of full) {
           if (p.alpha < lo || (b < 2 && p.alpha >= hi)) continue;
           const k = p.vx / p.v;
           ctx.moveTo(p.x, p.y);
@@ -145,6 +152,15 @@
         }
         if (any) ctx.stroke();
       }
+      for (const p of faded) {
+        if (p._o <= 0) continue;
+        ctx.globalAlpha = p.alpha * p._o;
+        const k = p.vx / p.v;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x - k * p.len, p.y - p.len);
+        ctx.stroke();
+      }
     },
   };
 
@@ -152,6 +168,7 @@
      第 42 轮整体放大：2.6~6 → 3.5~8，花瓣在 4K 物理像素下也要读得出来 */
   const SAKURA_COLORS = ['255,183,197', '255,203,214', '247,168,187'];
   TYPES.sakura = {
+    occl: true,                                   // 深度遮挡参与（r74）
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
@@ -179,7 +196,8 @@
       wrapX(p, W, p.size * 2);
     },
     draw(ctx, p) {
-      ctx.globalAlpha = p.alpha;
+      if (p._o !== undefined && p._o <= 0) return;   // 被前景完全挡住：一笔不画
+      ctx.globalAlpha = p.alpha * (p._o === undefined ? 1 : p._o);
       ctx.fillStyle = `rgb(${p.color})`;
       ctx.beginPath();
       ctx.ellipse(p.x, p.y, p.size, p.size * 0.62, p.rot, 0, TAU);
@@ -189,6 +207,7 @@
 
   /* 雪：白色圆片，比樱花更慢更素，带常驻微风漂移（42 轮放大：2~5） */
   TYPES.snow = {
+    occl: true,                                   // 深度遮挡参与（r74）
     make(W, H, r, anywhere) {
       return {
         x: r() * W,
@@ -213,14 +232,19 @@
       wrapX(p, W, 4);
     },
     draw(ctx, p) {
-      ctx.globalAlpha = p.alpha;
+      if (p._o !== undefined && p._o <= 0) return;   // 被前景完全挡住：一笔不画
+      ctx.globalAlpha = p.alpha * (p._o === undefined ? 1 : p._o);
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, TAU);
       ctx.fill();
     },
-    /* 批量版（48 轮）：同 rain，alpha 三档合并成一条 path 一次 fill */
+    /* 批量版（48 轮）：同 rain，alpha 三档合并成一条 path 一次 fill；
+       深度遮挡（r74）：_o<1 的拆出来散画，全可见的照旧走桶（同 rain.drawAll） */
     drawAll(ctx, parts) {
+      const full = [];
+      const faded = [];
+      for (const p of parts) ((p._o !== undefined && p._o < 0.995) ? faded : full).push(p);
       ctx.fillStyle = '#ffffff';
       const lo0 = 0.45;                             // 与 make 的 alpha 区间保持一致
       const stepA = 0.5 / 3;
@@ -230,13 +254,20 @@
         ctx.globalAlpha = lo + stepA / 2;
         ctx.beginPath();
         let any = false;
-        for (const p of parts) {
+        for (const p of full) {
           if (p.alpha < lo || (b < 2 && p.alpha >= hi)) continue;
           ctx.moveTo(p.x + p.size, p.y);
           ctx.arc(p.x, p.y, p.size, 0, TAU);
           any = true;
         }
         if (any) ctx.fill();
+      }
+      for (const p of faded) {
+        if (p._o <= 0) continue;
+        ctx.globalAlpha = p.alpha * p._o;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, TAU);
+        ctx.fill();
       }
     },
   };
@@ -802,6 +833,45 @@
     return touched;
   }
 
+  /* ------------------------------------------------------------ 深度遮挡（r74） */
+
+  /** 参与深度遮挡的种类（r74 首批）：雨/雪/樱花 —— 提案 S 级，其余种类验收后逐批接入 */
+  const OCCL_TYPES = ['rain', 'snow', 'sakura'];
+
+  /** 遮挡软过渡带宽（深度差）：z 落进 [d-FADE, d] 区间线性淡出，避免粒子在
+   *  物体边缘硬消失闪烁。0.10 ≈ 深度域的 1/10，对 V2 边缘略糊正好兜得住 */
+  const OCCL_FADE = 0.10;
+
+  /**
+   * 深度遮挡判定（纯函数，测试可跑）：给每颗粒子算 _o（可见系数 0~1）。
+   *   · dep = { data,w,h（深度图 CPU 像素，RGBA）, bw,bh（原图尺寸，算 cover 映射）}；
+   *   · 深度语义与视差 shader 同向：R 通道 近=1 远=0（stage.js dN 注释为准）；
+   *   · 粒子 z ∈ [0,1] 懒分配（近=1），与场景深度同域 —— 粒子在虚构纵深里排队，
+     z < d(x,y) 即「在物体后面」→ _o→0；屏幕点在深度图外（contain/出界）→ 恒可见。
+   * 尺寸/亮度的纵深衰减（提案 A 级）走同一个 z，r75 再接。
+   */
+  function applyDepthOcclusion(parts, dep, W, H, rand) {
+    if (!dep || !dep.data) return;
+    const s = Math.max(W / dep.bw, H / dep.bh);        // 与 coverRect 同式
+    const dw = dep.bw * s;
+    const dh = dep.bh * s;
+    const dx = (W - dw) / 2;
+    const dy = (H - dh) / 2;
+    for (const p of parts) {
+      if (p.z === undefined) p.z = rand();
+      const u = (p.x - dx) / dw;
+      const v = (p.y - dy) / dh;
+      let o = 1;
+      if (u >= 0 && u < 1 && v >= 0 && v < 1) {
+        const d = dep.data[(Math.min(dep.h - 1, (v * dep.h) | 0) * dep.w
+          + Math.min(dep.w - 1, (u * dep.w) | 0)) * 4] / 255;
+        const rel = p.z - d;                           // >0 粒子在场景点前面
+        if (rel < 0) o = rel <= -OCCL_FADE ? 0 : 1 + rel / OCCL_FADE;
+      }
+      p._o = o;
+    }
+  }
+
   /* ------------------------------------------------------------ 纯逻辑 API */
 
   /** 光效类（cap）的数量内置：用户数量再大也封顶 */
@@ -865,6 +935,7 @@
     const st = {
       type: '', count: 0, parts: [], W: 1, H: 1, dpr: 1, last: -1,
       cursor: null,                  // {x,y} CSS px；null = 没光标（主进程没喂或关了交互）
+      dep: null,                     // {data,w,h,bw,bh} 深度帧（r74）；null = 遮挡关/本图无深度
     };
 
     function resize() {
@@ -918,6 +989,21 @@
         ? { x: Number(x), y: Number(y) } : null;
     }
 
+    /**
+     * 深度帧喂入（r74，stage.js 在每帧 GL 上屏时调）。src 缺字段/空 = 清除遮挡：
+     * 换到无深度图、拼接、contain/网页/视频壁纸时都必须显式清 —— 上一张的深度
+     * 还挂着会把新图的粒子错挡（清的是 _o，z 留着复用，重开遮挡不用重排队）。
+     */
+    function setDepth(src) {
+      const ok = src && src.data && src.w > 0 && src.h > 0 && src.bw > 0 && src.bh > 0;
+      const next = ok
+        ? { data: src.data, w: src.w | 0, h: src.h | 0, bw: src.bw, bh: src.bh }
+        : null;
+      if (next === null && st.dep === null) return;   // 幂等：连续清除零开销
+      st.dep = next;
+      if (!next) for (const p of st.parts) delete p._o;
+    }
+
     /** rAF gate 块调用。关闭态只对齐时钟，零绘制 */
     function frame(now) {
       if (!st.type) { st.last = now; return; }
@@ -925,15 +1011,18 @@
       st.last = now;
       step(st.parts, st.type, dt, st.W, st.H, rand);
       applyCursorAvoidance(st.parts, st.cursor, dt);
+      const def = TYPES[st.type];
+      if (st.dep && def && def.occl) applyDepthOcclusion(st.parts, st.dep, st.W, st.H, rand);
       draw(ctx, st.parts, st.type, st.W, st.H);
     }
 
-    return { setConfig, resize, frame, setCursor, isActive: () => Boolean(st.type) };
+    return { setConfig, resize, frame, setCursor, setDepth, isActive: () => Boolean(st.type) };
   }
 
   return {
     PARTICLE_TYPES, COUNT_MIN, COUNT_MAX, COUNT_DEFAULT, DT_MAX,
-    CURSOR_RADIUS, CURSOR_PUSH,
+    CURSOR_RADIUS, CURSOR_PUSH, OCCL_TYPES, OCCL_FADE,
     clampCount, clampType, spawn, step, draw, createParticles, applyCursorAvoidance,
+    applyDepthOcclusion,
   };
 });
