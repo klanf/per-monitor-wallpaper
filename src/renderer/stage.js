@@ -94,9 +94,34 @@ const cfg = {
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
   flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
   idleFx: false,               // idle 微动画（r62，profile.idleFx）：呼吸+飘动+差速视差（mask 前景）
+  depthAtmo: false,            // 分层氛围（r71，profile.depthAtmo）：按系统时间的时段光照+环境雾+金边
   pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
 };
+
+// ---- 分层氛围（r71）：系统时间 → 时段相位 ----
+// 关键帧 (小时, 相位) 之间线性插值：段内恒定、交界自然过渡（不硬切）。
+// 0=清晨 1=白天 2=黄昏 3=夜晚；夜晚跨午夜（20:00~次日 04:30）。
+// 清晨 05:00 起升温到 08:00 全白天、17:00 起入黄昏、19:30 入夜。
+const ATMO_PHASE_FRAMES = [[0, 3], [4.5, 3], [6.5, 0], [9, 1], [16.5, 1], [18, 2], [20, 3], [24, 3]];
+let atmoPhaseCache = null;
+function atmoPhaseNow() {
+  if (atmoPhaseCache !== null) return atmoPhaseCache;
+  const d = new Date();
+  const hr = d.getHours() + d.getMinutes() / 60;
+  const F = ATMO_PHASE_FRAMES;
+  for (let i = 1; i < F.length; i++) {
+    if (hr <= F[i][0]) {
+      const [h0, p0] = F[i - 1];
+      const [h1, p1] = F[i];
+      atmoPhaseCache = p0 + (p1 - p0) * ((hr - h0) / Math.max(0.01, h1 - h0));
+      return atmoPhaseCache;
+    }
+  }
+  atmoPhaseCache = 3;
+  return atmoPhaseCache;
+}
+setInterval(() => { atmoPhaseCache = null; }, 60000);   // 每分钟失效缓存，下一帧重算
 
 const layers = {
   A: null, B: null,            // { root, canvas, ctx }，init 时填充
@@ -657,6 +682,8 @@ uniform vec4  uCore;        // contain/mirror 的核心矩形（屏幕像素，x
 uniform sampler2D uMask;    // 前景 mask（Otsu+羽化，与深度图同分辨率同缓存键；r62 idle 方案）
 uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
 uniform float uIdle;        // idle 微动画总开关（profile.idleFx）
+uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
+uniform float uAtmoPhase;   // 时段相位 0=清晨 1=白天 2=黄昏 3=夜晚，小数=相邻档过渡（JS 按系统时间算）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -694,6 +721,62 @@ void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float bre
   // mask 差速是叠床架屋 —— 且无论紧羽化还是宽羽化，都在轮廓带叠加 28px/px 级剪切
   // （离屏复现 v1 楼梯度 18.9% vs 纯 POM 14.5%），用户两轮真机截图实锤撕边。
   breathM = m * br;
+}
+
+// ---- 分层氛围（r71）：时段光照 + 环境雾 + 主体金边 ----
+// 按深度连续混合（不做离散分层 → 没有「串层」概念）：深度大=近（写盘口径近大远小）。
+// 四档参数表 + 相邻档线性插值（uAtmoPhase 小数部分），交界处平滑过渡不硬切。
+void atmoParams(int i, out vec3 tint, out float lum, out vec3 fogCol, out float fogDen, out float farDark, out float rimK) {
+  if (i <= 0) {          // 清晨：冷调柔光，远景薄雾
+    tint = vec3(0.96, 1.01, 1.08); lum = 0.97;
+    fogCol = vec3(0.74, 0.81, 0.92); fogDen = 0.30; farDark = 0.92; rimK = 0.0;
+  } else if (i == 1) {   // 白天：中性高亮，几乎无雾
+    tint = vec3(1.00, 1.00, 1.00); lum = 1.05;
+    fogCol = vec3(0.90, 0.94, 1.00); fogDen = 0.10; farDark = 0.97; rimK = 0.0;
+  } else if (i == 2) {   // 黄昏：暖橙逆光，主体金边
+    tint = vec3(1.10, 0.93, 0.79); lum = 0.93;
+    fogCol = vec3(0.96, 0.70, 0.42); fogDen = 0.34; farDark = 0.90; rimK = 1.0;
+  } else {               // 夜晚：蓝紫暗调，压低背景
+    tint = vec3(0.80, 0.85, 1.12); lum = 0.78;
+    fogCol = vec3(0.26, 0.30, 0.50); fogDen = 0.40; farDark = 0.68; rimK = 0.0;
+  }
+}
+
+// stB：未扭曲基准坐标（与 idleWarp 的 mask 锚点一致 → 效果不随视差游走）。
+// 雾 = 空气透视（远浓近淡，smoothstep 防中间断层）；金边 = mask 边缘梯度（黄昏档）。
+vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
+  if (uAtmo < 0.5 || uHasDepth < 0.5) return col;
+  float dN = texMirror(uDepth, stB).r;                 // 屏幕点深度（近=1 远=0）
+  float far = 1.0 - dN;
+  float ph = clamp(uAtmoPhase, 0.0, 3.0);
+  int i0 = int(floor(ph));
+  int i1 = min(i0 + 1, 3);
+  float f = fract(ph);
+  vec3 t0; vec3 t1; float l0; float l1; vec3 f0; vec3 f1; float d0; float d1; float k0; float k1; float r0; float r1;
+  atmoParams(i0, t0, l0, f0, d0, k0, r0);
+  atmoParams(i1, t1, l1, f1, d1, k1, r1);
+  vec3 tint = mix(t0, t1, f);
+  float lum = mix(l0, l1, f);
+  vec3 fogCol = mix(f0, f1, f);
+  float fogDen = mix(d0, d1, f);
+  float farDark = mix(k0, k1, f);
+  float rimK = mix(r0, r1, f);
+  // 远景压暗 + 色温：亮度随深度带连续变化（band 近景≈1）
+  float band = smoothstep(0.10, 0.85, dN);
+  col *= tint * mix(farDark, 1.06, band) * lum;
+  // 空气透视：雾只往远处抹，近景（人物主体）不糊
+  float fogW = fogDen * smoothstep(0.25, 0.95, far);
+  col = mix(col, fogCol * (lum * 0.5 + 0.5), clamp(fogW, 0.0, 1.0));
+  // 主体金边（黄昏档）：mask 边缘梯度，与 idleWarp 同款 4 邻域差分
+  if (rimK > 0.01 && uHasMask > 0.5) {
+    vec2 mpx = vec2(1.5 / imgAspect, 1.5) * 0.5;
+    float mgx = texMirror(uMask, stB + vec2(mpx.x, 0.0)).r - texMirror(uMask, stB - vec2(mpx.x, 0.0)).r;
+    float mgy = texMirror(uMask, stB + vec2(0.0, mpx.y)).r - texMirror(uMask, stB - vec2(0.0, mpx.y)).r;
+    float grad = clamp(length(vec2(mgx, mgy)) * 2.0, 0.0, 1.0);
+    float mR = texMirror(uMask, stB).r;
+    col += fogCol * grad * mR * rimK * 0.35;
+  }
+  return col;
 }
 
 // DepthFlow POM 主路径（语义 1:1 对齐 depthflow.glsl + shaderflow camera.glsl）
@@ -745,6 +828,7 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
   idleWarp(stF, stB, off, imgAspect, breathM);
   vec3 col = texMirror(uImg, stF).rgb;
   if (breathM != 0.0) col *= 1.0 + 0.02 * breathM;   // 呼吸亮度脉动 ±2%
+  col = atmoApply(col, stB, imgAspect);   // 分层氛围（r71）：时段光照+雾+金边
   return col;
 }
 
@@ -868,7 +952,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uMask', 'uHasMask', 'uIdle']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uMask', 'uHasMask', 'uIdle', 'uAtmo', 'uAtmoPhase']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1031,6 +1115,8 @@ function glDrawLayer(L, alpha, cam, tSec) {
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
   gl.uniform1f(glState.U.uHasMask, L.maskTex ? 1 : 0);
   gl.uniform1f(glState.U.uIdle, cfg.idleFx ? 1 : 0);
+  gl.uniform1f(glState.U.uAtmo, cfg.depthAtmo ? 1 : 0);
+  gl.uniform1f(glState.U.uAtmoPhase, atmoPhaseNow());   // 60s 刷新的缓存值，每帧读缓存
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uFlowIso, flowIso);
@@ -1618,6 +1704,8 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
   // idle 微动画（r62，profile 不写 = 默认关）
   if (p.idleFx !== undefined) cfg.idleFx = Boolean(p.idleFx);
+  // 分层氛围（r71，profile 不写 = 默认关）
+  if (p.depthAtmo !== undefined) cfg.depthAtmo = Boolean(p.depthAtmo);
   // 鼠标影响动效（r70，profile 不写 = 默认开）：关 = 两个喂入口闸门不更新
   // glState.mouse，并立刻清 mouseUntil —— 混合权重 mouseW 按 0.02/帧平滑衰减，
   // ~2s 内镜头无跳变地回到预设轨迹。

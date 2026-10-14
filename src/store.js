@@ -265,6 +265,7 @@ const PROFILE_KEYS = [
   'flowStyle',                 // 流模式动效轨迹：circle/orbital/dolly（不写 = circle）
   'flowQuality',               // 流模式 POM 步进质量 0.15~1（0.5=CLI 默认，低=省 GPU）
   'idleFx',                    // idle 微动画（r62）：前景呼吸+飘动+差速视差（不写 = 默认关）
+  'depthAtmo',                 // 分层氛围（r71）：时段光照+环境雾+金边（不写 = 默认关）
   'pointerFx',                 // 鼠标影响动效（r70）：开=鼠标临时接管镜头；关=恒走预设轨迹（不写 = 默认开）
 ];
 

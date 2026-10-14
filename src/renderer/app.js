@@ -43,6 +43,7 @@ const els = {
   qtIdle: $('qt-idle'),
   qtParticles: $('qt-particles'),
   qtPointer: $('qt-pointer'),
+  qtAtmo: $('qt-atmo'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
   counter: $('counter'),
@@ -1470,6 +1471,14 @@ function resolvedPointerFx(chId) {
   return cfg.pointerFx !== false;
 }
 
+/** 分时段氛围（r71）生效值：布尔 profile 键，不写 = 默认关（与 stage.js cfg 默认一致） */
+function resolvedAtmo(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (ov.depthAtmo === true || ov.depthAtmo === false) return ov.depthAtmo;
+  return cfg.depthAtmo === true;
+}
+
 /* Auto 开关「灭→亮」时回落的间隔：会话内记住最后一次非零档位（缺省 1 小时） */
 let lastAutoScanMinutes = 60;
 
@@ -1485,6 +1494,7 @@ function updateQuickToggles() {
   set(els.qtIdle, resolvedIdle(ch.id));
   set(els.qtParticles, resolvedParticles(ch.id) !== '');
   set(els.qtPointer, resolvedPointerFx(ch.id));
+  set(els.qtAtmo, resolvedAtmo(ch.id));
   // Auto 是全局开关（不跟屏）：亮=autoScanMinutes>0；▾ 只在亮时显示
   const autoOn = ((state.config || {}).autoScanMinutes || 0) > 0;
   set(els.qtAuto, autoOn);
@@ -3563,6 +3573,11 @@ function bindEvents() {
       const on = !resolvedPointerFx(id);
       await pushProfile(id, { pointerFx: on });
       note = on ? '这块屏鼠标影响动效已开启（鼠标动时镜头临时跟随，停手回落自动轨迹）' : '这块屏鼠标影响动效已关闭（镜头恒走预设轨迹）';
+    } else if (btn === els.qtAtmo) {
+      // 分时段氛围（r71）：按系统时间自动切四档光照（色温/亮度/远景雾连续过渡，黄昏金边）
+      const on = !resolvedAtmo(id);
+      await pushProfile(id, { depthAtmo: on });
+      note = on ? '这块屏分时段氛围已开启（按系统时间自动切清晨/白天/黄昏/夜晚光照）' : '这块屏分时段氛围已关闭';
     }
     // Auto 已搬进 rescan-group（r41），不在本组监听范围内 —— 单独挂，见下。
     state.config = await window.wp.getConfig();

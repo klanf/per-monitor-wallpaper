@@ -131,6 +131,27 @@ DA3 弃用（方案一），候选链还原 master 只认 V2；repair 保留（V
 - 真机待验收：关闭后鼠标狂动镜头应恒走预设轨迹（含 idle 目标喂送同源失效）；重开立即恢复跟随
 
 
+## 第七十一轮：分时段分层氛围 —— 时段光照 + 环境雾 + 主体金边（depthAtmo）（2026-10-14）
+
+### 需求
+
+用户提出两个构想（分时段分层光照 A + 环境雾与空气透视 B），并拍板开工（理由：旧时段滤镜 tod 全图色彩矩阵「效果没法看，会把整个图片的颜色都改了」）。原构想宣称需 V3 深度支撑 —— 不成立：正确实现按**连续深度值**平滑混合，无离散分层即无「串层」；V2 人物区深度起伏比 DA3 高 15~18%（r68 对拍），前后关系更清楚，且 mask（uMask）现成可打金边。
+
+### 实现（shader 单点挂 POM 路径，配置与 idleFx 同构）
+
+- stage.js DEPTH_FS：`atmoParams`（四档参数表：色温/亮度/雾色/雾浓度/远景压暗/金边强度）+ `atmoApply`（按屏幕基准点深度连续混合：`band=smoothstep(0.10,0.85,dN)` 深度带亮度、`fogW=fogDen*smoothstep(0.25,0.95,far)` 空气透视远浓近淡、金边=mask 边缘梯度×mask 强度×雾色（黄昏档 rimK=1））。四档：清晨冷调薄雾/白天中性高亮/黄昏暖橙金边/夜晚蓝紫压背景（farDark 0.68）
+- uAtmoPhase（0=清晨 1=白天 2=黄昏 3=夜晚，小数=相邻档过渡）：JS 关键帧线性插值（[0,3][4.5,3][6.5,0][9,1][16.5,1][18,2][20,3][24,3]，夜晚跨午夜），60s 失效缓存
+- flowSample 末尾接 atmoApply（stB 基准锚点，效果不随视差游走）；仅 POM+有深度图路径生效（2D 平移缩放层不挂）
+- profile 键 `depthAtmo`（跟显示器走，不写=默认关）；顶栏第 6 枚 qchip `qt-atmo`（太阳图标）；app.js resolvedAtmo+点亮态+组监听分支
+
+### 验证
+
+- node --check ×3；check-wiring 56/0；单测 depth-service 20 + desktop-host 41 + fullscreen-watch 43 + live-desktop 42 + scheduler 185 + slideshow-guard 14 全 0 失败
+- GLSL ES 1.0 合规自查：无动态数组索引（分支+out 参数实现四档选择）、texMirror 采样域与 idleWarp 一致
+- 真机待验收：顶栏点亮太阳图标看四档观感（当前时段即插值值）；若视差整体消失=shader 编译失败（catch 降级 2D，slog 有日志）
+- 旧 todRandom 时段滤镜未动（用户自行关闭）；后续若定版可考虑退役
+
+
 ## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条
