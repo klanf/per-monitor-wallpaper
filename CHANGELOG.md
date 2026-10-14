@@ -152,7 +152,32 @@ DA3 弃用（方案一），候选链还原 master 只认 V2；repair 保留（V
 - 旧 todRandom 时段滤镜未动（用户自行关闭）；后续若定版可考虑退役
 
 
-## 第四轮：四个新功能
+## 第七十一轮修复：depthAtmo shader 编译炸裂导致深度视差整体降级 2D（2026-10-14）
+
+### 现象
+
+r71 提交后用户真机反馈「深度视差图功能挂掉了」。GLSL 编译失败走 stage.js 的 catch 静默降级 2D（警告只进 devtools console，live-debug.log 无记录）——与日志空白吻合。
+
+### 根因（Edge headless + SwiftShader 真实编译器实证）
+
+DEPTH_FS 无 #version 指令 = GLSL ES 1.00，**没有 int 版 min/max/clamp 内建**（ES 3.0 才加入）。r71 新增 `int i1 = min(i0 + 1, 3);` 编译失败：`ERROR: 0:97: 'min' : no matching overloaded function found`。
+
+### 修复
+
+- stage.js：`min(i0+1,3)` 改为 `int i1 = i0 + 1; if (i1 > 3) i1 = 3;`
+
+### 验证（新工具 tmp-glsl-gen-page.js：抽 DEPTH_FS 生成编译测试页，Edge headless --virtual-time-budget 等 JS 跑完再 dump-dom）
+
+- 修复版：GLSL-COMPILE-OK ×3（稳定复现）
+- 负向控制（--neg 还原旧写法）：必失败 `ERROR: 0:97: 'min' : no matching overloaded function found`——正负对照闭环
+- node --check；check-wiring 56/0；单测 depth-service 20 + desktop-host 41 + fullscreen-watch 43 + live-desktop 42 + scheduler 185 + slideshow-guard 14 全 0 失败
+- 陷阱记录：dump-dom 早于脚本执行时 div=PENDING/匹配到源码字面量，必须 virtual-time-budget 等待；bash 内联 node -e 的 ! 触发 history 展开破坏字符串
+
+### 教训
+
+shader 改动必须有真实编译器验证环节（本机 Electron 无沙箱也起不来 GPU 进程，Edge headless 是现成替代）；int 值截断一律 if，不碰 min/max。
+
+\n## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条
 

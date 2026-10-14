@@ -750,7 +750,8 @@ vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
   float far = 1.0 - dN;
   float ph = clamp(uAtmoPhase, 0.0, 3.0);
   int i0 = int(floor(ph));
-  int i1 = min(i0 + 1, 3);
+  int i1 = i0 + 1;              // GLSL ES 1.0 无 int 版 min()，用 if 截断（int min/max 是 ES 3.0 才有）
+  if (i1 > 3) i1 = 3;
   float f = fract(ph);
   vec3 t0; vec3 t1; float l0; float l1; vec3 f0; vec3 f1; float d0; float d1; float k0; float k1; float r0; float r1;
   atmoParams(i0, t0, l0, f0, d0, k0, r0);
