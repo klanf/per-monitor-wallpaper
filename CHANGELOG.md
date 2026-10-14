@@ -177,6 +177,30 @@ DEPTH_FS 无 #version 指令 = GLSL ES 1.00，**没有 int 版 min/max/clamp 内
 
 shader 改动必须有真实编译器验证环节（本机 Electron 无沙箱也起不来 GPU 进程，Edge headless 是现成替代）；int 值截断一律 if，不碰 min/max。
 
+\n## 第七十二轮：氛围调色重构 —— luma 分层调色 + split-toning + 指数雾（2026-10-14）
+
+### 现象
+
+用户真机反馈 r71「只会增加亮度，把暗处细节弄没了」。根因：全图乘法调色（col *= tint*lum）是亮度同比缩放——夜档 tint 红通道 0.80×lum 0.78 把暗部乘没，白天 lum 1.05 把高光推出剪裁；「亮度变化」≠「调色」。
+
+### 社区调研结论
+
+DepthFlow 官方无时段光照/雾（仅 vignette/DOF/镜头畸变，且均未内置时段语义）；游戏工业标准做法 = Crytek GDC08 Photo Filter（按 luma 决定染色强度）+ ASC CDL Lift/Gamma/Gain；雾用 IQ 指数平方公式替代线性 smoothstep（后者有「中间突然一截」断层风险）。
+
+### 实现（atmoApply 重构，仅 shader 内部，配置/UI 不变）
+
+- atmoParams 改 struct AtmoP 出参：tintS/tintH（阴影/高光分开染色）、gamma（luma 曲线指数）、fogCol/fogDen、farDark、rimK
+- 四档新参数：白天近无操作（gamma 1.0 中性，不再整体提亮）；黄昏 split-toning（阴影暖暗/高光染金）；夜晚 tintS 偏蓝+gamma 1.22 压中间调
+- 调色链：① luma gamma（比例因子回填 RGB，色相/饱和不动）→ ② 深度带远景压暗 → ③ split-toning 染色 → ④ luma key（深阴影 luma<0.05 混合权重 0.22，中间调 1.0——保暗部细节）
+- 雾换 IQ 指数平方：fogW = fogDen*(1-exp(-2.2*far²))；雾色亮度取当前像素 luma（不再用档位常量）
+- 金边逻辑不变
+
+### 验证
+
+- tmp-glsl-gen-page.js + Edge headless 真实编译：GLSL-COMPILE-OK（struct 出参 GLSL ES 1.0 合规）
+- 夜档暗部保留率数值对照（灰像素）：luma 0.02 深阴影 0.66→0.86（+30%）、0.80 高光 0.66→0.88（不再压死）、0.30 中间调 0.67（夜景压暗力度保持）
+- check-wiring 56/0；六套单测 345 项全 0 失败；真机待验收（重点看夜档暗部与白天是否还整体提亮）
+
 \n## 第四轮：四个新功能
 
 ### 1. 缩略图胶片条

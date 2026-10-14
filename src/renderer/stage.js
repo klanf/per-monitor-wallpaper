@@ -723,27 +723,40 @@ void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float bre
   breathM = m * br;
 }
 
-// ---- 分层氛围（r71）：时段光照 + 环境雾 + 主体金边 ----
-// 按深度连续混合（不做离散分层 → 没有「串层」概念）：深度大=近（写盘口径近大远小）。
+// ---- 分层氛围（r72 重构）：luma 分层调色 + split-toning + 指数雾 + 主体金边 ----
+// r71 教训：全图乘法调色（col *= tint*lum）是「亮度同比缩放」——夜档红通道暗部乘没、
+// 白天高光剪裁。r72 改游戏工业标准做法（Crytek GDC08 Photo Filter / ASC CDL）：
+//   ① gamma 曲线只动 luma（比例因子回填 RGB，色相/饱和保持）；
+//   ② split-toning：阴影/高光分开染色（tintS/tintH），比全图 tint 自然；
+//   ③ luma key：深阴影（luma<0.05）几乎不染 —— 保暗部细节，中间调以上全量。
 // 四档参数表 + 相邻档线性插值（uAtmoPhase 小数部分），交界处平滑过渡不硬切。
-void atmoParams(int i, out vec3 tint, out float lum, out vec3 fogCol, out float fogDen, out float farDark, out float rimK) {
+struct AtmoP {
+  vec3 tintS;    // 阴影染色（split-toning 暗部端）
+  vec3 tintH;    // 高光染色（split-toning 亮部端）
+  float gamma;   // luma 曲线指数（>1 压中间调，<1 提亮；只动 luma 不动色相）
+  vec3 fogCol;   // 雾色（兼作金边颜色）
+  float fogDen;  // 雾密度峰值（指数雾）
+  float farDark; // 远景压暗系数（深度带远端）
+  float rimK;    // 金边强度（mask 边缘）
+};
+void atmoParams(int i, out AtmoP p) {
   if (i <= 0) {          // 清晨：冷调柔光，远景薄雾
-    tint = vec3(0.96, 1.01, 1.08); lum = 0.97;
-    fogCol = vec3(0.74, 0.81, 0.92); fogDen = 0.30; farDark = 0.92; rimK = 0.0;
-  } else if (i == 1) {   // 白天：中性高亮，几乎无雾
-    tint = vec3(1.00, 1.00, 1.00); lum = 1.05;
-    fogCol = vec3(0.90, 0.94, 1.00); fogDen = 0.10; farDark = 0.97; rimK = 0.0;
-  } else if (i == 2) {   // 黄昏：暖橙逆光，主体金边
-    tint = vec3(1.10, 0.93, 0.79); lum = 0.93;
-    fogCol = vec3(0.96, 0.70, 0.42); fogDen = 0.34; farDark = 0.90; rimK = 1.0;
-  } else {               // 夜晚：蓝紫暗调，压低背景
-    tint = vec3(0.80, 0.85, 1.12); lum = 0.78;
-    fogCol = vec3(0.26, 0.30, 0.50); fogDen = 0.40; farDark = 0.68; rimK = 0.0;
+    p.tintS = vec3(0.95, 1.00, 1.07); p.tintH = vec3(0.97, 1.02, 1.09); p.gamma = 1.04;
+    p.fogCol = vec3(0.74, 0.81, 0.92); p.fogDen = 0.30; p.farDark = 0.93; p.rimK = 0.0;
+  } else if (i == 1) {   // 白天：中性（近无操作，只极轻雾感）
+    p.tintS = vec3(1.00, 1.00, 1.00); p.tintH = vec3(1.00, 1.00, 1.00); p.gamma = 1.0;
+    p.fogCol = vec3(0.90, 0.94, 1.00); p.fogDen = 0.08; p.farDark = 0.98; p.rimK = 0.0;
+  } else if (i == 2) {   // 黄昏：阴影偏暖暗、高光染金（split-toning），主体金边
+    p.tintS = vec3(1.02, 0.90, 0.82); p.tintH = vec3(1.10, 0.94, 0.74); p.gamma = 1.06;
+    p.fogCol = vec3(0.96, 0.70, 0.42); p.fogDen = 0.30; p.farDark = 0.92; p.rimK = 1.0;
+  } else {               // 夜晚：阴影偏蓝、高光微蓝，压中间调（luma 曲线，深阴影受 key 保护）
+    p.tintS = vec3(0.80, 0.87, 1.10); p.tintH = vec3(0.88, 0.92, 1.10); p.gamma = 1.22;
+    p.fogCol = vec3(0.30, 0.34, 0.52); p.fogDen = 0.34; p.farDark = 0.72; p.rimK = 0.0;
   }
 }
 
 // stB：未扭曲基准坐标（与 idleWarp 的 mask 锚点一致 → 效果不随视差游走）。
-// 雾 = 空气透视（远浓近淡，smoothstep 防中间断层）；金边 = mask 边缘梯度（黄昏档）。
+// 雾 = 空气透视（IQ 指数平方雾，远浓近淡无断层）；金边 = mask 边缘梯度（黄昏档）。
 vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
   if (uAtmo < 0.5 || uHasDepth < 0.5) return col;
   float dN = texMirror(uDepth, stB).r;                 // 屏幕点深度（近=1 远=0）
@@ -753,21 +766,31 @@ vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
   int i1 = i0 + 1;              // GLSL ES 1.0 无 int 版 min()，用 if 截断（int min/max 是 ES 3.0 才有）
   if (i1 > 3) i1 = 3;
   float f = fract(ph);
-  vec3 t0; vec3 t1; float l0; float l1; vec3 f0; vec3 f1; float d0; float d1; float k0; float k1; float r0; float r1;
-  atmoParams(i0, t0, l0, f0, d0, k0, r0);
-  atmoParams(i1, t1, l1, f1, d1, k1, r1);
-  vec3 tint = mix(t0, t1, f);
-  float lum = mix(l0, l1, f);
-  vec3 fogCol = mix(f0, f1, f);
-  float fogDen = mix(d0, d1, f);
-  float farDark = mix(k0, k1, f);
-  float rimK = mix(r0, r1, f);
-  // 远景压暗 + 色温：亮度随深度带连续变化（band 近景≈1）
+  AtmoP a; AtmoP b;
+  atmoParams(i0, a);
+  atmoParams(i1, b);
+  vec3 tintS = mix(a.tintS, b.tintS, f);
+  vec3 tintH = mix(a.tintH, b.tintH, f);
+  float gamma = mix(a.gamma, b.gamma, f);
+  vec3 fogCol = mix(a.fogCol, b.fogCol, f);
+  float fogDen = mix(a.fogDen, b.fogDen, f);
+  float farDark = mix(a.farDark, b.farDark, f);
+  float rimK = mix(a.rimK, b.rimK, f);
+
+  float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  // ① luma gamma 曲线：只缩放 luma（比例因子回填，色相/饱和不动）——不是全图乘法
+  float lTarget = pow(clamp(luma, 0.0, 1.0), gamma);
+  vec3 graded = col * (lTarget / max(luma, 1e-4));
+  // ② 远景压暗（深度带）+ ③ split-toning 染色（阴影/高光分端）
   float band = smoothstep(0.10, 0.85, dN);
-  col *= tint * mix(farDark, 1.06, band) * lum;
-  // 空气透视：雾只往远处抹，近景（人物主体）不糊
-  float fogW = fogDen * smoothstep(0.25, 0.95, far);
-  col = mix(col, fogCol * (lum * 0.5 + 0.5), clamp(fogW, 0.0, 1.0));
+  graded *= mix(farDark, 1.03, band);
+  graded *= mix(tintS, tintH, smoothstep(0.18, 0.85, luma));
+  // ④ luma key：深阴影几乎不染（保暗部细节），中间调以上全量
+  float key = 0.22 + 0.78 * smoothstep(0.02, 0.30, luma);
+  col = mix(col, graded, key);
+  // 空气透视：IQ 指数平方雾（线性 smoothstep 有「中间突然一截」断层风险）；雾色亮度取自当前像素
+  float fogW = fogDen * (1.0 - exp(-2.2 * far * far));
+  col = mix(col, fogCol * (luma * 0.6 + 0.4), clamp(fogW, 0.0, 1.0));
   // 主体金边（黄昏档）：mask 边缘梯度，与 idleWarp 同款 4 邻域差分
   if (rimK > 0.01 && uHasMask > 0.5) {
     vec2 mpx = vec2(1.5 / imgAspect, 1.5) * 0.5;
