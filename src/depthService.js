@@ -70,7 +70,7 @@ const LEGACY_PATHS = {
 };
 
 // 模型或后处理语义变化时必须升版；旧文件不删，由 2GB LRU 自然回收。
-const DEPTH_CACHE_SCHEMA = 'depth-png-r9';  // r9：mask 改人像分割（u2netp CPU，贴轮廓），旧 r8 深度阈值 mask 全量失效重生成
+const DEPTH_CACHE_SCHEMA = 'depth-png-r10';  // r10：mask 引导的深度修复（发丝穿透填平，第六十七轮），旧 r9 深度带穿透洼地全量失效重生成
 
 /** 返回候选里第一个真实存在的路径；都没有返回 '' */
 function firstExisting(candidates) {
