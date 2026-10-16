@@ -40,6 +40,21 @@ const MAX_WRITE_ATTEMPTS = 4;          // 一次切换最多试几张（全读�
 const MASS_SKIP = 12;                  // 一次切换里连续摘掉这么多张 → 列表大概率整体过期，触发重扫
 const MASS_RESCAN_COOLDOWN_MS = 60000; // 两次「大面积失效重扫」之间的最小间隔
 
+/*
+ * 扫描缓存持久化（2026-10-16 冷开机提速，方案 A）。
+ *
+ * 背景：相库在机械盘（F: 4TB HDD）上，冷开机时 4 万+ 文件的目录遍历与杀毒扫描、
+ * Syncthing 自启扫描抢盘，实测把启动重建拖到 90 秒以上，而 `await rebuild('startup')`
+ * 又串行堵着舞台窗口的创建 —— 登录后壁纸两分钟才出来。
+ * 热缓存实测同一份扫描只要 0.21 秒，所以把扫描结果落盘、启动时同步水合，
+ * 重建就不再碰磁盘（失效条目由写入链的 existsSync 预检 + 大面积失效重扫兜底，
+ * 与「Syncthing 同步删除」的既有容错策略同源）。
+ */
+const SCAN_CACHE_SAVE_DELAY_MS = 3000;              // 扫描后延迟落盘（合并同一次 rebuild 的多次扫描）
+const SCAN_CACHE_REFRESH_AFTER_STARTUP_MS = 120000; // 启动用了磁盘缓存 → 两分钟后（盘已热）后台刷新一次
+const SCAN_CACHE_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // 缓存条目 30 天不用 —— 目录结构大改后老缓存不值得信
+const SCAN_CACHE_MAX_FILES = 400000;                 // 单目录条目的文件数护栏（防异常膨胀）
+
 /** 拼接邻居（r38）：拼格里只放得下静态图，这些扩展名之外的（视频/网页）跳过 */
 const COLLAGE_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif', '.gif', '.tif', '.tiff']);
 
@@ -98,8 +113,11 @@ class MonitorScheduler {
    *        动态桌面窗口是否已失效（挂载失败 / 被拆且救不回来）。由 liveStage 层注入；
    *        失效时降频写自动放开（degraded-fallback），显示职责交回系统壁纸。
    *        不传按「从未失效」处理 —— 单测里也能注入来验证这条兜底。
+   * @param {string} [deps.scanCacheFile]
+   *        扫描结果持久化文件（userData/scan-cache.json）。不传 = 维持旧行为：
+   *        每次启动全量重扫（单测不注入，行为不变）。
    */
-  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, orders, isLiveDegraded, isPaused }) {
+  constructor({ store, cacheDir, enumerate, resolveUnifiedTarget, onEvent, writeWallpaper, playback, orders, isLiveDegraded, isPaused, scanCacheFile }) {
     this.store = store;
     this.cacheDir = cacheDir;
     this.enumerate = enumerate;
@@ -151,6 +169,20 @@ class MonitorScheduler {
     this.scanTimer = null;
     /** 上次自动扫描的时刻（时间戳，0 = 本次会话还没扫过）；渲染层据此显示「上次扫描 …」 */
     this.lastAutoScanAt = 0;
+
+    /*
+     * 扫描缓存持久化（方案 A，2026-10-16）：构造时同步水合磁盘缓存，
+     * 启动 rebuild 的 _scan 全部命中内存 → 不碰机械盘，冷开机的 90 秒消失。
+     * 水合是同步读（几 MB JSON，NVMe 上几十毫秒）：后面的 takeover 写壁纸
+     * 指望这份列表，异步水合会把竞态引进「第一张上屏」的链路。
+     */
+    this.scanCacheFile = scanCacheFile || null;
+    this._scanDirty = false;          // 内存缓存有磁盘上没有的新鲜扫描 → 该落盘
+    this._scanSaveTimer = null;
+    this._startupRefreshTimer = null;
+    this._hydratedKeys = new Set();   // 从磁盘水合来的缓存键（命中才算「启动用了缓存」）
+    this._usedDiskScan = false;       // 本次启动 rebuild 是否吃到过磁盘缓存
+    if (this.scanCacheFile) this._hydrateScanCache();
   }
 
   _emit(type, payload) {
@@ -330,6 +362,9 @@ class MonitorScheduler {
     // 无论从哪条路径进的重建（启动 / 改配置 / 插拔显示器 / 扫描完），定时扫描都按最新配置重新计时
     this._armAutoScan();
 
+    // 启动吃了磁盘缓存 → 安排一次延迟的后台刷新（见 _armStartupRefresh）
+    if (reason === 'startup' && this._usedDiskScan) this._armStartupRefresh();
+
     this._emit('channels', { reason, channels: this.list() });
   }
 
@@ -471,7 +506,11 @@ class MonitorScheduler {
   async _scan(folder, recursive) {
     const key = `${folder}::${recursive ? 1 : 0}`;
     const cached = this.scanCache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      // 磁盘水合来的缓存被启动重建用上了 → 记一笔，rebuild 末尾据此安排后台刷新
+      if (this._hydratedKeys.has(key)) this._usedDiskScan = true;
+      return cached;
+    }
 
     const started = Date.now();
     const { files, truncated } = await scanFolder(folder, { recursive });
@@ -483,7 +522,118 @@ class MonitorScheduler {
       recursive,
     };
     this.scanCache.set(key, result);
+    this._markScanDirty();
     return result;
+  }
+
+  /**
+   * 构造时同步水合磁盘扫描缓存（scanCacheFile 存在才调用）。
+   *
+   * 只恢复「目录里有什么」，不复核每个文件是否还在 —— 逐个 existsSync 就把
+   * 冷开机的磁盘风暴请回来了，违背本优化的初衷。失效条目由既有容错链兜底：
+   * 写前 existsSync 预检就地摘除、一次切换摘掉 ≥12 张触发重扫、12 小时 autoScan。
+   * 条目超龄（30 天）/ 超量 / 结构不对 / 目录不复存在都不认，宁可重扫。
+   */
+  _hydrateScanCache() {
+    let raw = null;
+    try {
+      raw = fs.readFileSync(this.scanCacheFile, 'utf8');
+    } catch {
+      return;   // 不存在 / 首次运行：冷启动照旧全量扫
+    }
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      console.warn('[scheduler] 扫描缓存损坏，本次启动全量重扫:', err.message);
+      return;
+    }
+    if (!data || data.version !== 1 || !data.entries || typeof data.entries !== 'object') return;
+
+    const now = Date.now();
+    for (const [key, entry] of Object.entries(data.entries)) {
+      if (!entry || !Array.isArray(entry.files)) continue;
+      if (typeof entry.folder !== 'string' || typeof entry.recursive !== 'boolean') continue;
+      if (!Number.isFinite(entry.savedAt) || now - entry.savedAt > SCAN_CACHE_MAX_AGE_MS) continue;
+      if (entry.files.length > SCAN_CACHE_MAX_FILES) continue;
+      if (!fs.existsSync(entry.folder)) continue;   // 目录没了（断盘/删除/改名）→ 这条整个不认
+      const files = [];
+      for (const row of entry.files) {
+        // 落盘格式是紧凑三元组 [path, name, ext]（4.4 万条能省一半体积）
+        if (!Array.isArray(row) || row.length < 3) continue;
+        const [p, name, ext] = row;
+        if (typeof p !== 'string') continue;
+        files.push({ path: p, name, ext, url: pathToFileURL(p).href });
+      }
+      if (!files.length) continue;
+      this.scanCache.set(key, {
+        files,
+        truncated: Boolean(entry.truncated),
+        elapsedMs: 0,
+        folder: entry.folder,
+        recursive: entry.recursive,
+      });
+      this._hydratedKeys.add(key);
+    }
+    if (this._hydratedKeys.size) {
+      const total = [...this._hydratedKeys].reduce((n, k) => n + (this.scanCache.get(k).files.length), 0);
+      console.log(`[scheduler] 已从磁盘恢复 ${this._hydratedKeys.size} 个目录的扫描缓存（共 ${total} 条）`);
+    }
+  }
+
+  /** 有新的真实扫描结果 → 合并延迟落盘（同一次 rebuild 的多目录扫描只写一次盘） */
+  _markScanDirty() {
+    if (!this.scanCacheFile) return;
+    this._scanDirty = true;
+    if (this._scanSaveTimer) return;
+    this._scanSaveTimer = setTimeout(() => {
+      this._scanSaveTimer = null;
+      this._saveScanCache();
+    }, SCAN_CACHE_SAVE_DELAY_MS);
+    if (typeof this._scanSaveTimer.unref === 'function') this._scanSaveTimer.unref();
+  }
+
+  /**
+   * 把当前内存扫描缓存整体落盘（原子写：tmp + rename）。
+   * 是「全量镜像」而不是增量 —— rescan/失效摘除清掉的键自然也随之从盘上消失。
+   */
+  async _saveScanCache() {
+    if (!this.scanCacheFile || !this._scanDirty) return;
+    this._scanDirty = false;
+    const entries = {};
+    for (const [key, r] of this.scanCache) {
+      if (!r || !Array.isArray(r.files) || !r.files.length) continue;
+      if (r.files.length > SCAN_CACHE_MAX_FILES) continue;
+      entries[key] = {
+        folder: r.folder,
+        recursive: r.recursive,
+        truncated: Boolean(r.truncated),
+        savedAt: Date.now(),
+        files: r.files.map((f) => [f.path, f.name, f.ext]),
+      };
+    }
+    const tmp = `${this.scanCacheFile}.tmp`;
+    try {
+      await fsp.writeFile(tmp, JSON.stringify({ version: 1, savedAt: Date.now(), entries }), 'utf8');
+      await fsp.rename(tmp, this.scanCacheFile);
+    } catch (err) {
+      console.warn('[scheduler] 扫描缓存写盘失败:', err.message);
+    }
+  }
+
+  /**
+   * 启动吃了磁盘缓存 → 列表可能是旧的（关机期间新进的图不在）。
+   * 两分钟后盘已热，后台静默刷新一次 —— 走 autoScan：不洗牌、按路径找回
+   * 当前帧，画面不动；刷完 _markScanDirty 把新鲜结果写回磁盘。
+   */
+  _armStartupRefresh() {
+    if (this._startupRefreshTimer) return;
+    this._startupRefreshTimer = setTimeout(() => {
+      this._startupRefreshTimer = null;
+      console.log('[scheduler] 启动用了磁盘缓存，后台刷新一次扫描');
+      this.autoScan().catch((err) => console.error('[scheduler] 启动后刷新扫描失败:', err && err.message));
+    }, SCAN_CACHE_REFRESH_AFTER_STARTUP_MS);
+    if (typeof this._startupRefreshTimer.unref === 'function') this._startupRefreshTimer.unref();
   }
 
   /**
@@ -1262,10 +1412,21 @@ class MonitorScheduler {
       clearTimeout(this.scanTimer);
       this.scanTimer = null;
     }
+    if (this._startupRefreshTimer) {
+      clearTimeout(this._startupRefreshTimer);
+      this._startupRefreshTimer = null;
+    }
     this.channels.clear();
     // 退出前把最后那张的位置落盘 —— 否则「刚换完图就关程序」会丢掉这一步
     if (this.playback) this.playback.flush();
     if (this.ordersStore) this.ordersStore.flush();   // r34：顺序存档同样兜底
+    // 扫描缓存还没来得及落盘（延迟写窗口内退出）→ 现在写；进程被硬杀也只丢这一份
+    // 新鲜扫描，tmp+rename 原子写保证旧文件完好（下次启动照常水合）
+    if (this._scanSaveTimer) {
+      clearTimeout(this._scanSaveTimer);
+      this._scanSaveTimer = null;
+      this._saveScanCache();
+    }
   }
 
   /* ------------------------------------------------------------ 查询 */

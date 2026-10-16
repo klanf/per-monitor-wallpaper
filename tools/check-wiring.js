@@ -160,12 +160,20 @@ check('clampLiveStage 只有一份完整实现',
   (STORE_SOURCE.match(/^function clampLiveStage\(/gm) || []).length === 1
     && ['pauseOnIdle', 'idlePauseMinutes', 'hideOnPaused'].every((key) => STORE_SOURCE.includes(key)));
 
-const startupRebuildAt = MAIN.indexOf("await scheduler.rebuild('startup')");
-const dynamicStartupAt = MAIN.indexOf('if (store.get().liveWallpaper)', startupRebuildAt);
-const pauseWatchStartupAt = MAIN.indexOf('startFullscreenWatch();', startupRebuildAt);
-check('暂停监控在动态桌面条件判断之前无条件启动',
-  startupRebuildAt >= 0 && pauseWatchStartupAt > startupRebuildAt
-    && dynamicStartupAt > pauseWatchStartupAt);
+const whenReadyAt = MAIN.indexOf('app.whenReady().then');
+const startupRebuildAt = MAIN.indexOf("await scheduler.rebuild('startup')", whenReadyAt);
+const dynamicStartupAt = MAIN.indexOf('if (store.get().liveWallpaper)', whenReadyAt);
+const pauseWatchStartupAt = MAIN.indexOf('startFullscreenWatch();', whenReadyAt);
+/*
+ * 2026-10-16 冷开机提速：暂停监控与动态舞台链路**先于**启动重建 ——
+ * rebuild 吃扫描缓存磁盘水合时几乎瞬时；缓存未命中时舞台也不再被冷盘扫描堵住。
+ * 不变式保留两条：暂停监控无条件启动（不进 liveWallpaper 条件），且先于
+ * 动态桌面开关出现（舞台 bind 带初始暂停态，监控必须先跑起来）。
+ */
+check('暂停监控在动态桌面条件判断之前无条件启动（且先于启动重建）',
+  startupRebuildAt >= 0 && pauseWatchStartupAt >= 0
+    && pauseWatchStartupAt < dynamicStartupAt
+    && pauseWatchStartupAt < startupRebuildAt);
 check('修改 liveStage 后立即重采样暂停状态',
   /if \(keys\.includes\('liveStage'\)\) \{[\s\S]{0,400}refreshFullscreenPauseState\(\);/.test(MAIN));
 

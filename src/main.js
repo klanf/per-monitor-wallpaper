@@ -2208,6 +2208,9 @@ if (!gotLock) {
     scheduler = new MonitorScheduler({
       store,
       cacheDir: CACHE_DIR,
+      // 扫描缓存持久化（2026-10-16 冷开机提速）：启动直接用上次的扫描结果，
+      // 不再在机械盘上重扫 4 万+ 文件；新鲜度靠 2 分钟后的后台刷新 + autoScan 兜底
+      scanCacheFile: path.join(app.getPath('userData'), 'scan-cache.json'),
       playback,
       orders: ordersStore,   // r34：顺序持久化（构造时水合，stop 时 flush）
       // 动态舞台降级（挂载失败/被拆且救不回来）时，调度器恢复「每轮都写系统壁纸」
@@ -2276,19 +2279,26 @@ if (!gotLock) {
 
     // 老用户换到多屏机器、或本来就有多屏但还没配过 —— 启动时补一次自动配置
     const autoAtStartup = planAutoMonitorSetup();
-    await scheduler.rebuild('startup');
-    announceAutoSetup(autoAtStartup, true);
-    thumbnails.pruneCache().catch(() => {});
 
+    // 暂停监控与动态舞台链路先于重建启动（2026-10-16 冷开机提速）：
+    // rebuild 吃磁盘扫描缓存时几乎瞬时；即便缓存未命中（首次运行/缓存损坏），
+    // channels 事件一到舞台照样立刻创建，不再被冷盘扫描堵在 await 后面。
+    // ⚠️ 顺序不能换：舞台 bind 带初始暂停态（fullscreenWatch 轮询只在「变化」时发），
+    // 暂停监控必须先跑起来，晚创建的舞台才不会错过开机时的暂停状态。
     // 暂停监控是应用级能力：动态桌面关闭时，系统壁纸轮播同样需要在挂机、
     // 锁屏、全屏或电池供电时停表。只在退出阶段 stop，切动态桌面不影响它。
     startFullscreenWatch();
 
-    // 动态桌面：配置开着就随应用启动（窗口在这里创建并挂到桌面图标下面）
-    if (store.get().liveWallpaper) {
-      liveStage.start();
-      liveStage.syncTo(scheduler.list());
-    }
+    // 动态桌面：配置开着就随应用启动（看门狗先就位；窗口由 rebuild 完成时的
+    // channels 事件或下面的 syncTo 创建并挂到桌面图标下面）
+    if (store.get().liveWallpaper) liveStage.start();
+
+    await scheduler.rebuild('startup');
+    announceAutoSetup(autoAtStartup, true);
+    thumbnails.pruneCache().catch(() => {});
+
+    // 重建完成 → 按最新频道清单建/删舞台（syncTo 幂等，内部防重复创建）
+    if (store.get().liveWallpaper) liveStage.syncTo(scheduler.list());
 
     // 桌面手势切壁纸（54 轮追记五）：横向拖拽/触摸横扫。不依赖动态桌面 ——
     // 静态系统壁纸模式同样能切（scheduler.step 会写系统壁纸）。
