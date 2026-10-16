@@ -410,6 +410,25 @@
         </div>
       </div>
 
+      <!-- 双层视差性能提示（r72）：顶栏开启时先弹警告；勾过「不再提示」后在这里重开 -->
+      <div class="field">
+        <label class="check rich" for="cfg-dual-hint">
+          <input type="checkbox" id="cfg-dual-hint">
+          <span class="rich-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 4 2.8 19.2h18.4L12 4z"></path>
+              <path d="M12 10.2v4.2"></path>
+              <path d="M12 17.4h.01"></path>
+            </svg>
+          </span>
+          <span class="rich-text">
+            <span class="rich-title">开启双层视差前提示</span>
+            <span class="rich-hint">顶栏开「双层视差」时先弹性能开销警告（每张图首次生成会有可感知的卡顿）</span>
+          </span>
+        </label>
+      </div>
+
       <!-- ------------------------------------------------ 工具栏自动隐藏 -->
       <div class="field">
         <label class="field-label">工具栏自动隐藏</label>

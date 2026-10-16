@@ -100,6 +100,8 @@ contextBridge.exposeInMainWorld('wp', {
    * 所以这条和 trashFile 等价（开关关掉时都不问）。
    */
   trashWithConfirm: (imagePath) => ipcRenderer.invoke('file:trash-confirm', imagePath),
+  /** 开启双层视差前的性能警告（r72）：勾过「不再提示」直接放行。返回是否允许开启 */
+  dualLayerWithConfirm: () => ipcRenderer.invoke('dual-layer:confirm'),
   transferFile: (imagePath, targetDir, mode) => ipcRenderer.invoke('file:transfer', imagePath, targetDir, mode),
   showImageMenu: (payload) => ipcRenderer.send('context:image-menu', payload),
   /** 取右键菜单的结构（不弹菜单），给验证脚本核对菜单项是否齐全 */
@@ -247,5 +249,9 @@ contextBridge.exposeInMainWorld('wp', {
   /** 用户在删除确认框里勾了「不再询问」，开关被主进程关掉了 */
   onConfirmDeleteChanged: (cb) => {
     ipcRenderer.on('confirm-delete:changed', (_event, payload) => cb(payload));
+  },
+  /** 用户在双层视差警告框里勾了「不再提示」 */
+  onDualHintChanged: (cb) => {
+    ipcRenderer.on('dual-hint:changed', (_event, payload) => cb(payload));
   },
 });

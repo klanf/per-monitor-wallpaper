@@ -177,5 +177,15 @@ check('暂停监控在动态桌面条件判断之前无条件启动（且先于�
 check('修改 liveStage 后立即重采样暂停状态',
   /if \(keys\.includes\('liveStage'\)\) \{[\s\S]{0,400}refreshFullscreenPauseState\(\);/.test(MAIN));
 
+// ---- 双层视差性能警告（r72）：开启方向必经主进程确认，五端缺一不可 ----
+check('双层视差开启前过性能警告（handler/preload/门控/偏好/设置重开 五端齐全）',
+  MAIN.includes("ipcMain.handle('dual-layer:confirm', () => askDualLayerPermission())")
+  && MAIN.includes("dualLayerHint === false") && MAIN.includes("dual-hint:changed")
+  && PRELOAD.includes('dualLayerWithConfirm') && PRELOAD.includes('onDualHintChanged')
+  && APP.includes('await window.wp.dualLayerWithConfirm()')
+  && APP.includes("cfg-dual-hint")
+  && STORE_SOURCE.includes('dualLayerHint: true')
+  && HTML.includes('cfg-dual-hint'));
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -198,6 +198,15 @@ const DEFAULTS = {
   confirmDelete: true,
 
   /**
+   * 开启「双层视差」前是否先弹性能警告（r72）。
+   *
+   * 双层视差要给每张带人物的图跑一次 AI 分割 + 背景板填充（恒 CPU ~1-2s/张，
+   * 图库按需补齐，初期翻图有可感知的卡顿），所以默认每次开启都警告。
+   * 勾过「以后不再提示」落 false，「外观 › 深度视差」节尾的开关随时重开。
+   */
+  dualLayerHint: true,
+
+  /**
    * 全局热键（Electron accelerator 字符串，如 'Ctrl+Alt+Right'）。
    *
    * 空字符串 = 不绑定。由主进程 globalShortcut 注册，所以窗口藏在托盘里也生效。
@@ -389,7 +398,7 @@ function toBool(v) {
 /** 这几个键在配置里必须是布尔值，写盘前统一收一遍 */
 const BOOL_KEYS = new Set([
   'shuffle', 'recursive', 'autoPlay', 'applyToSystem', 'applyOnStart', 'resumeLast', 'liveWallpaper',
-  'perMonitor', 'skipSizeTwin', 'confirmDelete', 'autoMonitorSetup',
+  'perMonitor', 'skipSizeTwin', 'confirmDelete', 'dualLayerHint', 'autoMonitorSetup',
   'tray', 'closeToTray', 'startHidden', 'launchAtLogin',
   'filmstrip', 'filmstripAutoCenter', 'infoPanel', 'contextMenu',
   'videoPlayFull', 'swipeSwitch',

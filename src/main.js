@@ -513,6 +513,46 @@ async function askDeletePermission(imagePath) {
   return response === 0;
 }
 
+/**
+ * 开启「双层视差」前的性能警告（r72）。
+ *
+ * 双层视差要给每张带人物的图跑一次 AI 分割 + 背景板填充（恒 CPU ~1-2s/张，
+ * 图库按需补齐，初期翻图有可感知的卡顿），所以默认每次开启都警告。
+ * 勾「以后不再提示」落盘关掉，「外观 › 深度视差」节尾可随时重开。
+ *
+ * @returns {Promise<boolean>} 是否允许开启
+ */
+async function askDualLayerPermission() {
+  if (store.get().dualLayerHint === false) return true;
+
+  const { response, checkboxChecked } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['仍要开启', '不开了'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: '开启「双层视差」前请注意',
+    message: '双层视差有可感知的性能开销',
+    detail: '开启后，每张带人物的壁纸首次显示时，都会在后台跑一次 AI 分割 + 背景板生成'
+      + '（约 1~2 秒，占满一个 CPU 核）—— 每张只做一次，结果进缓存。\n\n'
+      + '图库有数千张，翻到哪补到哪：初期翻图时可能遇到明显的首帧等待或切换卡顿，'
+      + '全部补齐需要一段时间。\n\n'
+      + '推理期间有持续的 CPU 占用，笔记本可能风扇变响、耗电增加；'
+      + '没有人物的图自动回落单层视差，不受影响。\n\n'
+      + '随时可以关掉，已生成的缓存保留。',
+    checkboxLabel: '以后开启时不再提示（设置 › 外观 › 深度视差 里可重新打开）',
+    checkboxChecked: false,
+  });
+
+  if (checkboxChecked) {
+    store.set({ dualLayerHint: false });
+    send('dual-hint:changed', { dualLayerHint: false });
+    send('notice', { text: '已记住选择：开启双层视差不再提示（设置 › 外观 › 深度视差 里可重新打开）' });
+  }
+
+  return response === 0;
+}
+
 /** 所有删除入口都走这里：先请求许可，再真正移入回收站 */
 async function trashWithPermission(imagePath) {
   if (!imagePath) return { ok: false, error: '没有文件' };
@@ -1904,6 +1944,7 @@ function registerIpc() {
    * 所以这条和 `file:trash` 行为完全一致，不再有「有的入口问、有的不问」。
    */
   ipcMain.handle('file:trash-confirm', (_e, imagePath) => trashWithPermission(imagePath));
+  ipcMain.handle('dual-layer:confirm', () => askDualLayerPermission());
   ipcMain.handle('file:transfer', (_e, imagePath, targetDir, mode) => performTransfer(imagePath, targetDir, mode));
 
   /* ---- 桌面右键菜单（注册表集成）---- */

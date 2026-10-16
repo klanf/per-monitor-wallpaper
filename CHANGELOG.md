@@ -4822,3 +4822,33 @@ MIT，onnx 176MB）——社区抠动漫图的事实标准（rembg isnet-anime �
 - 语法 + test-cleanplate 15/0 + verify:unit 全链 0 失败。
 - 旧 sidecar（mask+bg）全量重删，下次显示按 isnetis 重派生；深度图不重推。
 - 真机待验收：视差时脚部/发梢残影应消失，边缘过渡更干净。
+
+## 第七十二轮：双层视差开启前弹性能警告（2026-10-17）
+
+### 背景
+
+isnetis 分割 + 背景板生成对低配机器是可感知的卡顿来源（每张带人物图首次显示
+1~2s 恒 CPU，图库按需补齐），用户要求开启时警告性能损耗并给「以后不再提示」。
+
+### 修法（镜像 askDeletePermission 既有模式）
+
+- main.js `askDualLayerPermission`：warning 型 showMessageBox，文案明确警告
+  「每张首次显示后台跑 1~2 秒占满一个 CPU 核 / 数千张图初期翻图有首帧等待与
+  切换卡顿 / 推理期持续 CPU 占用笔记本风扇耗电 / 无人物图自动回落单层 /
+  随时关掉缓存保留」。buttons=[仍要开启, 不开了]，默认安全侧（defaultId=1）。
+  checkbox「以后开启时不再提示」→ `dualLayerHint: false` 落盘 + toast 提示
+  设置重开路径。`dualLayerHint === false` 直接放行。
+- 仅**开启方向**弹（关→开）；关闭不弹；取消则不动开关（pushProfile 不发）。
+- `dualLayerHint` 是纯 UI 偏好：进 DEFAULTS（默认 true）与 BOOL_KEYS，
+  **不进 PROFILE_KEYS**（不下发舞台）。
+- 设置重开入口：「外观 › 深度视差」节尾新增「开启双层视差前提示」rich check
+  （三角警告图标），与 cfg-confirm-delete 同款渲染/保存/推送同步
+  （dual-hint:changed → onDualHintChanged）。
+- preload：`dualLayerWithConfirm()` invoke + `onDualHintChanged` 推送。
+
+### 验证
+
+- check-wiring 57/0（新增五端齐全断言：handler/preload 桥/renderer 门控/
+  store 偏好/HTML 设置行）；verify:unit 全链 0 失败。
+- 真机待验收：顶栏开「双层视差」弹警告 → 取消开关不动 → 勾「不再提示」开启
+  后下次直接开 → 设置里重开后恢复弹窗。

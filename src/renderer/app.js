@@ -2511,6 +2511,7 @@ function applyConfigToUI() {
 
   // ---- 删除 ----
   $('cfg-confirm-delete').checked = c.confirmDelete !== false;
+  $('cfg-dual-hint').checked = c.dualLayerHint !== false;
   // 桌面右键菜单的开关状态不在 config 里，而在注册表里 —— 以实际注册结果为准
   refreshDesktopMenu();
 
@@ -2973,6 +2974,16 @@ function bindSettings() {
     toast(on
       ? '删除前会先弹确认对话框'
       : '删除将直接移入回收站（不再询问）');
+  });
+
+  // ---- 双层视差性能提示（r72）----
+
+  $('cfg-dual-hint').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    await save({ dualLayerHint: on });
+    toast(on
+      ? '开启双层视差前会先弹性能提示'
+      : '开启双层视差将不再提示（首次生成会有可感知的卡顿）');
   });
 
   $('btn-del-current').addEventListener('click', deleteCurrentImage);
@@ -3553,10 +3564,21 @@ function bindEvents() {
       await pushProfile(id, { idleFx: on });
       note = on ? '这块屏 idle 微动画已开启（角色呼吸/衣摆飘动/前景差速）' : '这块屏 idle 微动画已关闭';
     } else if (btn === els.qtDual) {
-      // 双层视差（2026-10-16）：人物层叠在补全背景板上；需要背景板（深度缓存自动派生）
+      // 双层视差（2026-10-16）：人物层叠在补全背景板上；需要背景板（深度缓存自动派生）。
+      // 开启方向先过性能警告（r72）：勾过「不再提示」直接放行，取消则不动开关。
       const on = !resolvedDual(id);
-      await pushProfile(id, { dualLayer: on });
-      note = on ? '这块屏双层视差已开启（人物动、背景稳）' : '这块屏双层视差已关闭';
+      if (on) {
+        const ok = await window.wp.dualLayerWithConfirm();
+        if (ok) {
+          await pushProfile(id, { dualLayer: true });
+          note = '这块屏双层视差已开启（人物动、背景稳）';
+        } else {
+          note = '已取消：双层视差保持关闭';
+        }
+      } else {
+        await pushProfile(id, { dualLayer: false });
+        note = '这块屏双层视差已关闭';
+      }
     } else if (btn === els.qtParticles) {
       // 粒子是「种类值」不是布尔：关 = 覆盖写 ''（显式关）；开 = 有全局种类就跟全局（null），
       // 全局也关着就给 random 兜底 —— 一键点亮总有粒子看。
@@ -3845,6 +3867,13 @@ function bindEvents() {
     const on = payload ? payload.confirmDelete !== false : false;
     state.config.confirmDelete = on;
     $('cfg-confirm-delete').checked = on;
+  });
+
+  /** 用户在双层视差警告框里勾了「不再提示」，把设置里的开关同步过来 */
+  window.wp.onDualHintChanged((payload) => {
+    const on = payload ? payload.dualLayerHint !== false : true;
+    state.config.dualLayerHint = on;
+    $('cfg-dual-hint').checked = on;
   });
 
   // 拉取最新频道状态（供外部测试脚本与手动刷新共用）
