@@ -37,6 +37,8 @@ const state = {
   failReason: '',
   segSession: null,            // u2netp 人像分割会话（恒 CPU EP，不抢深度引擎的 GPU）
   segFailed: false,            // 模型缺失/加载失败 → 本 worker 生命周期内回落 Otsu 深度 mask
+  animeSession: null,          // isnetis 动漫角色分割会话（首选分割器，恒 CPU EP）
+  animeFailed: false,          // 模型缺失/加载失败 → 本 worker 生命周期内回落 u2netp
 };
 
 function log(...args) {
@@ -687,6 +689,86 @@ async function segmentPerson(sharp, imgPath, dw, dh) {
     .toColourspace('b-w').raw().toBuffer();
 }
 
+// ---- isnetis 动漫角色分割（第七十一轮）：u2netp 是通用显著图，脚踝/发梢这类弱响应
+// 区收得比真身紧（真机验收实锤脚部残影）。isnetis（SkyTNT anime-segmentation，
+// AniSeg 动漫专训，MIT，176MB）输出软 alpha，动漫边缘高一档。预处理对齐
+// SkyTNT Space / city96 gist：1024² 黑边居中 letterbox（只缩小不放大）、BGR 通道序、
+// 仅 /255 归一化；输出已是 sigmoid 后的 alpha，裁掉黑边再缩到目标分辨率。
+function animeModelPath() {
+  return path.join(__dirname, '..', 'models', 'segmentation', 'isnetis.onnx');
+}
+
+async function ensureAnimeSession() {
+  if (state.animeSession) return state.animeSession;
+  if (state.animeFailed) throw new Error('isnetis 此前加载失败（本 worker 不再重试）');
+  const modelPath = animeModelPath();
+  if (!fs.existsSync(modelPath)) {
+    state.animeFailed = true;
+    throw new Error(`缺少分割模型 ${modelPath}`);
+  }
+  try {
+    state.animeSession = await state.ort.InferenceSession.create(modelPath, { executionProviders: ['cpu'] });
+  } catch (err) {
+    state.animeFailed = true;
+    throw new Error(`isnetis 会话创建失败：${err.message}`);
+  }
+  return state.animeSession;
+}
+
+/** 跑 isnetis 出动漫角色 alpha，缩到深度分辨率，返回 u8 Buffer（亮=人物，与 segmentPerson 同契约）。 */
+async function segmentAnime(sharp, imgPath, dw, dh) {
+  const session = await ensureAnimeSession();
+  const SEG = 1024;
+  const meta = await sharp(imgPath).metadata();
+  if (!meta.width || !meta.height) throw new Error('读不到图片尺寸');
+  // 只缩小不放大（thumbnail 语义）：小图原尺寸居中，不拿放大糊图喂模型
+  const s = Math.min(1, SEG / Math.max(meta.width, meta.height));
+  const rw = Math.max(1, Math.round(meta.width * s));
+  const rh = Math.max(1, Math.round(meta.height * s));
+  const dx = Math.floor((SEG - rw) / 2);
+  const dy = Math.floor((SEG - rh) / 2);
+  let pipe = sharp(imgPath).removeAlpha();
+  if (s < 1) pipe = pipe.resize(rw, rh, { kernel: 'cubic', fit: 'fill' });
+  const padded = await pipe
+    .extend({ top: dy, bottom: SEG - rh - dy, left: dx, right: SEG - rw - dx, background: { r: 0, g: 0, b: 0 } })
+    .toColourspace('srgb').raw().toBuffer();
+  if (padded.length !== SEG * SEG * 3) throw new Error(`letterbox 输出 ${padded.length} != ${SEG * SEG * 3}`);
+  // BGR 通道序 + 仅 /255（模型契约，city96 gist 与 SkyTNT Space 实现一致）
+  const n = SEG * SEG;
+  const px = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    px[i] = padded[i * 3 + 2] / 255;         // B
+    px[n + i] = padded[i * 3 + 1] / 255;     // G
+    px[2 * n + i] = padded[i * 3] / 255;     // R
+  }
+  const inputName = session.inputNames[0];
+  const outName = session.outputNames[0];
+  const out = await session.run({ [inputName]: new state.ort.Tensor('float32', px, [1, 3, SEG, SEG]) });
+  const tensor = out[outName];
+  if (!tensor || !tensor.data) throw new Error('isnetis 无输出');
+  const f32 = tensor.data;   // (1,1,SEG,SEG)，sigmoid 后的 alpha
+  // 裁掉黑边 → 有效区 rw×rh → u8 → sharp 缩到 dw×dh
+  const crop = Buffer.allocUnsafe(rw * rh);
+  for (let y = 0; y < rh; y++) {
+    const srcRow = (y + dy) * SEG + dx;
+    for (let x = 0; x < rw; x++) {
+      const v = f32[srcRow + x];
+      crop[y * rw + x] = v <= 0 ? 0 : (v >= 1 ? 255 : Math.round(v * 255));
+    }
+  }
+  return sharp(crop, { raw: { width: rw, height: rh, channels: 1 } })
+    .resize(dw, dh, { kernel: 'cubic', fit: 'fill' })
+    .toColourspace('b-w').raw().toBuffer();
+}
+
+/** 分割链：isnetis（动漫专训，首选）→ u2netp（通用显著图）→ null（调用方回落 Otsu 深度）。 */
+async function segmentAny(sharp, imgPath, dw, dh) {
+  try { return await segmentAnime(sharp, imgPath, dw, dh); } catch (err) {
+    log('isnetis 分割不可用，回落 u2netp:', err.message);
+  }
+  return segmentPerson(sharp, imgPath, dw, dh);
+}
+
 function toNchwFloat(raw, w, h) {  const n = w * h;
   if (raw.length !== n * 3) throw new Error(`RGB 输入长度 ${raw.length} != ${n * 3}`);
   const px = new Float32Array(3 * n);
@@ -706,12 +788,12 @@ async function generate(job) {
     fs.copyFileSync(job.depthIn, tmp);
     fs.renameSync(tmp, job.out);
     // 老缓存补派生（双层视差路线 1）：深度已就位直接收编，只补 mask/背景板。
-    // 恒 CPU（u2netp ~220ms + 人像区扩散填充亚秒）；没有深度数组可回落，
-    // u2netp 不可用就整单放弃（下次再看这张图会重试入队）。
+    // 恒 CPU（isnetis ~1-3s / 回落 u2netp ~220ms + 人像区填充亚秒）；没有深度数组可回落，
+    // 分割链全挂就整单放弃（下次再看这张图会重试入队）。
     if (job.outBg || job.outMask) {
       const dims = await preshrinkDims(sharp, job.path);
       let seg = null;
-      try { seg = await segmentPerson(sharp, job.path, dims.dw, dims.dh); } catch (err) {
+      try { seg = await segmentAny(sharp, job.path, dims.dw, dims.dh); } catch (err) {
         log('人像分割不可用，跳过 sidecar 补派生:', err.message);
         return;
       }
@@ -807,10 +889,11 @@ async function generate(job) {
   // 深度本体在此定版（r69 撤销 r67 的 mask 引导修复）——与 master 的做法一致：
   // 落盘前不再改深度。2×2 隔离对拍（tools/tmp-ab24-*.js）实锤 repair 会把人物区
   // 深度σ再抹平 10%（0.081→0.073），「2D 纸片」观感有它一份。
-  // 人像分割（segmentPerson）只服务于 idle 前景层 mask，深度修复已撤。
+  // 人像分割（segmentAny = isnetis → u2netp 回落链）只服务于 idle 前景层 mask 与
+  // 双层背景板，深度修复已撤。
   let seg = null;
   if (job.outMask || job.outBg) {
-    try { seg = await segmentPerson(sharp, job.path, dw, dh); } catch (err) {
+    try { seg = await segmentAny(sharp, job.path, dw, dh); } catch (err) {
       log('人像分割不可用，mask 回落 Otsu 深度:', err.message);
     }
   }
@@ -929,5 +1012,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask, personBin, writeCleanPlate, preshrinkDims },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask, personBin, writeCleanPlate, preshrinkDims, segmentAnime, segmentAny, segmentPerson },
 };

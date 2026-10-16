@@ -4788,3 +4788,37 @@ Live2D 调研定下的近期路线：深度视差与 Live2D 的差距核心在�
   内容级补全（真背景物体）留给 ComfyUI inpaint 升级，不在本轮。
 - 真机待验收：设置顶栏开「双层视差」→ 带人物图视差时人物身后露出补全背景，
   不再出现原图人物残影/拉伸；无 mask/背景板的图自动回退单层。
+
+## 第七十一轮：分割升级 isnetis —— 动漫专训模型替换 u2netp（2026-10-17）
+
+### 背景
+
+第七十轮外扩 3px 只是缓解：u2netp 是**通用显著图**模型，脚踝/发梢/衣摆这类弱响应
+区收得比真身紧，且内部有成片软洞（真图冒烟对比实锤：同一张 2048 立绘，
+u2netp Otsu 覆盖 44.4% 且身体内部大量灰洞；外扩治标不治本）。调研选定
+**isnetis**（SkyTNT anime-segmentation，ISNet 用 AniSeg 动漫角色数据集专训，
+MIT，onnx 176MB）——社区抠动漫图的事实标准（rembg isnet-anime 预设同源），
+输出软 alpha，动漫边缘公认比 u2net 系高一档。
+
+### 修法（depthEngineJs）
+
+- `segmentAnime`：1024² 黑边居中 letterbox（**只缩小不放大**，thumbnail 语义）→
+  **BGR 通道序 + 仅 /255 归一化**（模型契约，对齐 SkyTNT Space / city96 gist，
+  不是 ImageNet 均值方差）→ 输出裁掉黑边 → 缩到深度分辨率。返回契约与
+  segmentPerson 完全一致（u8 亮=人物），下游 personBin/writeMask/writeCleanPlate 零改动。
+- `segmentAny` 三级回落链：**isnetis → u2netp → Otsu 深度**；isnetis 缺模型/加载
+  失败本 worker 生命周期内不再重试（与 u2netp 同款 failed 标记）。
+- 两处调用点（深度首生成、老缓存补派生）都换成 segmentAny。
+- 模型文件 `models/segmentation/isnetis.onnx`（176MB，hf-mirror 下载），按
+  u2netp 同例不进 git / 不进安装包 —— 发版里分割自动降级链到 Otsu（既有策略）；
+  要在发版带真分割需往 extraResources 加一行（176MB 安装包代价，待定）。
+
+### 验证（全部实测）
+
+- 真图冒烟（同张 2048 立绘，tools/tmp-anime-seg-smoke.js）：
+  isnetis **1312ms**（含首跑会话创建）/ Otsu 覆盖 **51.8%**，人物实心、腿脚完整；
+  u2netp 311ms / 44.4%，内部成片灰洞 —— 质的差距，且 1.3s 是每张图一次性成本。
+- 背景板走真实 writeCleanPlate 管线出图目检正常（对比条 tmp/anime-seg-compare.jpg）。
+- 语法 + test-cleanplate 15/0 + verify:unit 全链 0 失败。
+- 旧 sidecar（mask+bg）全量重删，下次显示按 isnetis 重派生；深度图不重推。
+- 真机待验收：视差时脚部/发梢残影应消失，边缘过渡更干净。
