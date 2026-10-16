@@ -426,21 +426,41 @@ function otsuThreshold(u8) {
   return thr;
 }
 
+/** 前景二值外扩半径（深度分辨率像素）：u2netp/Otsu 在脚踝、脚趾、发梢这类弱响应
+ * 边缘收得比真身紧（真机验收实锤：视差时脚部残影跟着背景走）。外扩把 2.5σ 羽化
+ * 的 0.5 过渡点推出人物轮廓外 —— idle 差速、双层混合、背景板填充三处同时受益。 */
+const FG_DILATE_PX = 3;
+
+/** 二值 mask 纯 JS 4 邻域迭代膨胀 r 像素（曼哈顿菱形）。不用 sharp blur+threshold：
+ * blur 会衰减小块 mask 整体亮度，低阈值反而侵蚀（writeCleanPlate 注释有实测）。 */
+function expandBin(bin, w, h, r) {
+  for (let step = 0; step < r; step++) {
+    const prev = Uint8Array.from(bin);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (prev[i]) continue;
+        if ((x > 0 && prev[i - 1]) || (x < w - 1 && prev[i + 1])
+          || (y > 0 && prev[i - w]) || (y < h - 1 && prev[i + w])) bin[i] = 255;
+      }
+    }
+  }
+}
+
 /**
- * 人像二值 mask（255=人物）：u2netp 显著图或深度图 Otsu 阈值切前景。
+ * 人像二值 mask（255=人物）：u2netp 显著图或深度图 Otsu 阈值切前景，再外扩
+ * FG_DILATE_PX 像素（占比守卫按外扩后的实际覆盖算）。
  * 深度近没有可分峰、或前景占比 <2% / >95%（阈值切飞：纯背景/全图特写没有
  * 「分层」可言）→ 返回 null，调用方宁可不做也不做错。
  */
 function personBin(depthSrc, w, h) {
   const thr = otsuThreshold(depthSrc);
   if (thr < 0) return null;
-  const bin = Buffer.allocUnsafe(w * h);
+  const bin = Buffer.alloc(w * h);
+  for (let i = 0; i < depthSrc.length; i++) bin[i] = depthSrc[i] > thr ? 255 : 0;
+  expandBin(bin, w, h, FG_DILATE_PX);
   let fg = 0;
-  for (let i = 0; i < depthSrc.length; i++) {
-    const on = depthSrc[i] > thr;
-    bin[i] = on ? 255 : 0;
-    if (on) fg += 1;
-  }
+  for (let i = 0; i < bin.length; i++) if (bin[i]) fg += 1;
   const ratio = fg / (w * h);
   if (ratio < 0.02 || ratio > 0.95) return null;
   return bin;
@@ -498,7 +518,7 @@ async function preshrinkDims(sharp, imgPath) {
  * 补全区以假乱真足够。填充零推进的残余（理论不可达）保留原图像素好过空洞。
  */
 async function writeCleanPlate(sharp, imgPath, bin, dw, dh, w0, h0, outPath) {
-  // 人像区膨胀 8px（纯 JS 切比雪夫膨胀）：盖住 2.5σ 羽化带，避免边界残留人物色。
+  // 人像区再膨胀 8px（bin 已含 personBin 的 FG_DILATE_PX 外扩，这里叠 8px 盖羽化带）：
   // ⚠️ 不用 sharp blur+threshold：blur 让小块 mask 整块亮度衰减，低阈值反而
   // 侵蚀（实测 16×16 块 256px→208px），填充圈比人物小就把原图人物色留在板里。
   const unknown = new Uint8Array(dw * dh);

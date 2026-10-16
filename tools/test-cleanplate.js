@@ -68,6 +68,18 @@ async function main() {
     tiny[0] = 250;   // 1/1024 ≈ 0.1% < 2%
     check('personBin：前景占比 <2% → null', personBin(tiny, W, H) === null);
 
+    // ---- personBin 外扩（FG_DILATE_PX=3，第七十轮）：紧贴人物的 1px 细节（脚趾/发梢类）并入 ----
+    const thin = Buffer.alloc(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        thin[y * W + x] = ((x >= 12 && x < 20 && y >= 12 && y < 20) || (x === 20 && y === 16)) ? 220 : 30;
+      }
+    }
+    const binD = personBin(thin, W, H);
+    check('personBin：外扩后 1px 细节旁 3px 处已并入', binD && binD[16 * W + 23] === 255,
+      `x23=${binD ? binD[16 * W + 23] : 'null'}`);
+    check('personBin：外扩不越界（细节旁 8px 处仍为背景）', binD && binD[16 * W + 28] === 0);
+
     // ---- writeCleanPlate：居中人物 ----
     const imgPath = await makeImage('center.png', false);
     const outPath = path.join(tmpDir, 'center.bg.jpg');
