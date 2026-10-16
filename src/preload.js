@@ -102,6 +102,16 @@ contextBridge.exposeInMainWorld('wp', {
   trashWithConfirm: (imagePath) => ipcRenderer.invoke('file:trash-confirm', imagePath),
   /** 开启双层视差前的性能警告（r72）：勾过「不再提示」直接放行。返回是否允许开启 */
   dualLayerWithConfirm: () => ipcRenderer.invoke('dual-layer:confirm'),
+  /** 分割模型按需下载（r73）：状态 / 下载（完成或失败时 resolve，进度走推送） / 取消 */
+  segModelStatus: () => ipcRenderer.invoke('model:seg-status'),
+  segModelDownload: () => ipcRenderer.invoke('model:seg-download'),
+  segModelCancel: () => ipcRenderer.invoke('model:seg-cancel'),
+  onSegModelProgress: (cb) => {
+    ipcRenderer.on('model:seg-progress', (_event, payload) => cb(payload));
+  },
+  onSegModelStage: (cb) => {
+    ipcRenderer.on('model:seg-stage', (_event, payload) => cb(payload));
+  },
   transferFile: (imagePath, targetDir, mode) => ipcRenderer.invoke('file:transfer', imagePath, targetDir, mode),
   showImageMenu: (payload) => ipcRenderer.send('context:image-menu', payload),
   /** 取右键菜单的结构（不弹菜单），给验证脚本核对菜单项是否齐全 */

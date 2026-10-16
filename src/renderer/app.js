@@ -40,9 +40,16 @@ const els = {
   quickToggles: $('quick-toggles'),
   qtVideo: $('qt-video'),
   qtDepth: $('qt-depth'),
-  qtIdle: $('qt-idle'),
   qtDual: $('qt-dual'),
   qtParticles: $('qt-particles'),
+  segModelOverlay: $('seg-model-overlay'),
+  segModelTitle: $('seg-model-title'),
+  segModelText: $('seg-model-text'),
+  segModelProgress: $('seg-model-progress'),
+  segModelProgressFill: $('seg-model-progress-fill'),
+  segModelStage: $('seg-model-stage'),
+  segModelOk: $('seg-model-ok'),
+  segModelCancel: $('seg-model-cancel'),
   qtPointer: $('qt-pointer'),
   qtAtmo: $('qt-atmo'),
   hudTitle: $('hud-title'),
@@ -1450,20 +1457,80 @@ function resolvedParticles(chId) {
   return cfg.particles || '';
 }
 
-/** idle 微动画（r62）生效值：与 resolvedVideoFull 同构（布尔 profile 键，不写 = 默认关） */
-function resolvedIdle(chId) {
-  const cfg = state.config || {};
-  const ov = (cfg.monitors || {})[chId] || {};
-  if (ov.idleFx === true || ov.idleFx === false) return ov.idleFx;
-  return cfg.idleFx === true;
-}
-
 /** 双层视差（2026-10-16）生效值：布尔 profile 键，不写 = 默认关（与 stage.js cfg 默认一致） */
 function resolvedDual(chId) {
   const cfg = state.config || {};
   const ov = (cfg.monitors || {})[chId] || {};
   if (ov.dualLayer === true || ov.dualLayer === false) return ov.dualLayer;
   return cfg.dualLayer === true;
+}
+
+/**
+ * 分割模型按需下载（r73）：全屏遮罩弹窗（挡操作），三态流转
+ * 提示（开始下载/取消）→ 进度（百分比+取消）→ 错误（重试/关闭）。
+ * @returns {Promise<'downloaded'|'cancelled'>} resolved 于弹窗关闭时
+ */
+function ensureSegModel() {
+  return new Promise((resolve) => {
+    let downloading = false;
+    let closed = false;
+    const finish = (result) => {
+      if (closed) return;
+      closed = true;
+      els.segModelOverlay.hidden = true;
+      resolve(result);
+    };
+    const setPrompt = () => {
+      downloading = false;
+      els.segModelTitle.textContent = '需要下载 AI 分割模型';
+      els.segModelText.hidden = false;
+      els.segModelProgress.hidden = true;
+      els.segModelStage.hidden = true;
+      els.segModelOk.hidden = false;
+      els.segModelOk.textContent = '开始下载';
+      els.segModelCancel.textContent = '取消';
+    };
+    const setProgress = (p) => {
+      downloading = true;
+      els.segModelTitle.textContent = '正在下载分割模型';
+      els.segModelText.hidden = true;
+      els.segModelProgress.hidden = false;
+      els.segModelProgressFill.style.width = `${Math.max(0, Math.min(100, Number(p.pct) || 0))}%`;
+      els.segModelStage.hidden = false;
+      els.segModelStage.textContent = `${p.pct}%（${(p.bytes / 1048576).toFixed(0)} / ${(p.total / 1048576).toFixed(0)} MB）`;
+      els.segModelOk.hidden = true;
+      els.segModelCancel.textContent = '取消下载';
+    };
+    const setError = (msg) => {
+      downloading = false;
+      els.segModelTitle.textContent = '下载失败';
+      els.segModelText.hidden = false;
+      els.segModelText.textContent = msg;
+      els.segModelProgress.hidden = true;
+      els.segModelStage.hidden = true;
+      els.segModelOk.hidden = false;
+      els.segModelOk.textContent = '重试下载';
+      els.segModelCancel.textContent = '关闭';
+    };
+    els.segModelOk.onclick = async () => {
+      els.segModelOk.disabled = true;
+      try {
+        await window.wp.segModelDownload();   // 完成时 resolve（进度走推送）
+        els.segModelProgressFill.style.width = '100%';
+        finish('downloaded');
+      } catch (err) {
+        setError(err && err.message ? String(err.message) : String(err));
+      } finally {
+        els.segModelOk.disabled = false;
+      }
+    };
+    els.segModelCancel.onclick = async () => {
+      if (downloading) await window.wp.segModelCancel().catch(() => {});   // 半截文件保留，续传
+      finish('cancelled');
+    };
+    setPrompt();
+    els.segModelOverlay.hidden = false;
+  });
 }
 
 /** 鼠标影响动效（r70）生效值：布尔 profile 键，不写 = 默认开（与 stage.js cfg 默认一致） */
@@ -1494,7 +1561,6 @@ function updateQuickToggles() {
   const set = (el, on) => { el.classList.toggle('on', on); el.setAttribute('aria-pressed', String(on)); };
   set(els.qtVideo, resolvedVideoFull(ch.id));
   set(els.qtDepth, resolvedDepth(ch.id));
-  set(els.qtIdle, resolvedIdle(ch.id));
   set(els.qtDual, resolvedDual(ch.id));
   set(els.qtParticles, resolvedParticles(ch.id) !== '');
   set(els.qtPointer, resolvedPointerFx(ch.id));
@@ -3558,22 +3624,23 @@ function bindEvents() {
       const on = !resolvedDepth(id);
       await pushProfile(id, { depthParallax: on });
       note = on ? '这块屏深度视差已开启' : '这块屏深度视差已关闭（回退普通平移缩放）';
-    } else if (btn === els.qtIdle) {
-      // idle 微动画（r62）：前景呼吸+飘动+差速视差；需要 mask（深度缓存 r7 起自带）与视差开
-      const on = !resolvedIdle(id);
-      await pushProfile(id, { idleFx: on });
-      note = on ? '这块屏 idle 微动画已开启（角色呼吸/衣摆飘动/前景差速）' : '这块屏 idle 微动画已关闭';
     } else if (btn === els.qtDual) {
       // 双层视差（2026-10-16）：人物层叠在补全背景板上；需要背景板（深度缓存自动派生）。
-      // 开启方向先过性能警告（r72）：勾过「不再提示」直接放行，取消则不动开关。
+      // 开启方向先过性能警告（r72），再查分割模型（r73：缺模型走遮罩弹窗按需下载）。
       const on = !resolvedDual(id);
       if (on) {
         const ok = await window.wp.dualLayerWithConfirm();
-        if (ok) {
-          await pushProfile(id, { dualLayer: true });
-          note = '这块屏双层视差已开启（人物动、背景稳）';
-        } else {
-          note = '已取消：双层视差保持关闭';
+        if (!ok) { note = '已取消：双层视差保持关闭'; }
+        else {
+          const st = await window.wp.segModelStatus().catch(() => ({ available: false }));
+          if (!st.available) {
+            const result = await ensureSegModel();
+            if (result !== 'downloaded') { note = '已取消：双层视差需要分割模型'; }
+          }
+          if (note === '') {
+            await pushProfile(id, { dualLayer: true });
+            note = '这块屏双层视差已开启（人物动、背景稳）';
+          }
         }
       } else {
         await pushProfile(id, { dualLayer: false });
@@ -3874,6 +3941,19 @@ function bindEvents() {
     const on = payload ? payload.dualLayerHint !== false : true;
     state.config.dualLayerHint = on;
     $('cfg-dual-hint').checked = on;
+  });
+
+  // 分割模型下载进度/阶段（r73）：弹窗开着才消费，其他时候丢弃
+  window.wp.onSegModelProgress((p) => {
+    if (!p || els.segModelOverlay.hidden) return;
+    els.segModelProgressFill.style.width = `${Math.max(0, Math.min(100, Number(p.pct) || 0))}%`;
+    els.segModelStage.hidden = false;
+    els.segModelStage.textContent = `${p.pct}%（${(p.bytes / 1048576).toFixed(0)} / ${(p.total / 1048576).toFixed(0)} MB）`;
+  });
+  window.wp.onSegModelStage((p) => {
+    if (!p || els.segModelOverlay.hidden) return;
+    els.segModelStage.hidden = false;
+    els.segModelStage.textContent = p.stage;
   });
 
   // 拉取最新频道状态（供外部测试脚本与手动刷新共用）

@@ -4852,3 +4852,55 @@ isnetis 分割 + 背景板生成对低配机器是可感知的卡顿来源（每
   store 偏好/HTML 设置行）；verify:unit 全链 0 失败。
 - 真机待验收：顶栏开「双层视差」弹警告 → 取消开关不动 → 勾「不再提示」开启
   后下次直接开 → 设置里重开后恢复弹窗。
+
+## 第七十三轮：分割模型按需下载 + idle 微动画移除（2026-10-17）
+
+### 背景
+
+1. isnetis（176MB）不进安装包后，发版用户开双层视差没有模型可用 —— 用户拍板
+   方案 B（运行时按需下载），交互对齐 tag-viewer WD14 的成熟模式：
+   使用时探测 → 提示 → 遮罩弹窗下载（挡操作、可取消）。
+2. idle 微动画（r62）用户真机看不出明显变化：差速视差已被双层合成覆盖（r69），
+   呼吸/飘动幅度（±2px@2160p / ±0.0035 gluv）太微弱 —— 决定移除，减一份 shader
+   复杂度和一个开关。
+
+### 修法 A：按需下载（新模块 src/segModel.js，模式抄 tag-viewer runtime-setup）
+
+- `status()`：仓库 models/segmentation/（dev）→ userData/models/segmentation/（下载
+  落点）两级候选，体积精确匹配才认可用；半截文件报 partialBytes（断点续传现场）。
+- `download()`：hf-mirror 直拉（Range 断点续传 + SHA256 锚点
+  f15622d8… + 3 次重试，5s 间隔），取消 = onProgress 抛错中断流，半截文件保留；
+  SHA 不匹配删文件报错。网络层复用 updater.js 的 downloadToFile/sha256File
+  （与更新器同一套已单测的代码）。
+- ⚠️ 实锤坑：hf-mirror 对 LFS 文件 302 到 **cas-bridge.xethub.hf.co**（Xet CDN
+  签名 URL）—— URL 白名单必须带 `.hf.co` 尾缀，漏了它下载永远被拒（首次冒烟抓出）。
+- main：`WP_SEG_MODELS_DIR` env 注入（worker 线程快照 env，先于任何 depth job）；
+  `model:seg-status/download/cancel` 三个 handler，进度 120ms 限流推送。
+- depthEngineJs：animeModelPath 改多候选（仓库 → env 注入的 userData）。
+- 渲染端：qtDual 开启方向 → 性能警告 → segModelStatus → 缺模型弹全屏遮罩
+  （.modal-overlay 复用，挡操作），三态：提示（开始下载/取消）→ 进度（百分比 +
+  取消下载）→ 错误（重试/关闭）；取消/失败不动开关。
+
+### 修法 B：idle 微动画移除
+
+- stage.js：idleWarp 函数 + uIdle uniform + breathM 亮度脉动 + cfg.idleFx +
+  applyProfile 分支全删；stB/uMask/uHasMask 保留（双层合成与氛围金边在用）。
+- app.js / index.html / store.js：qtIdle 芯片、resolvedIdle、els、PROFILE_KEYS
+  'idleFx' 全删（老配置里残留的 idleFx 键被 applyProfile 自然忽略，无迁移需要）。
+- mask sidecar 格式不动（G 通道宽羽化仍在生成，只是暂无消费者）—— 避免全量
+  重派生 6400 张。
+
+### 验证（全部自动化实测）
+
+- 新增 tools/test-segmodel.js（9 断言，electron stub）：status 四态（两无/半截/
+  坏体积/命中）、仓库候选在位、URL 白名单放行/拒绝（含 Xet CDN 与仿冒域）。
+  挂进 verify:unit。
+- **真实端到端下载冒烟**：hf-mirror → Xet CDN 完整链 176MB / 5.8s / SHA256 过
+  （临时 userData，验后删）。
+- GLSL：重生成测试页正向 COMPILE-OK + 负向注入 RESULT-FAIL（idle 删除后 shader
+  重新编译通过）。
+- check-wiring 59/0（新增下载链五端断言 + idle 五端无残留断言）。
+- verify:unit 全链 0 失败（scheduler 199 + scan-cache 19 + updater 14 +
+  depth-service 20 + particles 19 + cleanplate 15 + segmodel 9）。
+- 真机待验收：全新 userData 下开双层视差 → 警告 → 缺模型弹遮罩 → 下载进度 →
+  完成自动开启；重启应用后再开不弹下载（模型已在位）；取消下载开关不动。

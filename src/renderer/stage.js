@@ -81,7 +81,6 @@ const cfg = {
   flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
   flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
-  idleFx: false,               // idle 微动画（r62，profile.idleFx）：呼吸+飘动+差速视差（mask 前景）
   dualLayer: false,            // 双层视差（2026-10-16 路线 1，profile.dualLayer）：人物层叠在补全背景板上，人物动、背景稳
   depthAtmo: false,            // 分层氛围总开关（r71，profile.depthAtmo）：调色板光照+雾+金边
   atmoPalette: 'auto',         // 氛围调色板（r73）：auto=按时间（白天/黄昏）；golden/tealorange/cyberpunk/moonlight/faded=固定档
@@ -733,9 +732,8 @@ uniform float uFlowZoom;    // 图像缩放（zoom：1=满幅，Orbital 0.98/Dol
 uniform float uFit;         // 填充：0=cover（铺满裁切）1=contain（核心外透明，透出 2D 模糊底）2=mirror（核心外镜像延展）
 uniform vec4  uCore;        // contain/mirror 的核心矩形（屏幕像素，xy=左上角顶为 0，zw=宽高）——每层按自己宽高比现算
 uniform vec4  uXf;          // 切换动画层变换（r76，cover 专用）：xy=平移（屏幕宽/高占比），z=绕中心缩放；identity=(0,0,1,0)
-uniform sampler2D uMask;    // 前景 mask（Otsu+羽化，与深度图同分辨率同缓存键；r62 idle 方案）
+uniform sampler2D uMask;    // 前景 mask（isnetis/Otsu 派生+羽化，与深度图同分辨率同缓存键；双层视差用）
 uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
-uniform float uIdle;        // idle 微动画总开关（profile.idleFx）
 uniform sampler2D uBg;      // 干净背景板（人像区扩散填充；双层视差，与原图同尺寸）
 uniform float uHasBg;       // 1 = 本层带背景板纹理（unit 3）且开关开
 uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
@@ -745,38 +743,6 @@ uniform float uAtmoSel;     // 调色板档位（连续浮点，JS 端缓动防�
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
 vec4 texMirror(sampler2D tex, vec2 stuv) {
   return texture2D(tex, 1.0 - abs(1.0 - mod(stuv, 2.0)));
-}
-
-// ---- idle 微动画（r62：让角色「活」起来的低成本方案）----
-// A 呼吸+飘动：mask 加权只作用前景 —— 呼吸 = 垂直微移（整前景同相，3s 周期）；
-//   飘动 = 水平 sin 扭曲，权重 ∝ mask 边缘梯度（发丝衣摆动、躯干内部梯度≈0 不变形）。
-// B 差速视差：前景层额外吃一份相机位移（角色层移动系数 > 背景层 → 分层感更强），
-//   权重吃 mask G 通道宽羽化（紧带会撕裂，见 idleWarp 内注释）。
-// stF：最终图像采样坐标（stuv，原地改）；stB：未扭曲基准坐标（mask 采样锚点）；
-// off：相机屏幕位移（gluv）；breathM：呼吸相位×mask（供亮度脉动，0 = 不动）。
-// 幅度起步值（gluv，y 全幅 = 2.0）：呼吸 ±0.0012（≈2px@2160p）、飘动峰值 ±0.0035、
-// 差速系数 0.12 —— 全部是真机调参起点，验收后按观感定版。
-void idleWarp(inout vec2 stF, vec2 stB, vec2 off, float imgAspect, out float breathM) {
-  breathM = 0.0;
-  if (uIdle < 0.5 || uHasMask < 0.5) return;
-  vec2 m2 = texMirror(uMask, stB).rg;   // r=紧羽化 2.5σ（呼吸/飘动） g=宽羽化 10σ（差速权重）
-  float m = m2.r;
-  if (m2.r <= 0.003 && m2.g <= 0.003) return;
-  // mask 边缘梯度（4 邻域差分）：边缘大、平坦区趋零
-  vec2 mpx = vec2(1.5 / imgAspect, 1.5) * 0.5;
-  float mgx = texMirror(uMask, stB + vec2(mpx.x, 0.0)).r - texMirror(uMask, stB - vec2(mpx.x, 0.0)).r;
-  float mgy = texMirror(uMask, stB + vec2(0.0, mpx.y)).r - texMirror(uMask, stB - vec2(0.0, mpx.y)).r;
-  float grad = clamp(length(vec2(mgx, mgy)) * 2.0, 0.0, 1.0);
-  // 呼吸：2π/3s，sin 全前景同相
-  float br = sin(uTime * 2.0943951);
-  // 飘动：双频叠加，相位随高度推进（波沿身体向上传）
-  float sway = sin(uTime * 1.7 + stB.y * 9.0) * 0.6 + sin(uTime * 0.9 + stB.y * 4.0) * 0.4;
-  vec2 dispG = vec2(sway * grad * 0.0035, br * 0.0012);
-  stF += dispG * m / vec2(imgAspect, 1.0) * 0.5;
-  // B 差速（mask × 0.12×off）已撤销（第六十六轮）：POM 深度本身就让前景动得多，
-  // mask 差速是叠床架屋 —— 且无论紧羽化还是宽羽化，都在轮廓带叠加 28px/px 级剪切
-  // （离屏复现 v1 楼梯度 18.9% vs 纯 POM 14.5%），用户两轮真机截图实锤撕边。
-  breathM = m * br;
 }
 
 // ---- 分层氛围（r72 重构）：luma 分层调色 + split-toning + 指数雾 + 主体金边 ----
@@ -829,7 +795,7 @@ void atmoParams(int i, out AtmoP p) {
   }
 }
 
-// stB：未扭曲基准坐标（与 idleWarp 的 mask 锚点一致 → 效果不随视差游走）。
+// stB：未扭曲基准坐标（双层背景板/氛围调色的 mask 锚点 → 效果不随视差游走）。
 // 雾 = 空气透视（IQ 指数平方雾，远浓近淡无断层）；金边 = mask 边缘梯度。
 vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
   if (uAtmo < 0.5 || uHasDepth < 0.5) return col;
@@ -870,7 +836,7 @@ vec3 atmoApply(vec3 col, vec2 stB, float imgAspect) {
   // 空气透视：IQ 指数平方雾（线性 smoothstep 有「中间突然一截」断层风险）；雾色亮度取自当前像素
   float fogW = fogDen * (1.0 - exp(-2.2 * far * far));
   col = mix(col, fogCol * (luma * 0.6 + 0.4), clamp(fogW, 0.0, 1.0));
-  // 主体金边（黄昏/黄金时刻档）：mask 边缘梯度，与 idleWarp 同款 4 邻域差分
+  // 主体金边（黄昏/黄金时刻档）：mask 边缘梯度，4 邻域差分（边缘大、平坦区趋零）
   if (rimK > 0.01 && uHasMask > 0.5) {
     vec2 mpx = vec2(1.5 / imgAspect, 1.5) * 0.5;
     float mgx = texMirror(uMask, stB + vec2(mpx.x, 0.0)).r - texMirror(uMask, stB - vec2(mpx.x, 0.0)).r;
@@ -925,19 +891,16 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
     }
   }
   vec2 stF = guv / vec2(imgAspect, 1.0) * 0.5 + 0.5;
-  // idle 微动画（r62）：呼吸/飘动/差速都改采样坐标，基准点采样 mask 保证稳定不游走
+  // stB：未扭曲基准坐标 —— 背景板钉在这里（sticky），氛围调色的 mask 锚点也用它
   vec2 stB = g0 / vec2(imgAspect, 1.0) * 0.5 + 0.5;
-  float breathM;
-  idleWarp(stF, stB, off, imgAspect, breathM);
   vec3 col = texMirror(uImg, stF).rgb;
   // 双层合成（2026-10-16 路线 1）：人物移动露出的是补全背景而不是原图人物像素。
-  // mask 跟前景采样坐标对齐（含 POM/idle 位移）；背景板钉在基准坐标 stB ——
+  // mask 跟前景采样坐标对齐（含 POM 位移）；背景板钉在基准坐标 stB ——
   // flow 模式 sticky 语义下远景本就几乎不动，人物位移全部显形为「贴在背景前」。
   if (uHasBg > 0.5 && uHasMask > 0.5) {
     vec3 bgc = texMirror(uBg, stB).rgb;
     col = mix(bgc, col, texMirror(uMask, stF).r);
   }
-  if (breathM != 0.0) col *= 1.0 + 0.02 * breathM;   // 呼吸亮度脉动 ±2%
   col = atmoApply(col, stB, imgAspect);   // 分层氛围：调色板光照+雾+金边
   return col;
 }
@@ -1076,7 +1039,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uIdle', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1103,9 +1066,9 @@ function glMakeTex(unit, src) {
   return t;
 }
 
-/** mask 缓存路径（r62 idle 方案）：与深度图同缓存键派生（与 depthService trioFor
- *  同一套命名约定）。路径不是 .depth.png 结尾（异常/第三方路径）→ 返回 null，
- *  渲染端优雅降级为无 mask（idle 关），绝不影响视差本体。 */
+/** mask 缓存路径（r62 起派生，r69 起双层视差消费）：与深度图同缓存键派生
+ *  （与 depthService trioFor 同一套命名约定）。路径不是 .depth.png 结尾
+ *  （异常/第三方路径）→ 返回 null，渲染端优雅降级为无 mask（单层），绝不影响视差本体。 */
 function maskPathOf(depthPath) {
   return typeof depthPath === 'string' && /\.depth\.png$/i.test(depthPath)
     ? depthPath.slice(0, -'.depth.png'.length) + '.mask.png'
@@ -1175,7 +1138,7 @@ async function glLoadLayer(imagePath, depthPath) {
     const layer = {
       imgTex: glMakeTex(0, bmp),
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
-      maskTex: maskBmp ? glMakeTex(2, maskBmp) : null,   // r62：前景 mask（加载失败=null → idle 关）
+      maskTex: maskBmp ? glMakeTex(2, maskBmp) : null,   // 前景 mask（加载失败=null → 单层回退）
       bgTex: bgBmp ? glMakeTex(3, bgBmp) : null,         // 双层视差：干净背景板（加载失败=null → 单层回退）
       aspect: bmp.width / bmp.height,
       iw: bmp.width,
@@ -1263,7 +1226,7 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, L.depTex || L.imgTex);   // 无深度时占位（uHasDepth 压平）
   gl.activeTexture(gl.TEXTURE2);
-  gl.bindTexture(gl.TEXTURE_2D, L.maskTex || L.depTex || L.imgTex);   // 无 mask 占位（uHasMask 关 idle）
+  gl.bindTexture(gl.TEXTURE_2D, L.maskTex || L.depTex || L.imgTex);   // 无 mask 占位（uHasMask 关双层合成）
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D, L.bgTex || L.depTex || L.imgTex);     // 无背景板占位（uHasBg 关双层）
   const { w, h } = canvasSize(glState.canvas);
@@ -1282,7 +1245,6 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.uniform1f(glState.U.uLightsOn, 1);
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
   gl.uniform1f(glState.U.uHasMask, L.maskTex ? 1 : 0);
-  gl.uniform1f(glState.U.uIdle, cfg.idleFx ? 1 : 0);
   gl.uniform1f(glState.U.uHasBg, (L.bgTex && cfg.dualLayer) ? 1 : 0);
   gl.uniform1f(glState.U.uAtmo, cfg.depthAtmo ? 1 : 0);
   gl.uniform1f(glState.U.uAtmoSel, atmoSelNow());       // 调色板档位（JS 端每帧缓动防跳变）
@@ -1946,8 +1908,7 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowHeight)) cfg.flowHeight = p.flowHeight;
   if (typeof p.flowStyle === 'string' && FLOW_STYLE_PARAMS[p.flowStyle]) cfg.flowStyle = p.flowStyle;
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
-  // idle 微动画（r62，profile 不写 = 默认关）
-  if (p.idleFx !== undefined) cfg.idleFx = Boolean(p.idleFx);
+  // idle 微动画已于 r73 移除：差速视差被双层合成覆盖，呼吸/飘动幅度微弱感知不到
   // 双层视差（2026-10-16 路线 1，profile 不写 = 默认关）
   if (p.dualLayer !== undefined) cfg.dualLayer = Boolean(p.dualLayer);
   // 分层氛围（r71，profile 不写 = 默认关）

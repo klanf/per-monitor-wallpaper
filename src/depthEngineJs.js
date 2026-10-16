@@ -430,7 +430,7 @@ function otsuThreshold(u8) {
 
 /** 前景二值外扩半径（深度分辨率像素）：u2netp/Otsu 在脚踝、脚趾、发梢这类弱响应
  * 边缘收得比真身紧（真机验收实锤：视差时脚部残影跟着背景走）。外扩把 2.5σ 羽化
- * 的 0.5 过渡点推出人物轮廓外 —— idle 差速、双层混合、背景板填充三处同时受益。 */
+ * 的 0.5 过渡点推出人物轮廓外 —— 双层混合、背景板填充两处同时受益。 */
 const FG_DILATE_PX = 3;
 
 /** 二值 mask 纯 JS 4 邻域迭代膨胀 r 像素（曼哈顿菱形）。不用 sharp blur+threshold：
@@ -469,9 +469,9 @@ function personBin(depthSrc, w, h) {
 }
 
 /**
- * 前景 mask（idle 微动画用，第六十二轮方案 A）：与深度图同分辨率同缓存键。
- * 纯派生品 —— 生成失败/阈值退化只影响该图的 idle 动画（渲染端 uHasMask=0
- * 自动跳过），绝不影响深度本体（已先落盘）。深度值大 = 离镜头近（两个模型
+ * 前景 mask（第六十二轮起派生，现供双层视差消费）：与深度图同分辨率同缓存键。
+ * 纯派生品 —— 生成失败/阈值退化只影响该图的双层合成（渲染端 uHasMask=0
+ * 自动回退单层），绝不影响深度本体（已先落盘）。深度值大 = 离镜头近（两个模型
  * 契约同向），前景取 > 阈值一侧。
  */
 async function writeMask(sharp, depth8, w, h, outPath) {
@@ -612,7 +612,7 @@ async function deriveSidecars(sharp, job, w0, h0, dw, dh, seg, out8) {
   if (!maskSrc) return;
   if (job.outMask) {
     try { await writeMask(sharp, maskSrc, dw, dh, job.outMask); } catch (err) {
-      log('mask 生成失败（该图 idle 降级关闭）:', path.basename(job.path), err.message);
+      log('mask 生成失败（该图双层回退单层）:', path.basename(job.path), err.message);
     }
   }
   if (job.outBg) {
@@ -694,8 +694,20 @@ async function segmentPerson(sharp, imgPath, dw, dh) {
 // AniSeg 动漫专训，MIT，176MB）输出软 alpha，动漫边缘高一档。预处理对齐
 // SkyTNT Space / city96 gist：1024² 黑边居中 letterbox（只缩小不放大）、BGR 通道序、
 // 仅 /255 归一化；输出已是 sigmoid 后的 alpha，裁掉黑边再缩到目标分辨率。
+// 模型候选（r73 按需下载）：仓库 models/segmentation/（dev）→ WP_SEG_MODELS_DIR
+// （main 注入的 userData/models/segmentation，下载落点）。打包布局下仓库路径不存在。
+function segModelDirs() {
+  const dirs = [path.join(__dirname, '..', 'models', 'segmentation')];
+  if (process.env.WP_SEG_MODELS_DIR) dirs.push(process.env.WP_SEG_MODELS_DIR);
+  return dirs;
+}
+
 function animeModelPath() {
-  return path.join(__dirname, '..', 'models', 'segmentation', 'isnetis.onnx');
+  for (const dir of segModelDirs()) {
+    const p = path.join(dir, 'isnetis.onnx');
+    try { if (fs.statSync(p).isFile()) return p; } catch { /* 无此候选 */ }
+  }
+  return path.join(segModelDirs()[0], 'isnetis.onnx');   // 都不在：报错信息里能看出找过哪
 }
 
 async function ensureAnimeSession() {
@@ -889,7 +901,7 @@ async function generate(job) {
   // 深度本体在此定版（r69 撤销 r67 的 mask 引导修复）——与 master 的做法一致：
   // 落盘前不再改深度。2×2 隔离对拍（tools/tmp-ab24-*.js）实锤 repair 会把人物区
   // 深度σ再抹平 10%（0.081→0.073），「2D 纸片」观感有它一份。
-  // 人像分割（segmentAny = isnetis → u2netp 回落链）只服务于 idle 前景层 mask 与
+  // 人像分割（segmentAny = isnetis → u2netp 回落链）服务于双层视差的前景 mask 与
   // 双层背景板，深度修复已撤。
   let seg = null;
   if (job.outMask || job.outBg) {

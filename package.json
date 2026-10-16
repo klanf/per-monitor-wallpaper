@@ -11,7 +11,7 @@
     "shot": "node tools/screenshot-ui.js",
     "shot:readme": "node tools/screenshot-readme.js",
     "shot:new": "node tools/screenshot-new-features.js",
-    "verify:unit": "node tools/test-scheduler.js && node tools/test-scan-cache.js && node tools/test-slideshow-guard.js && node tools/test-updater.js && node tools/test-depth-service.js && node tools/test-particles.js && node tools/test-cleanplate.js",
+    "verify:unit": "node tools/test-scheduler.js && node tools/test-scan-cache.js && node tools/test-slideshow-guard.js && node tools/test-updater.js && node tools/test-depth-service.js && node tools/test-particles.js && node tools/test-cleanplate.js && node tools/test-segmodel.js",
     "verify:update": "node tools/test-updater.js",
     "verify:depth": "node tools/test-depth-service.js",
     "depth:export": "python tools/export_onnx.py",

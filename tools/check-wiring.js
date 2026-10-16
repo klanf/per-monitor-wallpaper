@@ -21,6 +21,7 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const HTML = fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8');
 const APP = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+const STAGE_SOURCE = fs.readFileSync(path.join(ROOT, 'src/renderer/stage.js'), 'utf8');
 const CSS = fs.readFileSync(path.join(ROOT, 'src/renderer/style.css'), 'utf8');
 const { SETTINGS_TABS } = require(path.join(ROOT, 'src/store'));
 
@@ -186,6 +187,24 @@ check('双层视差开启前过性能警告（handler/preload/门控/偏好/设�
   && APP.includes("cfg-dual-hint")
   && STORE_SOURCE.includes('dualLayerHint: true')
   && HTML.includes('cfg-dual-hint'));
+
+// ---- 分割模型按需下载（r73）：开启方向缺模型走遮罩弹窗，五端缺一不可 ----
+check('分割模型下载链（status/download/cancel handler + preload 桥 + 渲染端门控）',
+  MAIN.includes("ipcMain.handle('model:seg-status', () => segModel.status())")
+  && MAIN.includes("ipcMain.handle('model:seg-download'") && MAIN.includes('segModel.cancel')
+  && MAIN.includes('WP_SEG_MODELS_DIR')
+  && PRELOAD.includes('segModelStatus') && PRELOAD.includes('segModelDownload')
+  && PRELOAD.includes('segModelCancel') && PRELOAD.includes('onSegModelProgress')
+  && APP.includes('await window.wp.segModelStatus()')
+  && APP.includes('await ensureSegModel()') && APP.includes('segModelOverlay')
+  && HTML.includes('seg-model-overlay'));
+
+// ---- idle 微动画移除（r73）：五端不得再有任何残留 ----
+check('idle 微动画已彻底移除（shader/开关/偏好/els 全无残留）',
+  !STAGE_SOURCE.includes('idleWarp') && !STAGE_SOURCE.includes('uIdle')
+    && !STAGE_SOURCE.includes('idleFx')
+    && !APP.includes('qtIdle') && !APP.includes('resolvedIdle') && !APP.includes('idleFx')
+    && !STORE_SOURCE.includes('idleFx') && !HTML.includes('qt-idle'));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

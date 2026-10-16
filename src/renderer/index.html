@@ -62,10 +62,6 @@
       <button type="button" class="qchip" id="qt-depth" aria-label="深度视差开关（当前预览的显示器）" title="深度视差（当前预览的显示器）：有深度图的壁纸镜头流动；耗 GPU，可只给主力屏开">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2l5.8 3.1L8 8.4 2.2 5.3z"/><path d="M2.2 8.6L8 11.7l5.8-3.1"/><path d="M2.2 11.4L8 14.5l5.8-3.1" opacity="0.55"/></svg>
       </button>
-      <!-- idle 微动画（r62）：前景呼吸+发丝衣摆飘动+差速视差，需 mask（深度缓存 r7 起自带） -->
-      <button type="button" class="qchip" id="qt-idle" aria-label="idle 微动画开关（当前预览的显示器）" title="idle 微动画（当前预览的显示器）：画面里的角色轻微呼吸、发丝衣摆飘动、前景差速移动；只有带前景 mask 的图生效">
-        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="4.4" r="2.3"/><path d="M3.6 14c0-2.9 2-4.7 4.4-4.7s4.4 1.8 4.4 4.7"/></svg>
-      </button>
       <!-- 双层视差（2026-10-16）：人物层叠在补全背景板上 —— 人物动、背景稳，需背景板（深度缓存自动派生） -->
       <button type="button" class="qchip" id="qt-dual" aria-label="双层视差开关（当前预览的显示器）" title="双层视差（当前预览的显示器）：人物贴在补全的背景前，人物动、背景稳，告别整图果冻感；只有带人像背景板的图生效，无背景板自动单层">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.6" opacity="0.5"/><circle cx="6.2" cy="8.6" r="2.6"/><circle cx="10" cy="11.6" r="2.6" opacity="0.5"/></svg>
@@ -698,6 +694,24 @@
     </div>
     <div class="modal-actions">
       <button class="btn primary sm" id="pm-hint-ok">知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 73 轮：分割模型按需下载（开启双层视差且本地无 isnetis 时）—— 全屏遮罩挡操作，三态：提示/进度/错误 -->
+<div class="modal-overlay" id="seg-model-overlay" hidden>
+  <div class="modal-card">
+    <div class="modal-title" id="seg-model-title">需要下载 AI 分割模型</div>
+    <div class="modal-body">
+      <p id="seg-model-text">「双层视差」需要 isnetis 动漫分割模型（176MB），本地没有——从 hf-mirror.com 下载一次，之后不用再下。</p>
+      <div class="update-progress" id="seg-model-progress" hidden>
+        <div class="update-progress-fill" id="seg-model-progress-fill"></div>
+      </div>
+      <p class="muted" id="seg-model-stage" hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary sm" id="seg-model-ok" hidden>开始下载</button>
+      <button class="btn sm" id="seg-model-cancel">取消</button>
     </div>
   </div>
 </div>

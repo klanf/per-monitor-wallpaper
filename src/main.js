@@ -119,7 +119,12 @@ let store = null;
 let mainWindow = null;
 let scheduler = null;
 const depthService = require('./depthService');
+/** 分割模型按需下载（r73）：isnetis 176MB 不进安装包，开启双层视差时引导下载 */
+const segModel = require('./segModel');
 const debugLog = require('./debugLog');
+// 分割模型目录注入（r73）：worker 线程创建时快照 process.env，必须先于任何 depth job。
+// depthEngineJs 按候选顺序找 isnetis：仓库 models/segmentation/（dev）→ userData（下载落点）。
+process.env.WP_SEG_MODELS_DIR = segModel.userModelDir();
 /** 播放位置的磁盘存档（跨进程重启「接着上次那张播」，见 playbackState.js） */
 let playback = null;
 /** 轮播顺序的磁盘存档（r34：重启不再重新洗牌，见 shuffleOrders.js） */
@@ -1945,6 +1950,24 @@ function registerIpc() {
    */
   ipcMain.handle('file:trash-confirm', (_e, imagePath) => trashWithPermission(imagePath));
   ipcMain.handle('dual-layer:confirm', () => askDualLayerPermission());
+
+  /* ---- 分割模型按需下载（r73）：状态探测 / 下载 / 取消，进度推给渲染层遮罩弹窗 ---- */
+  ipcMain.handle('model:seg-status', () => segModel.status());
+  ipcMain.handle('model:seg-cancel', () => { segModel.cancel(); return true; });
+  let segProgressLast = 0;
+  ipcMain.handle('model:seg-download', () => segModel.download({
+    onStage: (stage) => send('model:seg-stage', { stage }),
+    onProgress: (bytes) => {
+      const now = Date.now();
+      if (now - segProgressLast < 120) return;   // chunk 级回调限流到 ~8Hz
+      segProgressLast = now;
+      send('model:seg-progress', {
+        bytes,
+        total: segModel.SEG_MODEL.size,
+        pct: Math.min(100, Math.floor((bytes * 100) / segModel.SEG_MODEL.size)),
+      });
+    },
+  }));
   ipcMain.handle('file:transfer', (_e, imagePath, targetDir, mode) => performTransfer(imagePath, targetDir, mode));
 
   /* ---- 桌面右键菜单（注册表集成）---- */
