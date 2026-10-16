@@ -66,6 +66,10 @@
       <button type="button" class="qchip" id="qt-idle" aria-label="idle 微动画开关（当前预览的显示器）" title="idle 微动画（当前预览的显示器）：画面里的角色轻微呼吸、发丝衣摆飘动、前景差速移动；只有带前景 mask 的图生效">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="4.4" r="2.3"/><path d="M3.6 14c0-2.9 2-4.7 4.4-4.7s4.4 1.8 4.4 4.7"/></svg>
       </button>
+      <!-- 双层视差（2026-10-16）：人物层叠在补全背景板上 —— 人物动、背景稳，需背景板（深度缓存自动派生） -->
+      <button type="button" class="qchip" id="qt-dual" aria-label="双层视差开关（当前预览的显示器）" title="双层视差（当前预览的显示器）：人物贴在补全的背景前，人物动、背景稳，告别整图果冻感；只有带人像背景板的图生效，无背景板自动单层">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.6" opacity="0.5"/><circle cx="6.2" cy="8.6" r="2.6"/><circle cx="10" cy="11.6" r="2.6" opacity="0.5"/></svg>
+      </button>
       <button type="button" class="qchip" id="qt-particles" aria-label="粒子特效开关（当前预览的显示器）" title="粒子特效（当前预览的显示器）：种类/数量等细节在设置 › 外观">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8l1.5 4.7L14.2 8l-4.7 1.5L8 14.2 6.5 9.5 1.8 8l4.7-1.5z"/></svg>
       </button>

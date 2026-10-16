@@ -393,9 +393,11 @@ function cropLetterboxDepth(depth, dims, plan) {
   return { depth: cropped, width: cw, height: ch };
 }
 
-async function writeAtomic(sharpInst, out) {
+async function writeAtomic(sharpInst, out, asJpeg) {
   const tmp = `${out}.tmp`;
-  await sharpInst.png().toFile(tmp);
+  // 背景板走 JPEG q90：补全区本来就是平滑渐变， JPEG 伪影不可见，体积省一半多
+  if (asJpeg) await sharpInst.jpeg({ quality: 90 }).toFile(tmp);
+  else await sharpInst.png().toFile(tmp);
   fs.renameSync(tmp, out);
 }
 
@@ -425,24 +427,34 @@ function otsuThreshold(u8) {
 }
 
 /**
- * 前景 mask（idle 微动画用，第六十二轮方案 A）：深度图 Otsu 阈值切前景 + 高斯羽化。
- * 纯 f(depth) 派生品 —— 与深度图同分辨率同缓存键；生成失败/阈值退化只影响该图的
- * idle 动画（渲染端 uHasMask=0 自动跳过），绝不影响深度本体（已先落盘）。
- * 深度值大 = 离镜头近（两个模型契约同向），前景取 > 阈值一侧。
+ * 人像二值 mask（255=人物）：u2netp 显著图或深度图 Otsu 阈值切前景。
+ * 深度近没有可分峰、或前景占比 <2% / >95%（阈值切飞：纯背景/全图特写没有
+ * 「分层」可言）→ 返回 null，调用方宁可不做也不做错。
  */
-async function writeMask(sharp, depth8, w, h, outPath) {
-  const thr = otsuThreshold(depth8);
-  if (thr < 0) return;   // 深度近乎平坦：没有可分前景，跳过
+function personBin(depthSrc, w, h) {
+  const thr = otsuThreshold(depthSrc);
+  if (thr < 0) return null;
   const bin = Buffer.allocUnsafe(w * h);
   let fg = 0;
-  for (let i = 0; i < depth8.length; i++) {
-    const on = depth8[i] > thr;
+  for (let i = 0; i < depthSrc.length; i++) {
+    const on = depthSrc[i] > thr;
     bin[i] = on ? 255 : 0;
     if (on) fg += 1;
   }
-  // 前景占比过小/过大 = 阈值切飞了（纯背景/全图特写没有「分层」可言）—— 宁可不做 idle
   const ratio = fg / (w * h);
-  if (ratio < 0.02 || ratio > 0.95) return;
+  if (ratio < 0.02 || ratio > 0.95) return null;
+  return bin;
+}
+
+/**
+ * 前景 mask（idle 微动画用，第六十二轮方案 A）：与深度图同分辨率同缓存键。
+ * 纯派生品 —— 生成失败/阈值退化只影响该图的 idle 动画（渲染端 uHasMask=0
+ * 自动跳过），绝不影响深度本体（已先落盘）。深度值大 = 离镜头近（两个模型
+ * 契约同向），前景取 > 阈值一侧。
+ */
+async function writeMask(sharp, depth8, w, h, outPath) {
+  const bin = personBin(depth8, w, h);
+  if (!bin) return;
   // 双通道：R=2.5σ 紧羽化（呼吸/飘动/亮度脉动），G=10σ 宽羽化（差速视差权重）。
   // 差速 0.12×off 的位移差若压在紧羽化 2~4px 过渡带上会撕出锯齿（复现 1.26px/px 剪切），
   // 摊到宽羽化 ~60px 带上后与纯 POM 基线持平（0.55px/px）。
@@ -458,6 +470,137 @@ async function writeMask(sharp, depth8, w, h, outPath) {
     rgb[i * 3 + 1] = gBuf[i];
   }
   await writeAtomic(sharp(rgb, { raw: { width: w, height: h, channels: 3 } }), outPath);
+}
+
+// ---- 干净背景板（2026-10-16 双层视差路线 1）：把人像区用周边背景补全 ----
+// 渲染端把人物层（原图×mask alpha）叠在背景板（低幅视差）上 —— 人物移动时
+// 露出的是补全的背景而不是原图里的人物像素。纯派生品：失败只影响该图的
+// 双层效果（渲染端 uHasBg=0 回退单层），绝不影响已落盘的深度/mask。
+
+/** preshrink 尺寸（与 generate 主路径同一套规则）：返回 { w0, h0, dw, dh } */
+async function preshrinkDims(sharp, imgPath) {
+  const meta = await sharp(imgPath).metadata();
+  if (!meta.width || !meta.height) throw new Error('读不到图片尺寸');
+  let w0 = meta.width;
+  let h0 = meta.height;
+  if (Math.max(w0, h0) > PRESHRINK_SIDE) {
+    const s = PRESHRINK_SIDE / Math.max(w0, h0);
+    w0 = Math.max(1, Math.round(w0 * s));
+    h0 = Math.max(1, Math.round(h0 * s));
+  }
+  return { w0, h0, dw: Math.max(1, Math.floor(w0 / 2)), dh: Math.max(1, Math.floor(h0 / 2)) };
+}
+
+/**
+ * 人像区洋葱皮填充 → 干净背景板：低分辨率（深度分辨率）上把人像区（膨胀 8px
+ * 盖住羽化带）用已知邻域色逐层向内填充，再 3 轮局部平滑抹掉放射纹理，放大回
+ * preshrink 全尺寸后按紧羽化 mask 与原图混合。动漫背景多为虚化/渐变，
+ * 补全区以假乱真足够。填充零推进的残余（理论不可达）保留原图像素好过空洞。
+ */
+async function writeCleanPlate(sharp, imgPath, bin, dw, dh, w0, h0, outPath) {
+  // 人像区膨胀 8px（纯 JS 切比雪夫膨胀）：盖住 2.5σ 羽化带，避免边界残留人物色。
+  // ⚠️ 不用 sharp blur+threshold：blur 让小块 mask 整块亮度衰减，低阈值反而
+  // 侵蚀（实测 16×16 块 256px→208px），填充圈比人物小就把原图人物色留在板里。
+  const unknown = new Uint8Array(dw * dh);
+  for (let i = 0; i < unknown.length; i++) unknown[i] = bin[i] > 127 ? 1 : 0;
+  for (let r = 0; r < 8; r++) {
+    const prev = new Uint8Array(unknown);
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        const i = y * dw + x;
+        if (prev[i]) continue;
+        if ((x > 0 && prev[i - 1]) || (x < dw - 1 && prev[i + 1])
+          || (y > 0 && prev[i - dw]) || (y < dh - 1 && prev[i + dw])) unknown[i] = 1;
+      }
+    }
+  }
+  let left = 0;
+  for (let i = 0; i < unknown.length; i++) if (unknown[i]) left += 1;
+  const filledRegion = new Uint8Array(unknown);   // 填充区快照（平滑轮只洗这里，已知区不动）
+  const img = await sharp(imgPath).removeAlpha()
+    .resize(dw, dh, { kernel: 'cubic', fit: 'fill' })
+    .toColourspace('srgb').raw().toBuffer();
+  let cur = img;
+  // 洋葱皮填充：未知像素取「已知 4 邻域均值」逐层向内推进 —— 颜色从边界
+  // 纯净传播（不像取模糊值那样把人物原色混进填充区洗不掉），常量背景收敛精确。
+  while (left > 0) {
+    const before = left;
+    const nextUnknown = new Uint8Array(unknown);
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        const i = y * dw + x;
+        if (!unknown[i]) continue;
+        let r = 0, g = 0, b = 0, n = 0;
+        const acc = (j) => { r += cur[j * 3]; g += cur[j * 3 + 1]; b += cur[j * 3 + 2]; n += 1; };
+        if (x > 0 && !unknown[i - 1]) acc(i - 1);
+        if (x < dw - 1 && !unknown[i + 1]) acc(i + 1);
+        if (y > 0 && !unknown[i - dw]) acc(i - dw);
+        if (y < dh - 1 && !unknown[i + dw]) acc(i + dw);
+        if (!n) continue;
+        cur[i * 3] = Math.round(r / n);
+        cur[i * 3 + 1] = Math.round(g / n);
+        cur[i * 3 + 2] = Math.round(b / n);
+        nextUnknown[i] = 0;
+        left--;
+      }
+    }
+    if (left === before) break;   // 本轮零推进（残余孤立区）：放弃，保留原图像素好过空洞
+    unknown.set(nextUnknown);
+  }
+  // 局部平滑 3 轮：洋葱皮的放射状纹理向局部均值收敛（只洗填充区，已知区
+  // 保持原图不动 → 已知边界不外溢；blur 混入的已知邻居本身就是边界延续色）
+  for (let pass = 0; pass < 3; pass++) {
+    const blurred = await sharp(cur, { raw: { width: dw, height: dh, channels: 3 } })
+      .blur(8).raw().toBuffer();
+    for (let i = 0; i < dw * dh; i++) {
+      if (!filledRegion[i]) continue;
+      for (let c = 0; c < 3; c++) {
+        cur[i * 3 + c] = Math.round(cur[i * 3 + c] * 0.35 + blurred[i * 3 + c] * 0.65);
+      }
+    }
+  }
+  // 放大回 preshrink 全尺寸 + 紧羽化 mask（与 writeMask R 通道同 2.5σ）混合
+  const [filledUp, softM, orig] = await Promise.all([
+    sharp(cur, { raw: { width: dw, height: dh, channels: 3 } })
+      .resize(w0, h0, { kernel: 'cubic', fit: 'fill' }).toColourspace('srgb').raw().toBuffer(),
+    sharp(bin, { raw: { width: dw, height: dh, channels: 1 } })
+      .blur(2.5).toColourspace('b-w')
+      .resize(w0, h0, { kernel: 'cubic', fit: 'fill' }).raw().toBuffer(),
+    sharp(imgPath).removeAlpha()
+      .resize(w0, h0, { kernel: 'cubic', fit: 'fill' }).toColourspace('srgb').raw().toBuffer(),
+  ]);
+  const out = Buffer.allocUnsafe(w0 * h0 * 3);
+  for (let i = 0; i < w0 * h0; i++) {
+    const m = softM[i] / 255;
+    const inv = 1 - m;
+    out[i * 3] = Math.round(orig[i * 3] * inv + filledUp[i * 3] * m);
+    out[i * 3 + 1] = Math.round(orig[i * 3 + 1] * inv + filledUp[i * 3 + 1] * m);
+    out[i * 3 + 2] = Math.round(orig[i * 3 + 2] * inv + filledUp[i * 3 + 2] * m);
+  }
+  await writeAtomic(sharp(out, { raw: { width: w0, height: h0, channels: 3 } }), outPath, true);
+}
+
+/**
+ * 深度定版后的 sidecar 派生（mask + 背景板）：任一失败只降级对应效果，
+ * 不影响已落盘的深度本体。out8 为 null 时（老缓存补派生）没有深度数组可回落，
+ * mask/背景板只吃 u2netp 人像图 —— 分割不可用即整单放弃。
+ */
+async function deriveSidecars(sharp, job, w0, h0, dw, dh, seg, out8) {
+  const maskSrc = seg || out8;
+  if (!maskSrc) return;
+  if (job.outMask) {
+    try { await writeMask(sharp, maskSrc, dw, dh, job.outMask); } catch (err) {
+      log('mask 生成失败（该图 idle 降级关闭）:', path.basename(job.path), err.message);
+    }
+  }
+  if (job.outBg) {
+    try {
+      const bin = personBin(maskSrc, dw, dh);
+      if (bin) await writeCleanPlate(sharp, job.path, bin, dw, dh, w0, h0, job.outBg);
+    } catch (err) {
+      log('背景板生成失败（该图双层降级单层）:', path.basename(job.path), err.message);
+    }
+  }
 }
 
 // ---- u2netp 人像分割（第六十五轮）：mask 从「深度阈值近似」升级为「贴人物轮廓」 ----
@@ -542,6 +685,18 @@ async function generate(job) {
     const tmp = `${job.out}.tmp`;
     fs.copyFileSync(job.depthIn, tmp);
     fs.renameSync(tmp, job.out);
+    // 老缓存补派生（双层视差路线 1）：深度已就位直接收编，只补 mask/背景板。
+    // 恒 CPU（u2netp ~220ms + 人像区扩散填充亚秒）；没有深度数组可回落，
+    // u2netp 不可用就整单放弃（下次再看这张图会重试入队）。
+    if (job.outBg || job.outMask) {
+      const dims = await preshrinkDims(sharp, job.path);
+      let seg = null;
+      try { seg = await segmentPerson(sharp, job.path, dims.dw, dims.dh); } catch (err) {
+        log('人像分割不可用，跳过 sidecar 补派生:', err.message);
+        return;
+      }
+      await deriveSidecars(sharp, job, dims.w0, dims.h0, dims.dw, dims.dh, seg, null);
+    }
     return;
   }
 
@@ -634,18 +789,14 @@ async function generate(job) {
   // 深度σ再抹平 10%（0.081→0.073），「2D 纸片」观感有它一份。
   // 人像分割（segmentPerson）只服务于 idle 前景层 mask，深度修复已撤。
   let seg = null;
-  if (job.outMask) {
+  if (job.outMask || job.outBg) {
     try { seg = await segmentPerson(sharp, job.path, dw, dh); } catch (err) {
       log('人像分割不可用，mask 回落 Otsu 深度:', err.message);
     }
   }
   await writeAtomic(sharp(out8, { raw: { width: dw, height: dh, channels: 1 } }), job.out);
-  // mask 顺手派生（同一次会话里省一次解码）：失败不影响上面已落盘的深度
-  if (job.outMask) {
-    try { await writeMask(sharp, seg || out8, dw, dh, job.outMask); } catch (err) {
-      log('mask 生成失败（该图 idle 降级关闭）:', path.basename(job.path), err.message);
-    }
-  }
+  // sidecar 顺手派生（同一次会话里省一次解码）：失败不影响上面已落盘的深度
+  await deriveSidecars(sharp, job, w0, h0, dw, dh, seg, out8);
   armReleaseTimer();
 }
 
@@ -758,5 +909,5 @@ module.exports = {
   device: () => state.depthDevice,
   isReady: () => Boolean(state.onnxModel) && !state.failed,
   modelInfo,
-  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask },
+  __test: { smartResize, letterboxPlan, letterboxReplicate, detectModelContract, normalizeDepth, cropLetterboxDepth, dilate2x, featherDilate, boxMean, rgbGuided, otsuThreshold, writeMask, personBin, writeCleanPlate, preshrinkDims },
 };

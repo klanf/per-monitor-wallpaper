@@ -4742,3 +4742,49 @@ live 树分叉早于主树 26 轮，此前只移植了视差线 —— 设置页
   开机 2 分钟后日志应出现「启动用了磁盘缓存，后台刷新一次扫描」。
 - 行为变化须知：启动列表来自缓存 → 关机期间被删的图要等首次后台刷新（2 分钟）
   或 12 小时 autoScan 才从列表消失；期间切到它会被写前预检静默跳过（既有策略）。
+
+## 第六十九轮：双层视差（路线 1）—— 人物层叠在补全背景板上（2026-10-16）
+
+### 背景
+
+Live2D 调研定下的近期路线：深度视差与 Live2D 的差距核心在「图是一张纸」——
+人物身后没有内容，位移一大就露原图人物像素/拉伸。本轮做最小可交付版：
+**干净背景板 + GL 双层合成**；语义部件级分层（See-through）与真 Live2D 模型留后续。
+
+### 修法
+
+- **背景板生成（depthEngineJs）**：`writeCleanPlate` —— 人像区（u2netp 显著图
+  Otsu 二值化后**纯 JS 切比雪夫膨胀 8px**）在深度分辨率上做**洋葱皮填充**
+  （未知像素取已知 4 邻域均值逐层推进，颜色纯净传播），3 轮局部平滑抹放射纹，
+  放大回 preshrink 全尺寸按紧羽化 mask 混合，JPEG q90 落 `trio.bg`（槽位早已
+  定义从未有消费者，本轮启用）。⚠️ 实锤教训：sharp blur+threshold 做「膨胀」
+  会**侵蚀**小块 mask（16×16 块 256px→208px，整块亮度衰减后低阈值内缩），
+  填充圈比人物小就把原图人物色永久留在板里 —— 必须纯 JS 膨胀。
+  生成时机：深度首次生成顺手派生（+~1s CPU/张，一次性）+ **老缓存补派生**
+  （pump 里 depth 已存在但 bg 缺失 → `depthIn` 直接收编深度只跑 sidecar，
+  恒 CPU u2netp ~320ms + 填充 ~2.5s/2048 图）。Python 引擎协议不认识 out_bg 无害。
+- **渲染端双层合成（stage.js）**：新纹理 `uBg`(unit3) + `uHasBg`（= bgTex 存在
+  且 profile.dualLayer 开）。两条采样路径都接：
+  flow（POM）路径 —— mask 跟前景采样坐标（含 POM/idle 位移）对齐，背景板钉在
+  基准坐标 stB（sticky 语义：远景本就几乎不动）；经典 uAmp 路径 —— 背景板
+  0.35× 低幅视差。`mix(bgc, fg, mask)`，人物移动露出的全是补全背景。
+- **开关（五端接线，r73 清单）**：store PROFILE_KEYS `'dualLayer'`（默认关）→
+  stage cfg 默认/applyProfile → 顶栏快捷开关 `qt-dual`（qchip，与 idle 同款）→
+  app.js resolvedDual/set/click。无背景板的图自动单层（uHasBg=0），绝不影响视差本体。
+
+### 验证（全部自动化实测）
+
+- 新增 `tools/test-cleanplate.js` 13 断言挂进 verify:unit：personBin 三路守卫
+  （正常/平坦/占比退化）、人像中心填充收敛到背景色（±20）、区外逐像素=原图
+  （JPEG 量化 ±3）、触边人物单侧长入也能填满、输出尺寸契约。中途抓出两个真 bug：
+  sharp 膨胀侵蚀（上注）与「取模糊值当填充色」把人物原色永久混入（改洋葱皮）。
+- GLSL：tmp-glsl-gen-page 正向 **GLSL-COMPILE-OK** + 负向对照 RESULT-FAIL
+  （未声明变量注入，证明通过为真）；tmp-glsl-check.js 顺带修为结果落盘
+  （本自动化环境 Electron 主进程 stdout 被吞 + GUI 启动静默 no-op，改 Edge headless）。
+- check-wiring 56/0；verify:unit 全链 0 失败（scheduler 199 + scan-cache 19 +
+  cleanplate 13 + particles 19 + depth-service 20 + updater 14 + slideshow-guard）。
+- 真图冒烟（待分类 helic 立绘 2048 图）：seg 321ms + 填充 2.5s（一次性），
+  目检：轮廓边缘颜色延续自然，内部大块柔和色斑 —— 人物遮挡下可见的正是边缘带；
+  内容级补全（真背景物体）留给 ComfyUI inpaint 升级，不在本轮。
+- 真机待验收：设置顶栏开「双层视差」→ 带人物图视差时人物身后露出补全背景，
+  不再出现原图人物残影/拉伸；无 mask/背景板的图自动回退单层。

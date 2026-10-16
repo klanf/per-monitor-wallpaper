@@ -555,9 +555,21 @@ function pump() {
   // DA3 命名空间，也避免升级后继续命中 V2 的旧深度图。
   const trio = trioFor(job.path);
   if (!trio) { pump(); return; }
-  if (fs.existsSync(trio.depth)) { pump(); return; }
-  job.out = trio.depth;
-  job.outMask = trio.mask;   // r62：前景 mask 与深度同键派生（渲染端 idle 微动画用；Python 引擎不认识该键，无害）
+  if (fs.existsSync(trio.depth)) {
+    // 双层视差（2026-10-16）：老缓存缺背景板时补一次派生 —— JS 引擎恒 CPU
+    // （u2netp ~220ms + 人像区扩散填充亚秒），深度本体经 depth_in 直接收编
+    // 不再重推理；背景板也齐了才是真跳过。Python 协议不认识 out_bg，无害。
+    if (state.engine === 'js' && !fs.existsSync(trio.bg)) {
+      job.out = trio.depth;
+      job.depthIn = trio.depth;
+      job.outMask = trio.mask;
+      job.outBg = trio.bg;
+    } else { pump(); return; }
+  } else {
+    job.out = trio.depth;
+    job.outMask = trio.mask;   // r62：前景 mask 与深度同键派生（渲染端 idle 微动画用）
+    job.outBg = trio.bg;       // 双层视差背景板（渲染端人物层身后补全；渲染端缺文件自动降级单层）
+  }
   state.currentJob = job;
   state.busy = true;
   // ── JS 引擎（r26）：进程内异步推理，不走子进程协议 ──

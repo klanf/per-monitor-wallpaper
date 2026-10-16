@@ -41,6 +41,7 @@ const els = {
   qtVideo: $('qt-video'),
   qtDepth: $('qt-depth'),
   qtIdle: $('qt-idle'),
+  qtDual: $('qt-dual'),
   qtParticles: $('qt-particles'),
   qtPointer: $('qt-pointer'),
   qtAtmo: $('qt-atmo'),
@@ -1457,6 +1458,14 @@ function resolvedIdle(chId) {
   return cfg.idleFx === true;
 }
 
+/** 双层视差（2026-10-16）生效值：布尔 profile 键，不写 = 默认关（与 stage.js cfg 默认一致） */
+function resolvedDual(chId) {
+  const cfg = state.config || {};
+  const ov = (cfg.monitors || {})[chId] || {};
+  if (ov.dualLayer === true || ov.dualLayer === false) return ov.dualLayer;
+  return cfg.dualLayer === true;
+}
+
 /** 鼠标影响动效（r70）生效值：布尔 profile 键，不写 = 默认开（与 stage.js cfg 默认一致） */
 function resolvedPointerFx(chId) {
   const cfg = state.config || {};
@@ -1486,6 +1495,7 @@ function updateQuickToggles() {
   set(els.qtVideo, resolvedVideoFull(ch.id));
   set(els.qtDepth, resolvedDepth(ch.id));
   set(els.qtIdle, resolvedIdle(ch.id));
+  set(els.qtDual, resolvedDual(ch.id));
   set(els.qtParticles, resolvedParticles(ch.id) !== '');
   set(els.qtPointer, resolvedPointerFx(ch.id));
   set(els.qtAtmo, resolvedAtmo(ch.id));
@@ -3542,6 +3552,11 @@ function bindEvents() {
       const on = !resolvedIdle(id);
       await pushProfile(id, { idleFx: on });
       note = on ? '这块屏 idle 微动画已开启（角色呼吸/衣摆飘动/前景差速）' : '这块屏 idle 微动画已关闭';
+    } else if (btn === els.qtDual) {
+      // 双层视差（2026-10-16）：人物层叠在补全背景板上；需要背景板（深度缓存自动派生）
+      const on = !resolvedDual(id);
+      await pushProfile(id, { dualLayer: on });
+      note = on ? '这块屏双层视差已开启（人物动、背景稳）' : '这块屏双层视差已关闭';
     } else if (btn === els.qtParticles) {
       // 粒子是「种类值」不是布尔：关 = 覆盖写 ''（显式关）；开 = 有全局种类就跟全局（null），
       // 全局也关着就给 random 兜底 —— 一键点亮总有粒子看。

@@ -82,6 +82,7 @@ const cfg = {
   flowHeight: 0.2,             // 视差强度主旋钮（DepthState.height 默认）
   flowQuality: 0.5,            // POM 步进质量 0.15~1（0.5=DepthFlow CLI 默认；0.3≈省 30% GPU）
   idleFx: false,               // idle 微动画（r62，profile.idleFx）：呼吸+飘动+差速视差（mask 前景）
+  dualLayer: false,            // 双层视差（2026-10-16 路线 1，profile.dualLayer）：人物层叠在补全背景板上，人物动、背景稳
   depthAtmo: false,            // 分层氛围总开关（r71，profile.depthAtmo）：调色板光照+雾+金边
   atmoPalette: 'auto',         // 氛围调色板（r73）：auto=按时间（白天/黄昏）；golden/tealorange/cyberpunk/moonlight/faded=固定档
   pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
@@ -735,6 +736,8 @@ uniform vec4  uXf;          // 切换动画层变换（r76，cover 专用）：x
 uniform sampler2D uMask;    // 前景 mask（Otsu+羽化，与深度图同分辨率同缓存键；r62 idle 方案）
 uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
 uniform float uIdle;        // idle 微动画总开关（profile.idleFx）
+uniform sampler2D uBg;      // 干净背景板（人像区扩散填充；双层视差，与原图同尺寸）
+uniform float uHasBg;       // 1 = 本层带背景板纹理（unit 3）且开关开
 uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
 uniform float uAtmoSel;     // 调色板档位（连续浮点，JS 端缓动防跳变）：0=白天 1=黄昏 2=黄金时刻 3=青橙好莱坞 4=赛博朋克 5=月光 6=褪色胶片
 
@@ -927,6 +930,13 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
   float breathM;
   idleWarp(stF, stB, off, imgAspect, breathM);
   vec3 col = texMirror(uImg, stF).rgb;
+  // 双层合成（2026-10-16 路线 1）：人物移动露出的是补全背景而不是原图人物像素。
+  // mask 跟前景采样坐标对齐（含 POM/idle 位移）；背景板钉在基准坐标 stB ——
+  // flow 模式 sticky 语义下远景本就几乎不动，人物位移全部显形为「贴在背景前」。
+  if (uHasBg > 0.5 && uHasMask > 0.5) {
+    vec3 bgc = texMirror(uBg, stB).rgb;
+    col = mix(bgc, col, texMirror(uMask, stF).r);
+  }
   if (breathM != 0.0) col *= 1.0 + 0.02 * breathM;   // 呼吸亮度脉动 ±2%
   col = atmoApply(col, stB, imgAspect);   // 分层氛围：调色板光照+雾+金边
   return col;
@@ -990,6 +1000,12 @@ void main() {
   vec2 uvP = uv - par;
   vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
   vec3 col = texture2D(uImg, uvC).rgb;
+  // 双层合成（经典 uAmp 路径）：前景全幅视差、背景板 0.35× 低幅视差 ——
+  // 人物（近，位移大）身后露出的是补全背景，深度断层处不再撕出原图人物残影
+  if (uHasBg > 0.5 && uHasMask > 0.5) {
+    vec3 bgc = texture2D(uBg, clamp(uv - par * 0.35, vec2(0.0), vec2(1.0))).rgb;
+    col = mix(bgc, col, texture2D(uMask, uvC).r);
+  }
 
   if (uHasDepth > 0.5) {
     vec2 px = 1.5 / vec2(1024.0, 1024.0);
@@ -1060,10 +1076,11 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uIdle', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uIdle', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
+    gl.uniform1i(U.uBg, 3);
     glState.canvas = canvas; glState.gl = gl; glState.prog = prog; glState.U = U;
     glState.ok = true;
   } catch (err) {
@@ -1095,6 +1112,14 @@ function maskPathOf(depthPath) {
     : null;
 }
 
+/** 干净背景板缓存路径（双层视差）：与 mask 同一套缓存键派生；缺失/路径异常
+ *  → null，渲染端优雅降级为单层（uHasBg=0），绝不影响视差本体。 */
+function bgPathOf(depthPath) {
+  return typeof depthPath === 'string' && /\.depth\.png$/i.test(depthPath)
+    ? depthPath.slice(0, -'.depth.png'.length) + '.bg.jpg'
+    : null;
+}
+
 /** 粒子深度遮挡（r74）：把深度位图缩采样成 CPU 像素表（长边封顶 256，
  *  粒子坐标精度 ~10px，比 V2 边缘糊还粗，查表零感知）。失败返回 null（遮挡自动跳过）。
  *  ⚠️ 必须在 depBmp.close() 之前调 —— glLoadLayer 建完纹理就关位图。 */
@@ -1123,7 +1148,7 @@ function feedParticleDepth(src) {
 
 function glFreeLayer(L) {
   if (!L || !glState.gl) return;
-  for (const t of [L.imgTex, L.depTex, L.maskTex]) if (t) glState.gl.deleteTexture(t);
+  for (const t of [L.imgTex, L.depTex, L.maskTex, L.bgTex]) if (t) glState.gl.deleteTexture(t);
   if (L._bmp) { try { L._bmp.close(); } catch (_) { /* 已关 */ } L._bmp = null; }
 }
 
@@ -1140,15 +1165,18 @@ async function glLayerFor(imagePath, depthPath) {
 async function glLoadLayer(imagePath, depthPath) {
   try {
     const maskPath = maskPathOf(depthPath);
-    const [bmp, depBmp, maskBmp] = await Promise.all([
+    const bgPath = bgPathOf(depthPath);
+    const [bmp, depBmp, maskBmp, bgBmp] = await Promise.all([
       fetchBitmap({ path: imagePath }),
       depthPath ? fetchBitmap({ path: depthPath }).catch(() => null) : Promise.resolve(null),
       maskPath ? fetchBitmap({ path: maskPath }).catch(() => null) : Promise.resolve(null),
+      bgPath ? fetchBitmap({ path: bgPath }).catch(() => null) : Promise.resolve(null),
     ]);
     const layer = {
       imgTex: glMakeTex(0, bmp),
       depTex: depBmp ? glMakeTex(1, depBmp) : null,
       maskTex: maskBmp ? glMakeTex(2, maskBmp) : null,   // r62：前景 mask（加载失败=null → idle 关）
+      bgTex: bgBmp ? glMakeTex(3, bgBmp) : null,         // 双层视差：干净背景板（加载失败=null → 单层回退）
       aspect: bmp.width / bmp.height,
       iw: bmp.width,
       ih: bmp.height,                // r74：粒子遮挡的 cover 映射用原图尺寸（位图关后仍在）
@@ -1156,6 +1184,7 @@ async function glLoadLayer(imagePath, depthPath) {
     };
     if (depBmp) depBmp.close();
     if (maskBmp) maskBmp.close();
+    if (bgBmp) bgBmp.close();
     return { layer, bmp };   // 原图位图不关：调用方 2D 垫底后自行 close
   } catch (err) {
     console.warn('[stage] 视差纹理加载失败（本帧回退 2D）:', imagePath, err.message);
@@ -1235,6 +1264,8 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.bindTexture(gl.TEXTURE_2D, L.depTex || L.imgTex);   // 无深度时占位（uHasDepth 压平）
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, L.maskTex || L.depTex || L.imgTex);   // 无 mask 占位（uHasMask 关 idle）
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, L.bgTex || L.depTex || L.imgTex);     // 无背景板占位（uHasBg 关双层）
   const { w, h } = canvasSize(glState.canvas);
   gl.viewport(0, 0, w, h);
   gl.uniform2f(glState.U.uCanvas, w, h);
@@ -1252,6 +1283,7 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.uniform1f(glState.U.uHasDepth, L.depTex ? 1 : 0);
   gl.uniform1f(glState.U.uHasMask, L.maskTex ? 1 : 0);
   gl.uniform1f(glState.U.uIdle, cfg.idleFx ? 1 : 0);
+  gl.uniform1f(glState.U.uHasBg, (L.bgTex && cfg.dualLayer) ? 1 : 0);
   gl.uniform1f(glState.U.uAtmo, cfg.depthAtmo ? 1 : 0);
   gl.uniform1f(glState.U.uAtmoSel, atmoSelNow());       // 调色板档位（JS 端每帧缓动防跳变）
   gl.uniform1f(glState.U.uAlpha, alpha);
@@ -1916,6 +1948,8 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
   // idle 微动画（r62，profile 不写 = 默认关）
   if (p.idleFx !== undefined) cfg.idleFx = Boolean(p.idleFx);
+  // 双层视差（2026-10-16 路线 1，profile 不写 = 默认关）
+  if (p.dualLayer !== undefined) cfg.dualLayer = Boolean(p.dualLayer);
   // 分层氛围（r71，profile 不写 = 默认关）
   if (p.depthAtmo !== undefined) cfg.depthAtmo = Boolean(p.depthAtmo);
   // 调色板/雾/景深/丁达尔（r73；不写 = 默认值）
