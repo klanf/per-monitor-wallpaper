@@ -92,9 +92,6 @@ const cfg = {
   depthBreath: false,          // 默认关（r80：设置页开关控制，profile.depthBreath=true 开）
   depthBreathAmp: 0.015,       // 自然量级：图像高度占比 ±1.5%（验证版曾用 ±0.05）
   depthBreathPeriod: 5000,     // 呼吸周期 ms（一吸一呼）
-  // ---- 背景动效（验证版 r81）：远景低频漂移 —— (1-d)² 让远景动、近景钉住 ----
-  depthBgDrift: true,          // 验证版默认开（验收后收敛 + 进设置页；p.depthBgDrift=false 显式关）
-  depthBgDriftAmp: 0.03,       // 验证幅度：图像空间 ±3%（自然量级约 ±0.8%；Lissajous 双频合成的峰值）
 };
 
 // ---- 分层氛围（r73）：调色板档位选择 + 缓动 ----
@@ -748,7 +745,6 @@ uniform float uHasBg;       // 1 = 本层带背景板纹理（unit 3）且开关
 uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
 uniform float uAtmoSel;     // 调色板档位（连续浮点，JS 端缓动防跳变）：0=白天 1=黄昏 2=黄金时刻 3=青橙好莱坞 4=赛博朋克 5=月光 6=褪色胶片
 uniform float uBreath;      // 深度呼吸律动（验证版 r79）：当前相位位移量（图像高度占比，-amp..amp），0=关
-uniform vec2 uBgDrift;      // 背景动效（验证版 r81）：远景低频漂移当前偏移（图像空间 Lissajous 双频合成，(0,0)=关）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -905,18 +901,12 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
   // 深度呼吸律动（验证版 r79）：按表面深度加权的垂直微移 —— dN² 让近景动得多、
   // 远景几乎不动（背景钉住）。位移加在 stF 上 = mask/背景板/氛围一起跟着走，
   // 人物整体起伏而背景不动；texMirror 兜露边，不出黑边/钳位硬边。
-  // 背景动效（验证版 r81）：远景低频漂移 —— (1-d)² 反向加权，远景动、近景钉住。
-  // 两者共用一次深度采样；呼吸把人物推上移、漂移把背景慢挪，互不干扰。
-  float dW = 0.0;
-  if (uBreath != 0.0 || uBgDrift.x != 0.0 || uBgDrift.y != 0.0) dW = texMirror(uDepth, stF).r;
   if (uBreath != 0.0) {
+    float dW = texMirror(uDepth, stF).r;
     stF.y += uBreath * dW * dW;
   }
-  vec2 bgW = uBgDrift * ((1.0 - dW) * (1.0 - dW));
-  stF += bgW;
   // stB：未扭曲基准坐标 —— 背景板钉在这里（sticky），氛围调色的 mask 锚点也用它
   vec2 stB = g0 / vec2(imgAspect, 1.0) * 0.5 + 0.5;
-  stB += bgW;   // 双层合成时远景露的是背景板：板子跟漂移一起挪，否则远景漂移被钉死的板子吃掉
   vec3 col = texMirror(uImg, stF).rgb;
   // 双层合成（2026-10-16 路线 1）：人物移动露出的是补全背景而不是原图人物像素。
   // mask 跟前景采样坐标对齐（含 POM 位移）；背景板钉在基准坐标 stB ——
@@ -987,8 +977,6 @@ void main() {
   vec2 uvP = uv - par;
   // 深度呼吸律动（验证版 r79）：经典 uAmp 路径同款 —— 近景（d 大）垂直微移
   if (uBreath != 0.0) uvP.y += uBreath * d * d;
-  // 背景动效（验证版 r81）：经典路径同款 —— 远景（d 小）低频漂移
-  if (uBgDrift.x != 0.0 || uBgDrift.y != 0.0) uvP += uBgDrift * (1.0 - d) * (1.0 - d);
   vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
   vec3 col = texture2D(uImg, uvC).rgb;
   // 双层合成（经典 uAmp 路径）：前景全幅视差、背景板 0.35× 低幅视差 ——
@@ -1053,20 +1041,6 @@ function breathNow(now) {
   return cfg.depthBreathAmp * (s * 2 - 1);            // -amp..amp
 }
 
-/**
- * 背景动效（验证版 r81）：远景低频漂移的当前偏移 [x, y]（图像空间占比）。
- * Lissajous 双频合成：x 用 23s 周期、y 用 31s 周期（互质错开），合成轨迹
- * 不重合不闭环，肉眼读不出「循环」；y 幅度 0.6× 压扁成横向为主的游移。
- * 峰值=cfg.depthBgDriftAmp（验证 ±0.03，自然量级约 ±0.008）；相位永不重置。
- */
-function bgDriftNow(now) {
-  if (!cfg.depthBgDrift || !cfg.depthBgDriftAmp) return [0, 0];
-  const t = now / 1000;
-  const x = Math.sin(t * 2 * Math.PI / 23);
-  const y = Math.sin(t * 2 * Math.PI / 31 + 1.3) * 0.6;
-  return [cfg.depthBgDriftAmp * x, cfg.depthBgDriftAmp * y];
-}
-
 function glInit() {
   if (glState.ok || glState.failed) return;
   try {
@@ -1095,7 +1069,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath', 'uBgDrift']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1306,8 +1280,6 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.uniform1f(glState.U.uAtmoSel, atmoSelNow());       // 调色板档位（JS 端每帧缓动防跳变）
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.uniform1f(glState.U.uBreath, breathNow(performance.now()));   // 深度呼吸律动（验证版 r79）
-  const bgd = bgDriftNow(performance.now());                       // 背景动效（验证版 r81）
-  gl.uniform2f(glState.U.uBgDrift, bgd[0], bgd[1]);
   gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uFlowIso, flowIso);
   gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
@@ -1997,9 +1969,6 @@ function applyChannelConfig() {
   if (p.depthBreath !== undefined) cfg.depthBreath = Boolean(p.depthBreath);
   if (Number.isFinite(Number(p.depthBreathAmp))) cfg.depthBreathAmp = Math.max(0, Number(p.depthBreathAmp));
   if (Number.isFinite(Number(p.depthBreathPeriod))) cfg.depthBreathPeriod = Math.max(1500, Number(p.depthBreathPeriod));
-  // 背景动效（验证版 r81；profile 不写 = 开，验收用；p.depthBgDrift=false 显式关）
-  if (p.depthBgDrift !== undefined) cfg.depthBgDrift = Boolean(p.depthBgDrift);
-  if (Number.isFinite(Number(p.depthBgDriftAmp))) cfg.depthBgDriftAmp = Math.max(0, Number(p.depthBgDriftAmp));
   // 呼吸节奏（主树 47 轮：周期/幅度可配；profile 不写 = 6000ms / ±2%）
   if (Number.isFinite(Number(p.breathPeriod))) {
     cfg.breathPeriod = Math.min(Math.max(Math.round(Number(p.breathPeriod)), 2000), 15000);
