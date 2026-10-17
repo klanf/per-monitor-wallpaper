@@ -30,7 +30,7 @@ const CDP_LIST = process.env.DEMO_CDP_LIST || 'http://127.0.0.1:9222/json';
 const argv = process.argv.slice(2);
 const argValue = (name, dflt) => {
   const hit = argv.find((a) => a.startsWith(`--${name}=`));
-  return hit ? Number(hit.slice(name.length + 2)) : dflt;
+  return hit ? Number(hit.slice(name.length + 3)) : dflt;
 };
 const FROM = argValue('from', 2);
 const TO = argValue('to', 5);
@@ -116,7 +116,7 @@ const ui = {
 function makeCursor() {
   const koffi = require('koffi');
   const user32 = koffi.load('user32.dll');
-  const SendInput = user32.func('int __stdcall SendInput(int, INPUT *, int)');
+  const SendInput = user32.func('int __stdcall SendInput(int, void *, int)');
   const GetSystemMetrics = user32.func('int __stdcall GetSystemMetrics(int)');
   const W = GetSystemMetrics(0), H = GetSystemMetrics(1); // 主屏
   const INPUT_SIZE = 40; // INPUT(x64) = 24+8+8？实测 40 对 win64 SendInput 稳定
