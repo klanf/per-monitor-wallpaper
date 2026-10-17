@@ -87,6 +87,12 @@ const cfg = {
   pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
   particleDepth: true,         // 粒子深度遮挡（r74，profile.particleDepth）：开=前景挡住粒子（雨/雪/樱花首批；需深度图，无深度自动跳过）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
+  // ---- 深度呼吸律动（验证版 r79）：近景随相位上下微移、背景钉住 ----
+  // ⚠️ r73 教训：idle 差速微动画「被双层合成覆盖，感知不到」而删除 —— 本版幅度是
+  // 自然量级的 3~5 倍，专为真机感知度验收；过关后收敛幅度再转正。
+  depthBreath: true,           // 验证版默认开（profile.depthBreath=false 显式关）
+  depthBreathAmp: 0.05,        // 验证幅度：图像高度占比 ±5%（自然量级约 ±1~1.5%）
+  depthBreathPeriod: 5000,     // 呼吸周期 ms（一吸一呼）
 };
 
 // ---- 分层氛围（r73）：调色板档位选择 + 缓动 ----
@@ -739,6 +745,7 @@ uniform sampler2D uBg;      // 干净背景板（人像区扩散填充；双层�
 uniform float uHasBg;       // 1 = 本层带背景板纹理（unit 3）且开关开
 uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
 uniform float uAtmoSel;     // 调色板档位（连续浮点，JS 端缓动防跳变）：0=白天 1=黄昏 2=黄金时刻 3=青橙好莱坞 4=赛博朋克 5=月光 6=褪色胶片
+uniform float uBreath;      // 深度呼吸律动（验证版 r79）：当前相位位移量（图像高度占比，-amp..amp），0=关
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
@@ -892,6 +899,13 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
     }
   }
   vec2 stF = guv / vec2(imgAspect, 1.0) * 0.5 + 0.5;
+  // 深度呼吸律动（验证版 r79）：按表面深度加权的垂直微移 —— dN² 让近景动得多、
+  // 远景几乎不动（背景钉住）。位移加在 stF 上 = mask/背景板/氛围一起跟着走，
+  // 人物整体起伏而背景不动；texMirror 兜露边，不出黑边/钳位硬边。
+  if (uBreath != 0.0) {
+    float dW = texMirror(uDepth, stF).r;
+    stF.y += uBreath * dW * dW;
+  }
   // stB：未扭曲基准坐标 —— 背景板钉在这里（sticky），氛围调色的 mask 锚点也用它
   vec2 stB = g0 / vec2(imgAspect, 1.0) * 0.5 + 0.5;
   vec3 col = texMirror(uImg, stF).rgb;
@@ -962,6 +976,8 @@ void main() {
   float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 无深度=平面
   vec2 par = uCam * (d - 0.5) * uAmp;
   vec2 uvP = uv - par;
+  // 深度呼吸律动（验证版 r79）：经典 uAmp 路径同款 —— 近景（d 大）垂直微移
+  if (uBreath != 0.0) uvP.y += uBreath * d * d;
   vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
   vec3 col = texture2D(uImg, uvC).rgb;
   // 双层合成（经典 uAmp 路径）：前景全幅视差、背景板 0.35× 低幅视差 ——
@@ -1012,6 +1028,20 @@ const glState = {
   mouse: [0, 0], mouseUntil: 0, mouseW: 0,
 };
 
+/**
+ * 深度呼吸律动（验证版 r79）：当前相位位移量（图像高度占比，-amp..amp）。
+ * 余弦振荡（吸入慢呼出快没有，先纯对称）；幅度=cfg.depthBreathAmp（验证版 ±0.05，
+ * r73 同类差速效果「感知不到」被删 —— 本版故意夸张，真机过关后收敛）。
+ * 相位永不重置（rAF 停在暂停/冻结，恢复时 performance.now 连续，无跳变）。
+ */
+function breathNow(now) {
+  if (!cfg.depthBreath || !cfg.depthBreathAmp) return 0;
+  const period = Math.max(1500, cfg.depthBreathPeriod || 5000);
+  const ph = (now % period) / period;
+  const s = 0.5 - 0.5 * Math.cos(ph * 2 * Math.PI);   // 0..1 平滑往复
+  return cfg.depthBreathAmp * (s * 2 - 1);            // -amp..amp
+}
+
 function glInit() {
   if (glState.ok || glState.failed) return;
   try {
@@ -1040,7 +1070,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1250,6 +1280,7 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.uniform1f(glState.U.uAtmo, cfg.depthAtmo ? 1 : 0);
   gl.uniform1f(glState.U.uAtmoSel, atmoSelNow());       // 调色板档位（JS 端每帧缓动防跳变）
   gl.uniform1f(glState.U.uAlpha, alpha);
+  gl.uniform1f(glState.U.uBreath, breathNow(performance.now()));   // 深度呼吸律动（验证版 r79）
   gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uFlowIso, flowIso);
   gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
@@ -1935,6 +1966,10 @@ function applyChannelConfig() {
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
   if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
+  // 深度呼吸律动（验证版 r79；profile 不写 = 开，验收用；p.depthBreath=false 显式关）
+  if (p.depthBreath !== undefined) cfg.depthBreath = Boolean(p.depthBreath);
+  if (Number.isFinite(Number(p.depthBreathAmp))) cfg.depthBreathAmp = Math.max(0, Number(p.depthBreathAmp));
+  if (Number.isFinite(Number(p.depthBreathPeriod))) cfg.depthBreathPeriod = Math.max(1500, Number(p.depthBreathPeriod));
   // 呼吸节奏（主树 47 轮：周期/幅度可配；profile 不写 = 6000ms / ±2%）
   if (Number.isFinite(Number(p.breathPeriod))) {
     cfg.breathPeriod = Math.min(Math.max(Math.round(Number(p.breathPeriod)), 2000), 15000);
