@@ -616,16 +616,20 @@ function enqueue(job) {
 /* ---------------------------------------------------------------- 对外 */
 
 /**
- * 空闲预取（第十一轮）：把「接下来要显示的图」的深度提前生成。
- * 纪律：队列非空或 worker 正忙时直接放弃（正事的优先级永远更高，
- * 下次 tick 会再试）；已缓存的直接跳过。不统计 hits/misses。
+ * 空闲预取（第十一轮；2026-10-17 重写纪律）：把「接下来要显示的图」提前派生。
+ * 旧版「队列非空/worker 忙就放弃」实锤饿死：开机后台积压期间每次 tick 预取
+ * 全部白跑，追不上切换节奏（用户实测：有的切过去已渲染好、有的切过去才开始渲）。
+ * 新纪律：忙也照常入队 —— 队列 LIFO（队尾先出），后到的按需 miss 天然插队
+ * 在预取前面，优先级不受损；已齐（深度+背景板都在）才跳过，缺 bg 的老缓存
+ * 借预取补派生（pump 里的补派生分支会走 depth_in 收编，不重推理深度）。
+ * 不统计 hits/misses。
  */
 function prefetch(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return;
-  if (state.queue.length > 0 || state.busy) return;
   if (state.engine === 'probing') { enqueue({ path: entryPath }); return; }
   const trio = trioFor(entryPath);
-  if (!trio || fs.existsSync(trio.depth)) return;
+  if (!trio) return;
+  if (fs.existsSync(trio.depth) && fs.existsSync(trio.bg)) return;
   enqueue({ path: entryPath });
 }
 

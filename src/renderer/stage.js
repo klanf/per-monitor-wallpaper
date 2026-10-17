@@ -157,6 +157,7 @@ let glActive = false;
  *  启动时若撞上暂停，bind 显示可能被冻结打断成半截 —— 解冻时若一帧都没画过
  *  就强制重显当前 entry，而不是干等下一个 60s 调度 tick（黑屏到那时）。 */
 let everRendered = false;
+let firstPaintDone = false;   // 冷开机时间线：首帧上屏只报一次（进 live-debug.log）
 
 /** 渲染端诊断日志 → 主进程落 live-debug.log。必须定义在模块顶层：
  *  showFrame（顶层函数）和 init 内的升级处理器都要用 —— 上一版定义在 init
@@ -1808,6 +1809,10 @@ function finish2D(incoming, outgoing, src, sw, sh, kind, animate, incomingKey, o
   } else if (kind === 'image') {
     drawSource(incoming, src, sw, sh);
     everRendered = true;                               // 解冻自愈标记：这一路出过画面了
+    if (!firstPaintDone) {                             // 冷开机时间线：首帧上屏时刻（主屏开机卡 2 分钟排查）
+      firstPaintDone = true;
+      slog(`首帧上屏 ${String(entry.path).split(/[\\/]/).pop()} init后${((performance.now() - t0GL) / 1000).toFixed(1)}s`);
+    }
     // r37：位图留在层上供裁切平移重画（r35 已把位图钳到屏幕级，两层常驻内存可控）
     if (typeof src.close === 'function') incoming.bmp = src;
     pan.x = 0; pan.y = 0; pan.dirty = false;           // 新图从居中起滑
@@ -1980,7 +1985,7 @@ async function applyChannels(list) {
     : [];
   if (!applyChannels._logged) {
     applyChannels._logged = true;
-    console.log(`[stage] applyChannels#1 channels=${channels.length} myChannel=${myChannel}`);
+    slog(`applyChannels#1 channels=${channels.length} myChannel=${myChannel}`);
   }
   if (!myChannel) {
     // 没收到 bind（例如手动把 stage 页开在普通窗口里）：退回第一个可用频道
@@ -2023,7 +2028,7 @@ function onResize() {
 }
 
 async function init() {
-  console.log(`[stage] init 开始 ua-ok=${Boolean(window.wp)}`);
+  slog(`init 开始 ua-ok=${Boolean(window.wp)}`);
   layers.A = {
     root: document.getElementById('layerA'),
     canvas: document.querySelector('#layerA canvas'),

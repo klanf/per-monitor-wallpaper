@@ -2295,19 +2295,22 @@ if (!gotLock) {
       resolveUnifiedTarget,
       onEvent: (type, payload) => {
         if (type === 'tick') {
-          console.log(`[tick-bus] tick id=${payload.id} index=${payload.index}/${payload.count}`);
+          debugLog.dlog('tick-bus', `tick id=${payload.id} index=${payload.index}/${payload.count}`);
           send('channel:tick', payload);
           // stage 窗口也收全量 tick，各自按频道 id 过滤（每块屏只听自己的频道）
           liveStage.broadcast('channel:tick', payload);
           tray.refresh(scheduler.list());
           prefetchUpcomingDepths();
         } else {
-          console.log(`[tick-bus] ${type} reason=${payload.reason} channels=${(payload.channels || []).length}`);
+          debugLog.dlog('tick-bus', `${type} reason=${payload.reason} channels=${(payload.channels || []).length}`);
           const broadcast = channelBroadcast(payload);
           send('channels:changed', broadcast);
           liveStage.broadcast('channels:changed', broadcast);
           liveStage.syncTo(payload.channels || scheduler.list());
           tray.refresh(payload.channels || scheduler.list());
+          // 频道清单变化（含显式切相簿后的立即上屏）也补一轮预取：
+          // 新相簿第一张马上要显示，不喂的话首屏必现场派生
+          prefetchUpcomingDepths();
         }
       },
     });
@@ -2357,7 +2360,16 @@ if (!gotLock) {
     // channels 事件或下面的 syncTo 创建并挂到桌面图标下面）
     if (store.get().liveWallpaper) liveStage.start();
 
+    // 冷开机时间线（2026-10-17）：console 在 VBS 下丢 stdout，启动链路计时
+    // 必须走 dlog 落 live-debug.log，否则「主屏开机卡 2 分钟」永远没数据可查
+    debugLog.dlog('startup', `rebuild('startup') 开始`);
+    const rebuildT0 = Date.now();
     await scheduler.rebuild('startup');
+    debugLog.dlog('startup', `rebuild('startup') 完成 ${Date.now() - rebuildT0}ms`);
+
+    // 重建一完就把每个频道接下来要显示的图喂进预取（此前只在 tick 里调，
+    // 冷开机第一批预取要等 60s 后的第一个 tick 才发车 —— 首屏必 miss）
+    prefetchUpcomingDepths();
     announceAutoSetup(autoAtStartup, true);
     thumbnails.pruneCache().catch(() => {});
 
