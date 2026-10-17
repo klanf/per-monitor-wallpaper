@@ -51,7 +51,7 @@ const MASS_RESCAN_COOLDOWN_MS = 60000; // 两次「大面积失效重扫」之�
  * 与「Syncthing 同步删除」的既有容错策略同源）。
  */
 const SCAN_CACHE_SAVE_DELAY_MS = 3000;              // 扫描后延迟落盘（合并同一次 rebuild 的多次扫描）
-const SCAN_CACHE_REFRESH_AFTER_STARTUP_MS = 120000; // 启动用了磁盘缓存 → 两分钟后（盘已热）后台刷新一次
+const SCAN_CACHE_REFRESH_AFTER_STARTUP_MS = 300000; // 启动用了磁盘缓存 → 五分钟后后台刷新一次（第七十六轮：120s→300s，避开开机后用户点托盘/看预览的操作高峰，别让全量重扫抢那几分钟的 IO）
 const SCAN_CACHE_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // 缓存条目 30 天不用 —— 目录结构大改后老缓存不值得信
 const SCAN_CACHE_MAX_FILES = 400000;                 // 单目录条目的文件数护栏（防异常膨胀）
 
@@ -342,10 +342,15 @@ class MonitorScheduler {
 
     this.tookOver = true;
 
-    // 启动接管：立刻把当前帧写上去，否则最长要等一个 interval 才看得到变化
+    // 启动接管：立刻把当前帧写上去，否则最长要等一个 interval 才看得到变化。
+    // 第七十六轮：不再 await —— 写系统壁纸 = 冷盘读图 + COM 调用，冷开机下
+    // 拖住 rebuild 2~3s（实测 rebuild('startup') 3906ms 的大头）。动态舞台的显示
+    // 走 channels:changed 自己上屏，不依赖这次写入；写入 Promise 已登记
+    // pendingWrites，后续任何 rebuild 开头都会先等在途写入收尾（1.5s 上限），
+    // 不会出现「旧图盖新图」。
     if (takeOver) {
       const targets = [...this.channels.values()].filter((ch) => ch.profile.enabled && ch.files.length);
-      await Promise.all(targets.map((ch) => this._write(ch, 'takeover')));
+      for (const ch of targets) this._write(ch, 'takeover').catch(() => {});
     }
 
     // 显式切换相簿的频道：立刻把新相簿第一张推上桌面，不等下一个 interval。

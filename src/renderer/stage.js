@@ -1811,7 +1811,9 @@ function finish2D(incoming, outgoing, src, sw, sh, kind, animate, incomingKey, o
     everRendered = true;                               // 解冻自愈标记：这一路出过画面了
     if (!firstPaintDone) {                             // 冷开机时间线：首帧上屏时刻（主屏开机卡 2 分钟排查）
       firstPaintDone = true;
-      slog(`首帧上屏 ${String(entry.path).split(/[\\/]/).pop()} init后${((performance.now() - t0GL) / 1000).toFixed(1)}s`);
+      // 文件名不在这里打：finish2D 拿不到 entry（第七十六轮修：上一版引用了
+      // 不存在的 entry → ReferenceError 打断 2D 上屏收尾），tick hit 日志已有文件名
+      slog(`首帧上屏 init后${((performance.now() - t0GL) / 1000).toFixed(1)}s`);
     }
     // r37：位图留在层上供裁切平移重画（r35 已把位图钳到屏幕级，两层常驻内存可控）
     if (typeof src.close === 'function') incoming.bmp = src;
