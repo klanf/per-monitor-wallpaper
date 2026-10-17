@@ -638,6 +638,10 @@ function enqueue(job) {
  */
 function prefetch(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return;
+  // 第七十七轮：探测期也先查缓存 —— 深度已在盘上的图不用入队占位，
+  // 把队首留给真正缺缓存的新图（lookup 侧同步改为探测期可命中）。
+  const trioEarly = trioFor(entryPath);
+  if (trioEarly && fs.existsSync(trioEarly.depth)) return;
   if (state.engine === 'probing') { enqueue({ path: entryPath }); return; }
   const trio = trioFor(entryPath);
   if (!trio) return;
@@ -647,14 +651,11 @@ function prefetch(entryPath) {
 
 function lookup(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return null;
-  if (state.engine === 'probing') {
-    state.stats.misses += 1;
-    enqueue({ path: entryPath });
-    return null;
-  }
+  // 第七十七轮：缓存命中判定提前到引擎状态之前 —— 读磁盘缓存不需要引擎，
+  // 探测期（probing，冷开机可拖 45s）也能命中，视差不必干等探测结束。
+  // 旧版探测期一律 return null，缓存明明在盘上却要等模型就绪才显示。
   const trio = trioFor(entryPath);
-  if (!trio) return null;
-  if (fs.existsSync(trio.depth)) {
+  if (trio && fs.existsSync(trio.depth)) {
     state.stats.hits += 1;
     touchCacheFile(trio.depth);   // LRU 使用信号（第十九轮）
     // 第九轮：图层分割方向已放弃（第六/八轮两连败，贴纸感无法接受），
@@ -664,6 +665,11 @@ function lookup(entryPath) {
     return trio.depth;
   }
   state.stats.misses += 1;
+  if (state.engine === 'probing') {
+    enqueue({ path: entryPath });
+    return null;
+  }
+  if (!trio) return null;
   // 第十轮追补：分层路线已终止且渲染端（第五轮单平面/第十轮 POM flow）只吃
   // 深度图，mask/bg 无任何消费方 —— 新图只派深度（省 ISNet+LaMa 约 6s/张）。
   // worker 的 mask/bg 能力保留，将来若复活分层只改这里。
