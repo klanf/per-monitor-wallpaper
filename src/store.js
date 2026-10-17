@@ -276,6 +276,9 @@ const PROFILE_KEYS = [
   'depthAtmo',                 // 分层氛围（r71）：时段光照+环境雾+金边（不写 = 默认关）
   'atmoPalette',               // 氛围调色板（r73）：auto/golden/tealorange/cyberpunk/moonlight/faded（不写 = auto）
   'pointerFx',                 // 鼠标影响动效（r70）：开=鼠标临时接管镜头；关=恒走预设轨迹（不写 = 默认开）
+  'depthBreath',               // 深度呼吸律动（r79）：近景按深度加权缓慢起伏（r80 默认关，设置页开关）
+  'depthBreathAmp',            // 呼吸幅度（图像高度占比小数，默认 0.015 = ±1.5%；设置页滑条按 % 存取）
+  'depthBreathPeriod',         // 呼吸周期 ms（不写 = 渲染端默认 5000，收紧 ≥1500）
 ];
 
 /** 生成相簿 id：时间戳 + 随机尾巴，撞不上同毫秒的两次创建 */

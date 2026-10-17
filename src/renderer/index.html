@@ -403,6 +403,16 @@
               <option value="faded">褪色胶片 · 抬黑低饱和</option>
             </select>
           </div>
+          <!-- 深度呼吸律动（r80）：默认关；开 = 近景按深度加权缓慢起伏，幅度可微调 -->
+          <label class="check" for="cfg-depth-breath" style="margin-top:6px">
+            <input type="checkbox" id="cfg-depth-breath">
+            <span>深度呼吸律动（近景像呼吸一样缓慢起伏；耗 GPU 略增，需深度图）</span>
+          </label>
+          <div class="field-row sub" id="cfg-depth-breath-amp-row" style="display:none">
+            <span class="field-label" style="flex:0 0 84px">呼吸幅度</span>
+            <input type="range" id="cfg-depth-breath-amp" min="0.5" max="5" step="0.5" style="flex:1">
+            <output class="field-value" id="cfg-depth-breath-amp-out">±1.5%</output>
+          </div>
         </div>
       </div>
 

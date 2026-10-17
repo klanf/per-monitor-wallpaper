@@ -89,7 +89,7 @@ const cfg = {
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
   // ---- 深度呼吸律动（r79：真机感知度验收过关 —— ±5% 验证幅度清晰可见，r73「差速感知不到」翻案）----
   // 转正幅度收敛到自然量级：±1.5% 图像高度（社区共识小幅动 > 大幅动）。
-  depthBreath: true,           // 默认开（profile.depthBreath=false 显式关）
+  depthBreath: false,          // 默认关（r80：设置页开关控制，profile.depthBreath=true 开）
   depthBreathAmp: 0.015,       // 自然量级：图像高度占比 ±1.5%（验证版曾用 ±0.05）
   depthBreathPeriod: 5000,     // 呼吸周期 ms（一吸一呼）
 };
@@ -1965,7 +1965,7 @@ function applyChannelConfig() {
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
   // 呼吸缩放（profile 不写 = 默认关）
   if (p.breath !== undefined) cfg.breath = Boolean(p.breath);
-  // 深度呼吸律动（验证版 r79；profile 不写 = 开，验收用；p.depthBreath=false 显式关）
+  // 深度呼吸律动（r79 转正；r80 默认关，设置页开关 + 幅度滑条控制：p.depthBreath=true 开）
   if (p.depthBreath !== undefined) cfg.depthBreath = Boolean(p.depthBreath);
   if (Number.isFinite(Number(p.depthBreathAmp))) cfg.depthBreathAmp = Math.max(0, Number(p.depthBreathAmp));
   if (Number.isFinite(Number(p.depthBreathPeriod))) cfg.depthBreathPeriod = Math.max(1500, Number(p.depthBreathPeriod));

@@ -2562,6 +2562,12 @@ function applyConfigToUI() {
   $('cfg-flow-style').value = ['circle', 'orbital', 'dolly'].includes(c.flowStyle) ? c.flowStyle : 'circle';
   // 氛围调色板（r73；不写 = auto）
   $('cfg-atmo-palette').value = ['golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(c.atmoPalette) ? c.atmoPalette : 'auto';
+  // 深度呼吸律动（r80）：顶层键 depthBreath 默认关；幅度存小数、滑条按 %
+  $('cfg-depth-breath').checked = c.depthBreath === true;
+  const dbaPct = Number.isFinite(Number(c.depthBreathAmp)) ? Number(c.depthBreathAmp) * 100 : 1.5;
+  $('cfg-depth-breath-amp').value = String(Math.min(Math.max(dbaPct, 0.5), 5));
+  $('cfg-depth-breath-amp-out').textContent = `±${$('cfg-depth-breath-amp').value}%`;
+  $('cfg-depth-breath-amp-row').style.display = c.depthBreath === true ? '' : 'none';
   // 开关联动显隐重算（r21：隐藏代替置灰；applyConfigToUI 回填后必须跑一遍）
   syncConditionalUI();
 
@@ -2967,6 +2973,21 @@ function bindSettings() {
       toast(`${label}：${fmt(Number(input.value))}`);
     });
   }
+
+  // ---- 深度呼吸律动（r80）：默认关；开 = 近景按深度加权缓慢起伏 ----
+  $('cfg-depth-breath').addEventListener('change', async (e) => {
+    $('cfg-depth-breath-amp-row').style.display = e.target.checked ? '' : 'none';
+    await save({ depthBreath: e.target.checked });
+    toast(e.target.checked ? '深度呼吸已开启：近景缓慢起伏' : '深度呼吸已关闭');
+  });
+  $('cfg-depth-breath-amp').addEventListener('input', () => {
+    $('cfg-depth-breath-amp-out').textContent = `±${$('cfg-depth-breath-amp').value}%`;
+  });
+  $('cfg-depth-breath-amp').addEventListener('change', async () => {
+    const pct = Number($('cfg-depth-breath-amp').value);
+    await save({ depthBreathAmp: pct / 100 });
+    toast(`呼吸幅度：±${pct}%`);
+  });
 
   // ---- 氛围调色板（r73）----
   // 总开关在顶栏太阳图标（depthAtmo，跟显示器）；这里只管「开起来之后长什么样」。
