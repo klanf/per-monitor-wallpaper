@@ -1415,6 +1415,15 @@ const UI_ONLY_KEYS = ['settingsTab', 'hintParticlesPerMonitor', 'swipeSwitch', '
  * 全屏 / 挂机暂停轮询：应用启动后常驻，动态桌面关闭时也要冻结系统壁纸轮播。
  * 开关实时读配置（轮询每轮 getFlags），用户在 UI 里改 pauseOn* 不用重启。
  */
+/**
+ * 开机全屏豁免（第七十八轮）：冷开机时窗口枚举会把开机过渡层（登录/首绘窗口）
+ * 判成全屏 —— 2026-10-17 14:22 真机实测：两块屏都被误判 fullscreen，刚建好的
+ * 舞台首帧即被冻结 3.3s（32.2→35.5），靠解冻自愈才救回来。启动后 GRACE 毫秒内
+ * 忽略全屏判定（锁屏 away / 无输入 idle / 电池判定不受影响）。
+ */
+const BOOT_FULLSCREEN_GRACE_MS = 20000;
+const APP_START_AT = Date.now();
+
 function startFullscreenWatch() {
   // hideOnPaused：暂停藏窗开关（52 轮，默认关；独占全屏游戏防驱动挂死）
   liveStage.setPauseHide(((store && store.get().liveStage) || {}).hideOnPaused === true);
@@ -1429,10 +1438,12 @@ function startFullscreenWatch() {
           perDisplay[did] = { pauseOnFullscreen: Boolean(mo.pauseOnFullscreen) };
         }
       }
+      // 开机豁免期内连每屏覆盖一起压掉，否则覆盖项会把全屏判定单独打开
+      const inBootGrace = Date.now() - APP_START_AT < BOOT_FULLSCREEN_GRACE_MS;
       return {
-        pauseOnFullscreen: ls.pauseOnFullscreen !== false,
+        pauseOnFullscreen: inBootGrace ? false : (ls.pauseOnFullscreen !== false),
         pauseOnAway: ls.pauseOnLock !== false,
-        perDisplay,
+        perDisplay: inBootGrace ? {} : perDisplay,
         // 电池暂停（主树 48/58 轮）：kernel32 GetSystemPowerStatus 直查 ACLineStatus，
         // 查不到（无电池/异常）退回 Electron 缓存值
         battery: (() => {
@@ -2365,7 +2376,12 @@ if (!gotLock) {
 
     // 动态桌面：配置开着就随应用启动（看门狗先就位；窗口由 rebuild 完成时的
     // channels 事件或下面的 syncTo 创建并挂到桌面图标下面）
-    if (store.get().liveWallpaper) liveStage.start();
+    if (store.get().liveWallpaper) {
+      liveStage.start();
+      // 第七十八轮：启动即预创建舞台窗口，页面加载与 rebuild 扫描/深度探测并行
+      //（实测冷加载 ~6.5s，串行等 rebuild 完再建窗会把壁纸首帧推到 +13s）
+      liveStage.prewarm().catch(() => {});
+    }
 
     // 冷开机时间线（2026-10-17）：console 在 VBS 下丢 stdout，启动链路计时
     // 必须走 dlog 落 live-debug.log，否则「主屏开机卡 2 分钟」永远没数据可查

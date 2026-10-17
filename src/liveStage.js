@@ -226,7 +226,70 @@ function broadcast(type, payload) {
   return sent;
 }
 
-/* ---------------------------------------------------------------- 创建 / 销毁 */
+/* ---------------------------------------------------------------- 预创建暖窗 */
+
+/**
+ * 冷开机提速（第七十八轮，2026-10-17 真机时间线）：rebuild 完成后 syncTo 才建
+ * 舞台窗口，Chromium 冷加载 stage.html 再花 ~6.5s —— 壁纸首帧被推到启动后 ~13s。
+ * prewarm() 在启动时并行调用（先于 rebuild）：先给每块显示器建好隐藏舞台窗口
+ * 并加载页面，让「页面加载」与「扫描 / 深度引擎探测」重叠；createStage 挂载时
+ * 直接收养（按 Electron displayId 匹配），零加载等待。
+ */
+const warmWindows = new Map();      // displayId -> { win, displayId, at, loaded }
+const WARM_WINDOW_TTL_MS = 60000;   // 60s 没被收养（频道拓扑没覆盖那块屏）→ 看门狗销毁
+
+/** 统一建窗入口：同参数、同「show:false」纪律；console-message 转发在建窗时挂一次
+ *  （createStage 不再重复挂，收养/新建两条路都带） */
+function spawnStageWindow(b) {
+  const win = new BrowserWindow({
+    x: b.x, y: b.y, width: b.width, height: b.height,
+    show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
+    frame: false,
+    backgroundColor: '#000000',
+    skipTaskbar: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    focusable: false,                  // 不进焦点链；挂载时还会补 WS_EX_NOACTIVATE 双保险
+    enableLargerThanScreen: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,                  // 与主窗口一致（preload 需要 require）
+      backgroundThrottling: false,     // 关键：别让 Chromium 把「桌面」降帧
+    },
+  });
+  win.webContents.on('console-message', (_e, _lvl, message, line, source) => {
+    console.log(`[stage-render] ${message} (${source}:${line})`);
+  });
+  return win;
+}
+
+/** createStage 收养预创建窗口（按 Electron displayId 匹配）；没有返回 null */
+function takeWarmWindow(displayId) {
+  const w = warmWindows.get(displayId);
+  if (!w) return null;
+  warmWindows.delete(displayId);
+  return w;
+}
+
+async function prewarm() {
+  if (!running || warmWindows.size || stages.size) return;   // 只认「启动空白窗」场景
+  for (const d of screen.getAllDisplays()) {
+    if (!running) return;
+    const sb = stageBoundsFromDisplay(d);
+    const win = spawnStageWindow(sb.dip);
+    const loaded = win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
+    warmWindows.set(d.id, { win, displayId: d.id, at: Date.now(), loaded });
+    try { await loaded; } catch (err) {
+      // 加载失败（stop 销毁窗口等）：丢弃暖窗，createStage 回落新建
+      warmWindows.delete(d.id);
+      try { win.destroy(); } catch { /* 已销毁 */ }
+      debugLog.dlog('live-stage', `预创建窗口加载失败（display=${d.id}）：${err.message}`);
+    }
+  }
+}
 
 async function createStage(ch) {
   const rec = { win: null, hwnd: 0, anchor: null, bounds: null, boundsPhys: null, degraded: false, fails: 0, creating: true };
@@ -243,39 +306,29 @@ async function createStage(ch) {
     // 这正是 49 轮实锤修过的断点（0f4e8ba），10-09 重建 live 树时弄丢了，
     // 2026-10-09 用户再报「桌面暂停没用」才重新抓到（诊断日志 stages=[] 命中=[false,false]）。
     rec.displayId = sb.displayId;
-    const win = new BrowserWindow({
-      x: b.x, y: b.y, width: b.width, height: b.height,
-      show: false,                       // 挂载成功前绝不出现（§2.7：show 会抢焦点，挂载后用 showInactive）
-      frame: false,
-      backgroundColor: '#000000',
-      skipTaskbar: true,
-      resizable: false,
-      minimizable: false,
-      maximizable: false,
-      focusable: false,                  // 不进焦点链；挂载时还会补 WS_EX_NOACTIVATE 双保险
-      enableLargerThanScreen: false,
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: false,                  // 与主窗口一致（preload 需要 require）
-        backgroundThrottling: false,     // 关键：别让 Chromium 把「桌面」降帧
-      },
-    });
+    // 第七十八轮：优先收养 prewarm 的预创建窗口（页面已在加载/加载完），
+    // 省掉 ~6.5s 冷加载；没有暖窗（拓扑变化等）照旧新建
+    const warm = takeWarmWindow(sb.displayId);
+    let win;
+    if (warm) {
+      await warm.loaded;               // 等页面加载完（通常已完成）
+      win = warm.win;
+      rec.preloaded = true;
+      debugLog.dlog('live-stage', `频道 ${ch.id} 收养预创建暖窗（display=${sb.displayId}）`);
+    } else {
+      win = spawnStageWindow(sb.dip);
+    }
     win.setMenuBarVisibility(false);
     rec.win = win;
 
     win.on('closed', () => { if (stages.get(ch.id) === rec) stages.delete(ch.id); });
-    // 渲染端 console 转发到主进程 stdout（黑屏类问题没有这个就是盲区 —— 2026-09-25 踩）
-    win.webContents.on('console-message', (_e, _lvl, message, line, source) => {
-      console.log(`[stage-render] ${message} (${source}:${line})`);
-    });
     // 渲染进程崩了（GPU 驱动复位之类）→ 重载页面；窗口与挂载都还在
     win.webContents.on('render-process-gone', () => {
       if (running && rec.win && !rec.win.isDestroyed()) rec.win.webContents.reload();
     });
+    // 渲染端 console 转发已在 spawnStageWindow 里挂好（新建/收养两路一致）
 
-    await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
+    if (!rec.preloaded) await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
     if (!running || rec.retired) { win.destroy(); return; }
 
     // 先让 Windows 11 24H2+ 进入 raised-desktop，保证存在图标层下方的 WorkerW。
@@ -418,6 +471,14 @@ function stopMouseFeed() {
 /* ---------------------------------------------------------------- 看门狗 */
 
 function watchOnce() {
+  // 第七十八轮：没被收养的预创建窗口超过 TTL → 销毁（频道拓扑没覆盖那块屏时防僵尸）
+  for (const [id, w] of warmWindows) {
+    if (Date.now() - w.at > WARM_WINDOW_TTL_MS) {
+      warmWindows.delete(id);
+      try { w.win.destroy(); } catch { /* 已销毁 */ }
+      debugLog.dlog('live-stage', `预创建窗口超 TTL 未收养，销毁（display=${id}）`);
+    }
+  }
   // ── 对账：期望频道还在、舞台记录没了 = 窗口本体被外部销毁（Explorer 死亡
   //    连带销毁 Progman 子窗口）。重挂路径救不了已销毁的窗口，直接重建。
   if (running) {
@@ -509,6 +570,8 @@ function stop() {
   stopMouseFeed();
   expectedChannels.clear();
   recreateFails.clear();
+  for (const [, w] of warmWindows) { try { w.win.destroy(); } catch { /* 已销毁 */ } }
+  warmWindows.clear();
   for (const id of [...stages.keys()]) destroyStage(id);
   console.log('[live-stage] 动态桌面已停止');
 }
@@ -653,6 +716,7 @@ function cancelDesktopMenu() {
 
 module.exports = {
   start, stop, syncTo, broadcast, applyPauseState, isDegraded, stats,
+  prewarm,              // 第七十八轮：启动预创建舞台窗口（页面加载与 rebuild 并行）
   recreateAll,          // 显示器拓扑变化时全量重建舞台（渲染器状态滞留的唯一清零手段）
   isPausedForDisplay,   // 调度器暂停感知用（暂停的显示器不推进轮播）
   displayIdForMonitor,  // 设备路径 → Electron displayId（手动暂停换算用）
