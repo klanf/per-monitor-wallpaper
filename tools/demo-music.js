@@ -1,23 +1,20 @@
 'use strict';
 
 /**
- * 音乐同步壁纸展示录制（一首歌长度，按能量节点切图 + 轨迹轮换 + 鼠标扫动）。
+ * 音乐同步壁纸展示 v2（按乐句切换 + 横竖屏相簿轮切）——纯 IPC 驱动。
  *
- * 前置：
- *   1) 壁纸实例带调试端口跑着（DevTools 9222，index.html 可连）
- *   2) OBS 跑着、obs-websocket 4455 开着、有密码就 --pass=xxx（或环境变量 OBS_WS_PASS）
- *   3) tools/obs-control.js setup 过（「录-主屏」场景已建）
- *   4) tools/demo-music-timeline.json（analyze-song.py 生成）
+ * 用户节奏定稿：
+ *   - 唱完一句就切（乐句边界 = analyze-song.py 的能量谷底，8~16s 一段）
+ *   - 轨迹不用推拉：横屏段=环绕 circle，竖屏段=摆动环绕 orbital（天然交替）
+ *   - 奇数段切「测试-竖屏」相簿 + 拼接填充(collage)，下一句切回「测试-横屏」
+ *
+ * 驱动方式：window.wp.channelCommand(主屏频道id, ...) 直连（v2 教训：主屏的
+ * monitor-card 不渲染，DOM 路走不通）；主屏 interval 覆盖 1800s，录制期间
+ * 不会自动切，无需动 interval。
  *
  * 用法：
- *   node tools/demo-music.js --pass=xxx           # 正式录制（一首歌长度 ~225s）
- *   node tools/demo-music.js --dry                # 彩排：预热+试切换+定时器改/还原，不开录
- *
- * 流程：预热（把接下来要用的图全部提前推好深度）→ 轮播间隔临时调大（中和 30s
- * 定时器，录完还原）→ OBS 切「录-主屏」开录 → 按时间轴切下一张（同时轮换镜头
- * 轨迹、在指定段落扫鼠标）→ 歌曲结束停录 → 还原配置 → 生成 SRT 字幕文件。
- *
- * 音频不进 OBS：录完用 ffmpeg 把歌 mux 进去（画面/音频零漂移，后期再对）。
+ *   node tools/demo-music.js --pass=xxx    # 正式录制
+ *   node tools/demo-music.js --dry         # 彩排（不开录、不扫鼠标）
  */
 
 const fs = require('node:fs');
@@ -66,24 +63,14 @@ function connect(url) {
 }
 
 let cdp;
-async function evaluate(expression) {
-  const r = await cdp.call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+async function evaluate(expression, awaitPromise = false) {
+  const r = await cdp.call('Runtime.evaluate', { expression, awaitPromise, returnByValue: true });
   if (r.result && r.result.exceptionDetails) throw new Error('页面执行出错: ' + JSON.stringify(r.result.exceptionDetails.exception?.description || r.result.exceptionDetails).slice(0, 300));
   return r.result?.result?.value;
 }
 
 const ui = {
-  nextImage: `(() => { document.getElementById('btn-next')?.click(); return true; })()`,
   statusText: `(() => (document.getElementById('depth-status')?.textContent || ''))()`,
-  getInterval: `(() => Number(document.getElementById('cfg-interval')?.value) || 0)()`,
-  setInterval: (v) => `(() => {
-    const s = document.getElementById('cfg-interval');
-    if (!s) return false;
-    s.value = '${v}';
-    s.dispatchEvent(new Event('input', { bubbles: true }));
-    s.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`,
   getStyle: `(() => document.getElementById('cfg-flow-style')?.value || '')`,
   setFlowStyle: (v) => `(() => {
     const s = document.getElementById('cfg-flow-style');
@@ -92,6 +79,13 @@ const ui = {
     s.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`,
+  probe: `(async () => {
+    const c = await window.wp.getConfig();
+    const mainId = Object.keys(c.monitors || {}).find((k) => !k.includes('CYS1610'));
+    const albums = (c.albums || []).map((a) => ({ id: a.id, name: a.name }));
+    return { mainId, prof: c.monitors[mainId], albums, flowStyle: c.flowStyle };
+  })()`,
+  channel: (mainId, action, payload) => `(async () => window.wp.channelCommand(${JSON.stringify(mainId)}, '${action}', ${JSON.stringify(payload || {})}))()`,
 };
 
 // ---- 真实光标（koffi SendInput，横向正弦扫）----
@@ -129,26 +123,34 @@ async function waitDepthReady(timeoutMs) {
   }
   return null;
 }
+const waitDepthReadyShort = () => waitDepthReady(30000);
 
 function obs(...args) {
   const r = spawnSync('node', [OBS_CTL, ...args, `--pass=${PASS}`], { encoding: 'utf8', timeout: 30000 });
   return (r.stdout || '') + (r.stderr || '');
 }
 
-// 演示编排：每段一个轨迹（轮换），指定段落扫鼠标
-const STYLE_LABEL = { circle: '镜头轨迹 · 环绕', orbital: '镜头轨迹 · 公转', dolly: '镜头轨迹 · 推拉' };
-const STYLES = ['circle', 'orbital', 'dolly'];
-// 扫鼠标：段号 -> 秒数（段开头 +2.5s 起）
-const SWEEPS = { 0: 6, 3: 4, 6: 4, 7: 8 };  // 7 号段含副歌中心 ~204s
+// ---- 编排：乐句段交替 横屏(circle/cover) ↔ 竖屏(orbital/collage) ----
+const ALBUM_H = 'h', ALBUM_V = 'v';
+const STYLE_OF = { [ALBUM_H]: 'circle', [ALBUM_V]: 'orbital' };
+const LABEL_OF = { [ALBUM_H]: '横屏 · 镜头环绕', [ALBUM_V]: '竖屏拼接 · 摆动环绕' };
 
 function buildPlan() {
-  const pts = [...TIMELINE.switches, TIMELINE.duration];
+  const bnds = [...TIMELINE.phrases, TIMELINE.duration];
   const segs = [];
   let prev = 0;
-  for (let i = 0; i < pts.length; i++) {
-    segs.push({ idx: i, start: prev, end: pts[i], style: i === 0 ? 'circle' : STYLES[i % 3],
-      label: i === 0 ? '深度视差 · 鼠标跟随' : STYLE_LABEL[STYLES[i % 3]], sweep: SWEEPS[i] || 0 });
-    prev = pts[i];
+  for (let i = 0; i < bnds.length; i++) {
+    const album = i % 2 === 0 ? ALBUM_H : ALBUM_V;
+    segs.push({ idx: i, start: prev, end: bnds[i], album, style: STYLE_OF[album],
+      label: LABEL_OF[album], sweep: 0 });
+    prev = bnds[i];
+  }
+  // 鼠标扫动：首段 6s；副歌所在段 8s；中途均匀挑两段各 4s（钳到段长内）
+  const chorusSeg = segs.find((s) => TIMELINE.chorusCenter >= s.start && TIMELINE.chorusCenter < s.end);
+  const mid1 = segs[Math.floor(segs.length * 0.3)], mid2 = segs[Math.floor(segs.length * 0.6)];
+  const want = new Map([[segs[0].idx, 6], [mid1.idx, 4], [mid2.idx, 4], [chorusSeg.idx, 8]]);
+  for (const s of segs) {
+    if (want.has(s.idx)) s.sweep = Math.max(2, Math.min(want.get(s.idx), s.end - s.start - 3));
   }
   return segs;
 }
@@ -162,87 +164,108 @@ function buildPlan() {
   cdp = await connect(page.webSocketDebuggerUrl);
   await cdp.call('Runtime.enable', {});
 
-  const plan = buildPlan();
-  const segsDesc = plan.map((s) => `${fmt(s.start)} ${s.label}${s.sweep ? ` +扫${s.sweep}s` : ''}`).join('\n  ');
-  cue(`时间轴（${TIMELINE.duration}s = ${fmt(TIMELINE.duration)}）：\n  ${segsDesc}`);
+  // 0) 探频道/相簿
+  const info = await evaluate(ui.probe, true);
+  if (!info || !info.mainId) throw new Error('探不到主屏频道（monitors 空？）');
+  const MAIN = info.mainId;
+  const albumH = (info.albums.find((a) => a.name.includes('横屏')) || {}).id;
+  const albumV = (info.albums.find((a) => a.name.includes('竖屏')) || {}).id;
+  if (!albumH || !albumV) throw new Error('相簿清单里没找到「横屏/竖屏」：' + JSON.stringify(info.albums));
+  const styleRaw = await evaluate(ui.getStyle);
+  const orig = { albumId: info.prof.albumId, fit: info.prof.fit || 'cover',
+    style: (typeof styleRaw === 'string' && styleRaw) ? styleRaw : 'circle' };
+  snapshotOrig(orig, MAIN);
+  let curAlbum = orig.albumId, curFit = orig.fit;
+  cue(`主屏频道=${MAIN.slice(0, 40)}…｜相簿=${orig.albumId} fit=${orig.fit}｜横屏=${albumH} 竖屏=${albumV}`);
 
-  // 1) 预热：把接下来要展示的图全部提前推好深度（顺序固定，从当前位置往后数）
-  const nWarm = plan.length + 2;
-  cue(`预热：连切 ${nWarm} 张等深度就绪（画面会快速换图，属正常）`);
-  for (let i = 0; i < nWarm; i++) {
-    await evaluate(ui.nextImage);
-    const st = await waitDepthReady(60000);
-    if (!st) console.log(`  ⚠ 第 ${i + 1} 张 60s 未就绪，继续（录的时候可能现场推理）`);
-    await sleep(800);
+  const cmd = (action, payload) => evaluate(ui.channel(MAIN, action, payload), true);
+
+  // 切一段：填充 → 相簿（变了才动）→ 轨迹 → 下一张
+  async function applySegment(s) {
+    const wantFit = s.album === ALBUM_V ? 'collage' : orig.fit;
+    if (wantFit !== curFit) { await cmd('set-profile', { fit: wantFit }); curFit = wantFit; await sleep(400); }
+    const target = s.album === ALBUM_V ? albumV : albumH;
+    if (target !== curAlbum) {
+      await cmd('set-profile', { albumId: target });   // scheduler 对同一相簿保留播放位置
+      curAlbum = target;
+      await sleep(1000);                               // 等频道重建
+    }
+    await evaluate(ui.setFlowStyle(s.style));
+    await cmd('next');
   }
-  cue('预热完成，深度缓存已热');
 
-  // 2) 定时器临时调大（中和 30s 轮播），记下原值
-  const oldInterval = await evaluate(ui.getInterval);
-  await evaluate(ui.setInterval(3600));
-  cue(`轮播间隔 ${oldInterval}s → 3600s（录完还原）`);
+  const plan = buildPlan();
+  cue(`时间轴（${plan.length} 段，乐句 8~16s）：\n  ` +
+    plan.map((s) => `${fmt(s.start)} ${s.album === 'h' ? '横' : '竖'}${s.sweep ? ` +扫${Math.round(s.sweep)}s` : ''}`).join(' '));
+
+  // 1) 预热：按时间轴完整走一遍，等深度就绪（30s 上限，超时也继续——缓存异步补齐）
+  cue(`预热：按 ${plan.length} 段完整走一遍`);
+  for (const s of plan) {
+    const t0 = Date.now();
+    await applySegment(s);
+    const st = await waitDepthReadyShort();
+    console.log(`  段 ${s.idx} (${s.album === 'h' ? '横' : '竖'}) ${((Date.now() - t0) / 1000).toFixed(1)}s ${st ? '✓' : '⚠未就绪'}`);
+    await sleep(400);
+  }
+  cue('预热完成（横竖屏的图深度已尽量热，位置已推进到末段）');
 
   if (DRY) {
-    cue('彩排：按时间轴顺序试切一遍（每段 2s，不开录不改鼠标）');
-    for (const s of plan.slice(1)) {
-      await evaluate(ui.setFlowStyle(s.style));
-      await evaluate(ui.nextImage);
+    cue('彩排：再快走一遍（每段 1.5s，不开录不扫鼠标）');
+    for (const s of plan) {
+      await applySegment(s);
       console.log(`  [${fmt(s.start)}] ${s.label} (${s.style})`);
-      await sleep(2000);
+      await sleep(1500);
     }
-    await evaluate(ui.setFlowStyle('circle'));
-    await evaluate(ui.setInterval(oldInterval));
-    cue(`彩排完成，配置已还原（interval=${oldInterval}, style=circle）`);
+    await restoreAll();
+    cue('彩排完成，配置已还原');
     return;
   }
 
-  // 3) OBS 切主屏场景并开录
+  // 2) 回到首段（横屏+环绕），就绪后开录
+  await applySegment(plan[0]);
+  const st0 = await waitDepthReady(30000);
+  cue(`回到首段（横屏 · 环绕）${st0 ? '就绪' : '⚠未就绪'}`);
+
   cue('OBS：切「录-主屏」→ 开录');
   const mainOut = obs('main');
   console.log(mainOut.trim());
   const startOut = obs('start');
   console.log(startOut.trim());
   if (mainOut.includes('✖') || startOut.includes('✖')) {
-    await evaluate(ui.setInterval(oldInterval));
+    await restoreAll();
     throw new Error('OBS 开录失败（见上），配置已还原');
   }
-  const T0 = Date.now();
-  cue(`录制开始 T0 —— 目标时长 ${fmt(TIMELINE.duration)}，期间鼠标会被脚本接管扫动 ${Object.values(SWEEPS).reduce((a, b) => a + b, 0)}s，请勿操作`);
+  cue(`录制开始 T0 —— 时长 ${fmt(TIMELINE.duration)}，鼠标共被接管 ~${Math.round(plan.reduce((a, s) => a + (s.sweep || 0), 0))}s，请勿操作`);
 
   const cursor = makeCursor();
-  const timers = [];
-  for (const s of plan.slice(1)) {   // 段 0 从 T0 直接开始，不用切
-    timers.push(setTimeout(async () => {
-      try {
-        await evaluate(ui.setFlowStyle(s.style));
-        await evaluate(ui.nextImage);
-        console.log(`  [${fmt(s.start)}] 切换 → ${s.label} (${s.style})`);
-      } catch (e) { console.error('  切换失败:', e.message); }
-    }, s.start * 1000));
-    if (s.sweep) {
-      timers.push(setTimeout(() => cursor.sweep(s.sweep), (s.start + 2.5) * 1000));
-    }
+  for (const s of plan.slice(1)) {
+    setTimeout(() => { applySegment(s).catch((e) => console.error('  切换失败:', e.message)); }, s.start * 1000);
+    if (s.sweep) setTimeout(() => cursor.sweep(s.sweep), (s.start + 2) * 1000);
   }
-
   await sleep(TIMELINE.duration * 1000 + 1500);
-  timers.forEach(clearTimeout);
   cue('歌曲结束，停录');
-  const stopOut = obs('stop').trim();
-  console.log(stopOut);
+  console.log(obs('stop').trim());
 
-  // 4) 还原配置
-  await evaluate(ui.setFlowStyle('circle'));
-  await evaluate(ui.setInterval(oldInterval));
-  cue(`配置已还原（interval=${oldInterval}, style=circle）`);
-
-  // 5) SRT 字幕（后期加讲解用，剪映可直接导入）
+  // 3) 还原 + SRT
+  await restoreAll();
   const srt = (sec) => {
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s2 = Math.floor(sec % 60), ms = Math.round((sec % 1) * 1000);
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s2).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
   };
   const srtPath = path.join(ROOT, 'tools', 'out', 'demo-music.srt');
   fs.mkdirSync(path.dirname(srtPath), { recursive: true });
-  const srtBody = plan.map((s, i) => `${i + 1}\n${srt(s.start)} --> ${srt(s.end)}\n${s.label}\n`).join('\n');
-  fs.writeFileSync(srtPath, srtBody, 'utf8');
-  cue(`字幕已生成：${srtPath}\n完成。接下来把歌 mux 进视频：见本次回复里的 ffmpeg 命令`);
+  fs.writeFileSync(srtPath, plan.map((s, i) => `${i + 1}\n${srt(s.start)} --> ${srt(s.end)}\n${s.label}\n`).join('\n'), 'utf8');
+  cue(`字幕已生成：${srtPath}\n完成。`);
 })().catch((e) => { console.error('✖ ' + e.message); process.exit(1); });
+
+let _orig = { albumId: null, fit: 'cover', style: 'circle' };
+let _mainId = null;
+function snapshotOrig(o, mainId) { _orig = { ...o }; _mainId = mainId; }
+async function restoreAll() {
+  try {
+    if (!_mainId) return;
+    await evaluate(ui.setFlowStyle(String(_orig.style || 'circle')));
+    await evaluate(`(async () => window.wp.channelCommand(${JSON.stringify(_mainId)}, 'set-profile', { albumId: ${JSON.stringify(_orig.albumId)}, fit: ${JSON.stringify(_orig.fit)} }))()`, true);
+    cue(`配置已还原（album=横屏, fit=${_orig.fit}, style=${String(_orig.style || 'circle')}；interval 未动）`);
+  } catch (e) { console.error('还原出错:', e.message); }
+}

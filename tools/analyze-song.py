@@ -47,18 +47,40 @@ def find_switch_points(env, win, dur, n_seg=8):
         t0 = max(t + step * 0.85, t0 + step * 0.6)
     return pts
 
+def find_phrase_boundaries(env, win, dur, min_gap=8.0, max_gap=16.0):
+    """乐句边界 = 平滑能量包络的局部谷底（句间换气/间奏）。
+    从 ~9s 开始，在 [prev+min_gap, prev+max_gap] 里找最低点作边界，
+    输出「唱完一句」级别的切图时间轴。"""
+    k = max(1, int(1.2 / win))                  # ~1.2s 平滑窗
+    smooth = np.convolve(env, np.ones(k) / k, mode='same')
+    pts = []
+    prev = 9.0
+    while prev < dur - 8.0:
+        lo = int((prev + min_gap) / win)                 # 最早可切：prev+8s
+        hi = min(len(smooth) - 1, int((prev + max_gap) / win))  # 最晚：prev+16s
+        if hi - lo < 2:
+            break
+        k2 = lo + int(np.argmin(smooth[lo:hi]))
+        t = k2 * win + win / 2
+        pts.append(round(float(min(t, dur - 4)), 2))
+        prev = t
+    return pts
+
 def main():
     src, out = sys.argv[1], sys.argv[2]
     x, sr = decode_mono(src)
     dur = len(x) / sr
     env, win = rms_envelope(x, sr)
     pts = find_switch_points(env, win, dur)
+    bnds = find_phrase_boundaries(env, win, dur)
     # 全曲能量峰值区间（副歌）—— 供「资金镜头」排鼠标扫动
     seg = max(range(len(env) - 12), key=lambda i: env[i:i+12].mean())
     chorus = round(seg * win, 2)
-    json.dump({'duration': round(dur, 2), 'switches': pts, 'chorusCenter': chorus},
+    json.dump({'duration': round(dur, 2), 'switches': pts, 'chorusCenter': chorus,
+               'phrases': bnds},
               io.open(out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
-    print('时长 %.1fs | 切换点: %s | 副歌中心 ~%.1fs' % (dur, pts, chorus))
+    print('时长 %.1fs | 段落切换点: %s | 乐句边界(%d): %s | 副歌 ~%.1fs'
+          % (dur, pts, len(bnds), bnds, chorus))
 
 if __name__ == '__main__':
     main()
