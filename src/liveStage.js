@@ -276,16 +276,27 @@ function takeWarmWindow(displayId) {
 
 async function prewarm() {
   if (!running || warmWindows.size || stages.size) return;   // 只认「启动空白窗」场景
+  // 先把每块屏的窗口全部建出来再逐个等加载 —— 逐屏 await 会让第 N 块屏的
+  // 页面加载排在第 N-1 块后面，冷开机下副屏享受不到并行（2026-10-17 实测：
+  // 串行版只有主屏收养到暖窗）
+  const pending = [];
   for (const d of screen.getAllDisplays()) {
     if (!running) return;
     const sb = stageBoundsFromDisplay(d);
     const win = spawnStageWindow(sb.dip);
     const loaded = win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
     warmWindows.set(d.id, { win, displayId: d.id, at: Date.now(), loaded });
+    pending.push({ d, win, loaded });
+  }
+  for (const { d, win, loaded } of pending) {
     try { await loaded; } catch (err) {
-      // 加载失败（stop 销毁窗口等）：丢弃暖窗，createStage 回落新建
-      warmWindows.delete(d.id);
-      try { win.destroy(); } catch { /* 已销毁 */ }
+      // 加载失败（stop 销毁窗口等）：丢弃暖窗，createStage 回落新建。
+      // 已被 createStage 收养的（不在 map 里）绝不能动 —— destroy 会杀掉在播舞台
+      const still = warmWindows.get(d.id);
+      if (still && still.win === win) {
+        warmWindows.delete(d.id);
+        try { win.destroy(); } catch { /* 已销毁 */ }
+      }
       debugLog.dlog('live-stage', `预创建窗口加载失败（display=${d.id}）：${err.message}`);
     }
   }
