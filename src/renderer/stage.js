@@ -87,11 +87,10 @@ const cfg = {
   pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
   particleDepth: true,         // 粒子深度遮挡（r74，profile.particleDepth）：开=前景挡住粒子（雨/雪/樱花首批；需深度图，无深度自动跳过）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
-  // ---- 深度呼吸律动（验证版 r79）：近景随相位上下微移、背景钉住 ----
-  // ⚠️ r73 教训：idle 差速微动画「被双层合成覆盖，感知不到」而删除 —— 本版幅度是
-  // 自然量级的 3~5 倍，专为真机感知度验收；过关后收敛幅度再转正。
-  depthBreath: true,           // 验证版默认开（profile.depthBreath=false 显式关）
-  depthBreathAmp: 0.05,        // 验证幅度：图像高度占比 ±5%（自然量级约 ±1~1.5%）
+  // ---- 深度呼吸律动（r79：真机感知度验收过关 —— ±5% 验证幅度清晰可见，r73「差速感知不到」翻案）----
+  // 转正幅度收敛到自然量级：±1.5% 图像高度（社区共识小幅动 > 大幅动）。
+  depthBreath: true,           // 默认开（profile.depthBreath=false 显式关）
+  depthBreathAmp: 0.015,       // 自然量级：图像高度占比 ±1.5%（验证版曾用 ±0.05）
   depthBreathPeriod: 5000,     // 呼吸周期 ms（一吸一呼）
 };
 
@@ -1029,9 +1028,9 @@ const glState = {
 };
 
 /**
- * 深度呼吸律动（验证版 r79）：当前相位位移量（图像高度占比，-amp..amp）。
- * 余弦振荡（吸入慢呼出快没有，先纯对称）；幅度=cfg.depthBreathAmp（验证版 ±0.05，
- * r73 同类差速效果「感知不到」被删 —— 本版故意夸张，真机过关后收敛）。
+ * 深度呼吸律动（r79 转正版）：当前相位位移量（图像高度占比，-amp..amp）。
+ * 余弦对称振荡；幅度=cfg.depthBreathAmp（默认 ±0.015 自然量级 —— 验证版 ±0.05
+ * 真机实锤「清晰可见」，r73「差速感知不到」翻案；profile 可调）。
  * 相位永不重置（rAF 停在暂停/冻结，恢复时 performance.now 连续，无跳变）。
  */
 function breathNow(now) {
