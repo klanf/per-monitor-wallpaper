@@ -417,20 +417,32 @@ function scheduleEvictSweep() {
   if (t.unref) t.unref();
 }
 
-/** 全量扫缓存目录，超限就按 mtime 从旧到新删到 90% */
-function evictSweep() {
+/**
+ * 全量扫缓存目录，超限就按 mtime 从旧到新删到 90%。
+ * ⚠️ 必须异步 + 分批（第七十六轮）：旧版 readdirSync + 逐文件 statSync 全同步，
+ * 冷开机（Defender 实扫 + 盘未热）下 8000+ 个 stat 每个几十 ms，一次扫掉
+ * main 的 uv 事件循环 2~4 分钟 —— tick/probe 超时/手势轮询全部冻结，
+ * stage 取图请求排不上 → 黑屏；堵完恢复瞬间积压定时器齐发还触发过 Electron
+ * 内部 CHECK 崩溃（用户左滑闪退）。异步化后慢归慢，主线永不被咬死。
+ */
+const fsp = fs.promises;
+const EVICT_BATCH = 256;          // 每批 stat 数，批间让出一拍事件循环
+const evictYield = () => new Promise((r) => setImmediate(r));
+
+async function evictSweep() {
   if (!state.cacheDir) return;
   let names;
-  try { names = fs.readdirSync(state.cacheDir); } catch { return; }
+  try { names = await fsp.readdir(state.cacheDir); } catch { return; }
   let total = 0;
   const items = [];
-  for (const name of names) {
+  for (let i = 0; i < names.length; i += 1) {
     try {
-      const st = fs.statSync(path.join(state.cacheDir, name));
+      const st = await fsp.stat(path.join(state.cacheDir, names[i]));
       if (!st.isFile()) continue;
       total += st.size;
-      items.push({ name, size: st.size, mtime: st.mtimeMs });
+      items.push({ name: names[i], size: st.size, mtime: st.mtimeMs });
     } catch (_) { /* 竞态消失：当没这文件 */ }
+    if ((i + 1) % EVICT_BATCH === 0) await evictYield();
   }
   if (total <= state.cacheLimitBytes) return;
   const target = state.cacheLimitBytes * EVICT_TARGET;
@@ -439,7 +451,7 @@ function evictSweep() {
   for (const it of items) {
     if (total - freed <= target) break;
     try {
-      fs.unlinkSync(path.join(state.cacheDir, it.name));
+      await fsp.unlink(path.join(state.cacheDir, it.name));
       freed += it.size; removed += 1;
     } catch (_) { /* 占用中/已消失：跳过，下一轮再收 */ }
   }
