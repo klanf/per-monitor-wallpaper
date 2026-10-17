@@ -1475,8 +1475,10 @@ const DEPTH_PREFETCH_AHEAD = 2;
 
 /**
  * 空闲预取（第十一轮）：每次切图后，把每个频道接下来要显示的前两张的深度
- * 提前喂给 depthService。队列空了才派活（不跟「正在看的那张」抢优先级），
- * 已缓存/非图片自动跳过 —— 具体纪律都在 depthService.prefetch 里。
+ * 提前喂给 depthService。已缓存/非图片自动跳过 —— 具体纪律都在 depthService.prefetch 里。
+ * 第七十六轮：从 k=0（当前张）起喂 —— 当前张的深度此前要等 30s 后首次 tick miss
+ * 才入队，视差层要 30s+ 才动得起来（2026-10-17 冷开机实测：壁纸 0.6s 上屏、
+ * 首张深度 33s）。当前张大概率已有缓存，prefetch 里 existsSync 直接跳过，零开销。
  */
 function prefetchUpcomingDepths() {
   try {
@@ -1485,12 +1487,17 @@ function prefetchUpcomingDepths() {
       if (!ch.count) continue;
       const files = scheduler.files(ch.id);
       if (!files.length) continue;
-      for (let k = 1; k <= DEPTH_PREFETCH_AHEAD; k++) {
+      // 队列 LIFO（队尾先出）→ 想让当前张最先派活，它必须最后入队：
+      // 先喂 +1..+2，当前张压轴（第七十六轮）。
+      for (let k = DEPTH_PREFETCH_AHEAD; k >= 1; k--) {
         const ent = files[(ch.index + k) % files.length];
         const p = ent && ent.path;
         if (!p || !DEPTH_IMAGE_EXTS.has(path.extname(p).toLowerCase())) continue;
         depthService.prefetch(p);
       }
+      const cur = files[ch.index % files.length];
+      const cp = cur && cur.path;
+      if (cp && DEPTH_IMAGE_EXTS.has(path.extname(cp).toLowerCase())) depthService.prefetch(cp);
     }
   } catch (err) {
     console.warn('[depth-prefetch]', err.message);
