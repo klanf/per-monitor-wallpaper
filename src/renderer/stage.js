@@ -75,7 +75,8 @@ const cfg = {
   depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
   depthLight: 0.45,            // 灯光强度（profile.depthLight）
   // ---- DepthFlow 流模式参数（Circle 预设默认值；profile 同名键）----
-  flowStyle: 'circle',         // 动效轨迹：circle 环绕 / orbital 摆动环绕 / dolly 推拉变焦
+  flowStyle: 'circle',         // 动效轨迹：circle/orbital/dolly/horizontal/vertical/random（random=每次换图抽签）
+  flowGentle: false,           // 轻柔档（2026-10-18 防晕调研）：幅度×0.5、速度×0.7
   flowIntensity: 0.5,          // 轨迹幅度（0.5 = Circle 预设；鼠标接管幅度同源）
   flowIso: 0.6,                // 斜视角（越大立体越强、越歪）
   flowSteady: 0.3,             // 背景稳定点（越大背景越稳、前景越动）
@@ -1211,10 +1212,35 @@ function glCam(tSec, nowMs) {
  * steady/height 走用户滑杆（切风格时 app.js 会写入该风格的预设默认值）。
  */
 const FLOW_STYLE_PARAMS = {
-  circle:  { focus: 0.0,  zoom: 1.0 },
-  orbital: { focus: 0.30, zoom: 0.98 },
-  dolly:   { focus: 0.35, zoom: 0.95 },
+  circle:     { focus: 0.0,  zoom: 1.0 },
+  orbital:    { focus: 0.30, zoom: 0.98 },
+  dolly:      { focus: 0.35, zoom: 0.95 },
+  horizontal: { focus: 0.0,  zoom: 1.0 },   // 横移：单轴正弦（2026-10-18 调研补齐，防晕首选）
+  vertical:   { focus: 0.0,  zoom: 1.0 },   // 升降：单轴纵向（人眼对纵向运动更敏感，默认幅度已减半）
 };
+
+/** flowStyle='random'（2026-10-18）：每次换图抽一种具体轨迹（showFrame 时决定，
+ * 同一张图显示期间不变）。zoom/dollyzoom 已删（用户实测晕感太强），不进池。 */
+const FLOW_RANDOM_POOL = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical'];
+
+/** 当前生效轨迹：非 random = 跟随配置；random = showFrame 时抽签落这里 */
+let flowStyleActive = 'circle';
+let flowStyleLast = '';        // 上一次抽中的轨迹：random 连续不重样（观感上保证「每次都换了」）
+
+/** 抽本次换图的流模式轨迹（对齐 pickAnimName 的做法）。
+ * random 模式避开上一次的抽签（5 选 4），换图必有可感知变化；落 slog 便于取证。 */
+function pickFlowStyle() {
+  flowStyleActive = cfg.flowStyle === 'random'
+    ? (() => {
+      const candidates = FLOW_RANDOM_POOL.filter((s) => s !== flowStyleLast);
+      const pick = candidates[(Math.random() * candidates.length) | 0];
+      if (flowStyleLast) slog('流模式随机抽签:', pick, `（上次=${flowStyleLast}）`);
+      flowStyleLast = pick;
+      return pick;
+    })()
+    : (FLOW_STYLE_PARAMS[cfg.flowStyle] ? cfg.flowStyle : 'circle');
+  return flowStyleActive;
+}
 /**
  * 流模式（DepthFlow 预设移植）相机：返回 { off:[x,y], iso }。
  * off = 屏幕位移（y 向下；DepthFlow offset 是 y 向上，自动项已取反），
@@ -1223,12 +1249,20 @@ const FLOW_STYLE_PARAMS = {
  *   circle  —— offset=(cos,-sin)*amp，iso 恒定（滑杆）
  *   orbital —— offset=(sin,0)*amp，iso=0.5·cos+0.75 摆动环绕（focus 0.30/zoom 0.98）
  *   dolly   —— offset=0，iso=0.5·(1-cos) 推拉变焦（height 0.30/steady 0.35/focus 0.35/zoom 0.95）
+ *   horizontal —— offset=(sin,0)*amp 单轴横移（DepthFlow Horizontal，steady 缓冲走滑杆）
+ *   vertical   —— offset=(0,-sin)*amp*0.5 单轴升降（纵向幅度减半：人眼对纵向运动更敏感易晕）
+ *   random     —— 每次换图从 FLOW_RANDOM_POOL 抽一种（pickFlowStyle 在 showFrame 落签）
+ * 轻柔档（cfg.flowGentle）：幅度 ×0.5、速度 ×0.7 —— 防晕总闸（2026-10-18 社区调研）。
  * 鼠标接管：位移平滑淡入（iso 不受鼠标影响）。
  */
 function glCamFlow(tSec, nowMs) {
-  const amp = cfg.flowIntensity;   // 预设 0.5；鼠标接管幅度同源
-  const cycle = (tSec / 8.0) * Math.PI * 2 * cfg.depthDrift;
-  const style = FLOW_STYLE_PARAMS[cfg.flowStyle] ? cfg.flowStyle : 'circle';
+  let amp = cfg.flowIntensity;   // 预设 0.5；鼠标接管幅度同源
+  let cycle = (tSec / 8.0) * Math.PI * 2 * cfg.depthDrift;
+  if (cfg.flowGentle === true) {   // 轻柔档：幅度×0.5 + 速度×0.7
+    amp *= 0.5;
+    cycle *= 0.7;
+  }
+  const style = flowStyleActive;
   let ax = 0, ay = 0, iso = cfg.flowIso;
   if (style === 'circle') {
     ax = Math.cos(cycle) * amp;
@@ -1236,6 +1270,10 @@ function glCamFlow(tSec, nowMs) {
   } else if (style === 'orbital') {
     ax = Math.sin(cycle) * amp;
     iso = 0.5 * Math.cos(cycle) + 0.75;      // Orbital：isometric 动态摆动
+  } else if (style === 'horizontal') {
+    ax = Math.sin(cycle) * amp;              // Horizontal：纯横移
+  } else if (style === 'vertical') {
+    ay = -Math.sin(cycle) * amp * 0.5;       // Vertical：纵向减半防晕
   } else {                                   // dolly
     iso = 0.5 * (1.0 - Math.cos(cycle));     // Dolly：无位移，纯推拉变焦
   }
@@ -1284,7 +1322,7 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.uniform1f(glState.U.uFlowIso, flowIso);
   gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
   gl.uniform1f(glState.U.uFlowHeight, cfg.flowHeight);
-  const flowP = FLOW_STYLE_PARAMS[cfg.flowStyle] || FLOW_STYLE_PARAMS.circle;
+  const flowP = FLOW_STYLE_PARAMS[flowStyleActive] || FLOW_STYLE_PARAMS.circle;
   gl.uniform1f(glState.U.uFlowFocus, flowP.focus);
   gl.uniform1f(glState.U.uFlowZoom, flowP.zoom);
   gl.uniform1f(glState.U.uFlowQ, Math.min(1, Math.max(0.15, cfg.flowQuality || 0.5)));
@@ -1672,6 +1710,7 @@ async function showFrame(entry, dir, animate) {
   const kind = kindOf(entry);
   collage.active = false;   // 新帧默认不再是 2D 拼接（只有拼接 2D 分支会置回 true）
   feedParticleDepth(null);  // r74：粒子遮挡默认清 —— 2D/拼接/网页/视频各路都别吃上一张的深度（GL 深度命中时会重喂）
+  pickFlowStyle();          // 流模式 random 每次换图抽签（对齐 pickAnimName；非 random 幂等回填）
 
   const incomingKey = active === 'A' ? 'B' : 'A';
   if (!showFrame._logged) {
@@ -1943,7 +1982,11 @@ function applyChannelConfig() {
   if (Number.isFinite(p.flowIso)) cfg.flowIso = p.flowIso;
   if (Number.isFinite(p.flowSteady)) cfg.flowSteady = p.flowSteady;
   if (Number.isFinite(p.flowHeight)) cfg.flowHeight = p.flowHeight;
-  if (typeof p.flowStyle === 'string' && FLOW_STYLE_PARAMS[p.flowStyle]) cfg.flowStyle = p.flowStyle;
+  if (typeof p.flowStyle === 'string' && (p.flowStyle === 'random' || FLOW_STYLE_PARAMS[p.flowStyle])) {
+    cfg.flowStyle = p.flowStyle;
+    pickFlowStyle();   // 立刻换签：当前图显示中改配置也要马上生效
+  }
+  if (p.flowGentle !== undefined) cfg.flowGentle = Boolean(p.flowGentle);
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
   // idle 微动画已于 r73 移除：差速视差被双层合成覆盖，呼吸/飘动幅度微弱感知不到
   // 双层视差（2026-10-16 路线 1，profile 不写 = 默认关）

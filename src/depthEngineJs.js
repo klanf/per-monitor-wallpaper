@@ -39,6 +39,7 @@ const state = {
   segFailed: false,            // 模型缺失/加载失败 → 本 worker 生命周期内回落 Otsu 深度 mask
   animeSession: null,          // isnetis 动漫角色分割会话（首选分割器，恒 CPU EP）
   animeFailed: false,          // 模型缺失/加载失败 → 本 worker 生命周期内回落 u2netp
+  segBackend: 'auto',          // 分割后端（设置页切换）：'auto'=isnetis 精准优先；'fast'=u2netp 快速优先
 };
 
 function log(...args) {
@@ -775,6 +776,12 @@ async function segmentAnime(sharp, imgPath, dw, dh) {
 
 /** 分割链：isnetis（动漫专训，首选）→ u2netp（通用显著图）→ null（调用方回落 Otsu 深度）。 */
 async function segmentAny(sharp, imgPath, dw, dh) {
+  // fast 档（设置页「分割模型=快速」）：u2netp 打头（~220ms），失败才回落 isnetis
+  if (state.segBackend === 'fast') {
+    try { return await segmentPerson(sharp, imgPath, dw, dh); } catch (err) {
+      log('u2netp 分割不可用，回落 isnetis:', err.message);
+    }
+  }
   try { return await segmentAnime(sharp, imgPath, dw, dh); } catch (err) {
     log('isnetis 分割不可用，回落 u2netp:', err.message);
   }
@@ -955,6 +962,10 @@ async function ensureSession() {
 }
 
 function configure(patch) {
+  // 分割后端切换：轻量偏好，不用释放任何会话（下一张图按新后端选分割器）
+  if (patch && typeof patch.segBackend === 'string') {
+    state.segBackend = patch.segBackend === 'fast' ? 'fast' : 'auto';
+  }
   if (!patch || typeof patch.depthDevice !== 'string') return;
   const next = patch.depthDevice === 'cpu' ? 'cpu' : 'gpu';
   if (next === state.depthDevice) return;
@@ -970,9 +981,8 @@ function configure(patch) {
 function armReleaseTimer() {
   clearTimeout(state.releaseTimer);
   state.releaseTimer = setTimeout(() => {
-    if (state.session) {
-      state.session.release().catch(() => {});
-      state.session = null;
+    if (state.session || state.animeSession || state.segSession) {
+      close();   // 闲置全量释放（深度 + isnetis + u2netp），下次 miss 重拉
       log('闲置释放 ONNX 会话（省内存，下次 miss 重拉）');
     }
   }, IDLE_RELEASE_MS);
@@ -1013,6 +1023,16 @@ function close() {
   if (state.session) {
     state.session.release().catch(() => {});
     state.session = null;
+  }
+  // 分割会话一并释放：旧版只放深度会话，isnetis/u2netp 一旦加载就常驻 worker
+  // 内存直到线程被 terminate。释放后 ensureXxxSession 下次任务按需重拉（会话级）。
+  if (state.animeSession) {
+    state.animeSession.release().catch(() => {});
+    state.animeSession = null;
+  }
+  if (state.segSession) {
+    state.segSession.release().catch(() => {});
+    state.segSession = null;
   }
 }
 

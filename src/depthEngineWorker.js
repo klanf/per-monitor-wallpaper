@@ -48,7 +48,7 @@ async function handle(msg) {
     let error = '';
     try {
       // 设备偏好随任务下发：ensureSession 建会话前必须就位（切设备=释放旧会话下张重建）
-      engineJs.configure({ depthDevice: msg.depthDevice });
+      engineJs.configure({ depthDevice: msg.depthDevice, segBackend: msg.segBackend });
       if (!engineJs.isReady()) {
         const r = await engineJs.probe(msg.onnxModel);
         if (!r.ok) throw new Error(r.reason || 'JS 引擎不可用');
@@ -66,7 +66,7 @@ async function handle(msg) {
   }
 
   if (msg.type === 'configure') {
-    try { engineJs.configure({ depthDevice: msg.depthDevice }); } catch (_) { /* 偏好记录失败无碍 */ }
+    try { engineJs.configure({ depthDevice: msg.depthDevice, segBackend: msg.segBackend }); } catch (_) { /* 偏好记录失败无碍 */ }
     return;
   }
 

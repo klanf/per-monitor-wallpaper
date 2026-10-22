@@ -1531,6 +1531,10 @@ async function applyConfigChange(patch) {
   if (keys.includes('depthDevice')) {
     depthService.configure({ depthDevice: store.get().depthDevice });
   }
+  // 分割后端切换（isnetis 精准 / u2netp 快速）：轻量转发，不触发整场重探
+  if (keys.includes('segBackend')) {
+    depthService.forwardSegBackend(store.get().segBackend);
+  }
   // 先把「要不要自动开每屏独立」定下来，再重建 —— 一次重建就全生效
   const auto = planAutoMonitorSetup();
   await scheduler.rebuild('config');
@@ -2272,6 +2276,18 @@ if (!gotLock) {
       workerScript: store.get().depthWorkerScript,
       modelDir: store.get().depthModelDir,
       depthDevice: store.get().depthDevice,   // 'cpu'=强制CPU；缺省=GPU(DML)优先（3070 Ti 实测快 5 倍）
+      segBackend: store.get().segBackend,     // 分割后端：'fast'=u2netp 快速，缺省=isnetis 精准
+      // 双层视差消费方探测：顶层或任一显示器 profile 开着才算要（现取，改配置即时生效）
+      wantSeg: () => {
+        const c = store.get();
+        if (c.dualLayer === true) return true;
+        if (c.monitors && typeof c.monitors === 'object') {
+          for (const m of Object.values(c.monitors)) {
+            if (m && m.dualLayer === true) return true;
+          }
+        }
+        return false;
+      },
       onReady: (imagePath) => {
         // 现场升级：正在显示这张图的舞台立刻从 2D 切视差
         send('depth:ready', { path: imagePath });

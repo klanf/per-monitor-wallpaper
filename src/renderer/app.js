@@ -1425,10 +1425,11 @@ function animationOptions(value) {
     `<option value="${val}"${val === value ? ' selected' : ''}>${text}</option>`  )).join('');
 }
 
-/** 每屏卡片深度视差风格下拉（r22）：''=跟随全局 / 三种 DepthFlow 轨迹 */
+/** 每屏卡片深度视差风格下拉（r22）：''=跟随全局 / DepthFlow 轨迹全集 */
 function flowStyleOptions(value) {
   const opts = [
     ['', '跟随全局'], ['circle', '环绕 · Circle'], ['orbital', '摆动环绕 · Orbital'], ['dolly', '推拉变焦 · Dolly'],
+    ['horizontal', '横移 · Horizontal'], ['vertical', '升降 · Vertical'], ['random', '随机 · 每次换图换一种'],
   ];
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
 }
@@ -2545,6 +2546,7 @@ function applyConfigToUI() {
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
   // 总开关已搬顶栏快捷开关（r41）：这里只留设备/模型/参数等细粒度项。
   $('cfg-depth-device').value = c.depthDevice === 'cpu' ? 'cpu' : 'gpu';  // 缺省 = GPU(DML)
+  $('cfg-seg-backend').value = c.segBackend === 'fast' ? 'fast' : 'auto';  // 缺省 = 精准（isnetis）
   const flowKeys = [
     ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', 0.5, (v) => v.toFixed(2)],
     ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', 1.0, (v) => `${v.toFixed(1)}×`],
@@ -2559,7 +2561,8 @@ function applyConfigToUI() {
     $(outId).textContent = fmt(v);
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
-  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly'].includes(c.flowStyle) ? c.flowStyle : 'circle';
+  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical', 'random'].includes(c.flowStyle) ? c.flowStyle : 'circle';
+  $('cfg-flow-gentle').checked = c.flowGentle === true;
   // 氛围调色板（r73；不写 = auto）
   $('cfg-atmo-palette').value = ['golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(c.atmoPalette) ? c.atmoPalette : 'auto';
   // 深度呼吸律动（r80）：顶层键 depthBreath 默认关；幅度存小数、滑条按 %
@@ -2951,6 +2954,14 @@ function bindSettings() {
     toast(v === 'cpu' ? '深度推理已切到 CPU（下一张图生效）' : '深度推理已切到 GPU（下一张图生效）');
     refreshDepthStatus();
   });
+  // 分割模型选择（isnetis 精准 / u2netp 快速）：写配置即生效 —— 主进程实时转发给
+  // 深度引擎线程，下一张图按新后端跑；已生成的缓存 sidecar 不重算。
+  $('cfg-seg-backend').addEventListener('change', async (e) => {
+    const v = e.target.value === 'fast' ? 'fast' : 'auto';
+    await save({ segBackend: v });
+    toast(v === 'fast' ? '分割模型已切到快速（u2netp，下一张图生效）' : '分割模型已切到精准（isnetis，下一张图生效）');
+    refreshDepthStatus();
+  });
   // （深度模型切换（自动/DA3/V2）选项已移除（r68）：DA3 弃用 —— 2×2 隔离对拍实锤
   //   人物区深度扁平 15~18%「2D 纸片」观感是模型特性，候选链还原 master 只认 V2）
   // （DepthFlow 流动模式开关已移除（r23）：恒开 —— 用户实测关掉效果非常差，
@@ -3007,11 +3018,18 @@ function bindSettings() {
   // 动效风格（第十四轮）：切换时把该风格的预设默认写回 steady/height 滑杆
   // （iso 在 orbital/dolly 下由 shader 动态驱动，滑杆仅 circle 生效）
   const FLOW_PRESET_DEFAULTS = {
-    circle:  { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
-    orbital: { flowSteady: 0.30, flowHeight: 0.20 },
-    dolly:   { flowSteady: 0.35, flowHeight: 0.30 },
+    circle:     { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
+    orbital:    { flowSteady: 0.30, flowHeight: 0.20 },
+    dolly:      { flowSteady: 0.35, flowHeight: 0.30 },
+    horizontal: { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 横移：单轴正弦，参数同 Circle
+    vertical:   { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 升降：纵向幅度已在引擎内减半
+    // random：轨迹每次换图才定，参数沿用 Circle 基准（切过来时刷回滑杆）
+    random:     { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
   };
-  const FLOW_STYLE_LABEL = { circle: '环绕 · Circle', orbital: '摆动环绕 · Orbital', dolly: '推拉变焦 · Dolly' };
+  const FLOW_STYLE_LABEL = {
+    circle: '环绕 · Circle', orbital: '摆动环绕 · Orbital', dolly: '推拉变焦 · Dolly',
+    horizontal: '横移 · Horizontal', vertical: '升降 · Vertical', random: '随机 · 每次换图换一种',
+  };
   $('cfg-flow-style').addEventListener('change', async (e) => {
     const v = e.target.value;
     const defaults = FLOW_PRESET_DEFAULTS[v] || {};
@@ -3026,6 +3044,12 @@ function bindSettings() {
       }
     }
     toast(`动效风格：${FLOW_STYLE_LABEL[v] || v}`);
+  });
+
+  // 轻柔档（2026-10-18 防晕调研）：幅度×0.5、速度×0.7，全局生效
+  $('cfg-flow-gentle').addEventListener('change', async (e) => {
+    await save({ flowGentle: e.target.checked });
+    toast(e.target.checked ? '轻柔档已开启：动效更缓更轻（防晕）' : '轻柔档已关闭：恢复标准幅度与速度');
   });
 
   $('cfg-monitor').addEventListener('change', async (e) => {

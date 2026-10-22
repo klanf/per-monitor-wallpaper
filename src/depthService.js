@@ -93,6 +93,8 @@ const state = {
   cacheDir: null,
   cacheLimitBytes: CACHE_LIMIT_BYTES,
   onReady: null,
+  wantSeg: null,               // () => bool：是否有任何一路 profile 开着双层视差（缺省 null = 视为开，保持旧行为）
+  segBackend: 'auto',          // 分割后端（'auto'=isnetis 精准 / 'fast'=u2netp 快速），随任务下发引擎线程
   // 运行态
   worker: null,
   workerBuf: '',
@@ -333,7 +335,7 @@ async function runJsJob(job) {
     const w = spawnJsWorker();
     const seq = ++state.wtSeq;
     state.wtJobSeq = seq;
-    w.postMessage({ type: 'generate', seq, onnxModel: state.onnxModel, depthDevice: state.depthDevice, job });
+    w.postMessage({ type: 'generate', seq, onnxModel: state.onnxModel, depthDevice: state.depthDevice, segBackend: state.segBackend, job });
     const res = await new Promise((resolve) => { state.wtWaiter = resolve; });
     if (state.currentJob !== job) return;   // 超时/换引擎后被放弃的迟到结果
     if (!res || !res.ok) throw new Error((res && res.error) || '深度引擎线程返回失败');
@@ -396,6 +398,11 @@ function handleWorkerLine(line) {
     return;
   }
   pump();   // 下一单
+}
+
+/** 是否还有消费方等着分割产物（背景板）。没探到 wantSeg 钩子时视为开（保持旧行为）。 */
+function segWanted() {
+  return typeof state.wantSeg !== 'function' ? true : Boolean(state.wantSeg());
 }
 
 /* ---- 缓存 LRU（第十九轮）---- */
@@ -571,7 +578,8 @@ function pump() {
     // 双层视差（2026-10-16）：老缓存缺背景板时补一次派生 —— JS 引擎恒 CPU
     // （u2netp ~220ms + 人像区扩散填充亚秒），深度本体经 depth_in 直接收编
     // 不再重推理；背景板也齐了才是真跳过。Python 协议不认识 out_bg，无害。
-    if (state.engine === 'js' && !fs.existsSync(trio.bg)) {
+    // 没有任何一路开双层视差时不再补派生 bg（纯烧 CPU，产物无人消费）。
+    if (state.engine === 'js' && segWanted() && !fs.existsSync(trio.bg)) {
       job.out = trio.depth;
       job.depthIn = trio.depth;
       job.outMask = trio.mask;
@@ -641,11 +649,12 @@ function prefetch(entryPath) {
   // 第七十七轮：探测期也先查缓存 —— 深度已在盘上的图不用入队占位，
   // 把队首留给真正缺缓存的新图（lookup 侧同步改为探测期可命中）。
   const trioEarly = trioFor(entryPath);
-  if (trioEarly && fs.existsSync(trioEarly.depth)) return;
+  // 没有双层视差消费方时，bg 不再是预取目标（新图派生时反正缺 bg，靠 depth 短路）
+  if (trioEarly && fs.existsSync(trioEarly.depth) && (fs.existsSync(trioEarly.bg) || !segWanted())) return;
   if (state.engine === 'probing') { enqueue({ path: entryPath }); return; }
   const trio = trioFor(entryPath);
   if (!trio) return;
-  if (fs.existsSync(trio.depth) && fs.existsSync(trio.bg)) return;
+  if (fs.existsSync(trio.depth) && (fs.existsSync(trio.bg) || !segWanted())) return;
   enqueue({ path: entryPath });
 }
 
@@ -679,13 +688,13 @@ function lookup(entryPath) {
 
 function configure(patch) {
   const previousOnnx = state.onnxModel;
-  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'appRoot', 'depthDevice']) {
+  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'wantSeg', 'segBackend', 'appRoot', 'depthDevice']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
   // 设备偏好落 state（r33 起随每个任务下发到引擎线程；引擎线程存活时这里
   // 同步推一条 configure —— 让「切换设备」立刻释放旧会话，下张按新设备重建）
   if (state.wt && state.engine === 'js') {
-    try { state.wt.postMessage({ type: 'configure', depthDevice: state.depthDevice }); } catch (_) { /* 死线程下次派活会重拉 */ }
+    try { state.wt.postMessage({ type: 'configure', depthDevice: state.depthDevice, segBackend: state.segBackend }); } catch (_) { /* 死线程下次派活会重拉 */ }
   }
   // 覆盖项单独记档（空串=显式清除覆盖），resolveRuntime 按覆盖→打包布局→legacy 探测。
   // configure 也被设置页用于单独切换 depthDevice；这种部分更新不能顺手丢掉
@@ -803,6 +812,17 @@ function armProbeRetry(jsReason) {
   if (state.reprobeTimer.unref) state.reprobeTimer.unref();
 }
 
+/**
+ * 分割后端热切换（设置页「分割模型」）：轻量转发，不触发 configure 全链路重探。
+ * 线程活着就立刻推送；没活着（下次派活才拉起）就只落 state，随 generate 消息带下去。
+ */
+function forwardSegBackend(v) {
+  state.segBackend = v === 'fast' ? 'fast' : 'auto';
+  if (state.wt && state.engine === 'js') {
+    try { state.wt.postMessage({ type: 'configure', segBackend: state.segBackend }); } catch (_) { /* 死线程随下次派活带上 */ }
+  }
+}
+
 function stats() {
   return { ...state.stats, queue: state.queue.length, workerAlive: Boolean(state.worker),
     enabled: state.enabled, disabledReason: state.disabledReason,
@@ -848,6 +868,6 @@ function shutdown() {
 }
 
 module.exports = {
-  lookup, prefetch, configure, stats, status, shutdown,
+  lookup, prefetch, configure, stats, status, shutdown, forwardSegBackend,
   __test: { keyFor, modelFingerprint, cacheSchema: DEPTH_CACHE_SCHEMA },
 };
