@@ -595,8 +595,11 @@ function pump() {
     } else { pump(); return; }
   } else {
     job.out = trio.depth;
-    job.outMask = trio.mask;   // r62：前景 mask 与深度同键派生（渲染端 idle 微动画用）
-    job.outBg = trio.bg;       // 双层视差背景板（渲染端人物层身后补全；渲染端缺文件自动降级单层）
+    // 新图也按消费方派生 sidecar（r85 追记）：这里原来无条件带 mask+bg，
+    // 双层视差关掉后每张新图仍在跑 isnetis + 人像区填充（真机实锤：13:52
+    // 重启后白烧 163 张 bg）。mask = 双层视差/人物生动要，bg = 只有双层视差要。
+    if (maskWanted()) job.outMask = trio.mask;
+    if (segWanted()) job.outBg = trio.bg;
   }
   state.currentJob = job;
   state.busy = true;

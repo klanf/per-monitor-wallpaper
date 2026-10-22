@@ -157,6 +157,10 @@ let myChannelIndex = 0;        // 本频道当前 index（tick/applyChannels 更
 let activeVideo = null;        // 当前在播的 <video>（视频壁纸时非空，图片/网页壁纸为 null）
 let particleFx = null;         // 粒子层句柄（particles.js，init 时绑定 #particles）
 
+/** sidecar 迟到升级入口（init 里赋值为 tryMaskUpgrade）：applyChannelConfig 在
+ *  模块作用域，够不到 init 内的函数，开关换挡时走这个钩子当场补取侧车。 */
+let sidecarUpgradeHook = null;
+
 /** 全屏 / 锁屏暂停（stage:pause）：冻结 = 停 rAF，画面钉在当前帧 */
 let frozen = false;
 
@@ -1291,8 +1295,11 @@ async function glLayerFor(imagePath, depthPath) {
 /** 同 glLayerFor，但把原图位图一并带回（不关）—— showFrame 给 2D 层垫底用 */
 async function glLoadLayer(imagePath, depthPath) {
   try {
-    const maskPath = maskPathOf(depthPath);
-    const bgPath = bgPathOf(depthPath);
+    // sidecar 按消费方取（r85 追记）：mask 只有双层视差/人物生动要、bg 只有双层视差要。
+    // 之前无条件取 → 两个开关都关时仍对每张图发两次 wpimg 请求，文件不存在就是
+    // 一串「取图超时/失败，重开一次请求 … wpimg 404」（日志 10-14 起就有）。
+    const maskPath = (cfg.humanMotion || cfg.dualLayer) ? maskPathOf(depthPath) : null;
+    const bgPath = cfg.dualLayer ? bgPathOf(depthPath) : null;
     const [bmp, depBmp, maskBmp, bgBmp] = await Promise.all([
       fetchBitmap({ path: imagePath }),
       depthPath ? fetchBitmap({ path: depthPath }).catch(() => null) : Promise.resolve(null),
@@ -2112,6 +2119,8 @@ function profileOf(id) {
 
 function applyChannelConfig() {
   const p = profileOf(myChannel);
+  const beforeDual = cfg.dualLayer;      // r85 追记：开关换挡后要当场补取侧车
+  const beforeHuman = cfg.humanMotion;
   if (p.animation) cfg.animation = p.animation;
   if (Number.isFinite(p.duration)) cfg.duration = p.duration;
   // 填充方式（r36）：运行中切换要当场收拾 2D 垫底层 —— GL 每帧读 uFit 立即生效，
@@ -2214,6 +2223,12 @@ function applyChannelConfig() {
   }
   rollParticles();
   if (particleFx) particleFx.setConfig(cfg.particlesActive, cfg.particleCount);
+  // 双层视差/人物生动换挡（r85 追记）：建层时按消费方取侧车，开关从关到开的
+  // 这一张可能压根没取过 mask/bg —— 当场重建纹理接上，别等下一张图。
+  if (currentEntry && (cfg.dualLayer !== beforeDual || cfg.humanMotion !== beforeHuman)
+    && (cfg.dualLayer || cfg.humanMotion) && sidecarUpgradeHook) {
+    sidecarUpgradeHook({ path: currentEntry.path });
+  }
   // 特效从关到开会把 rAF 循环唤醒（冻结时 ensureRaf 自己会挡）
   ensureRaf();
 }
@@ -2365,16 +2380,25 @@ async function init() {
   // ⚠️ 不能因 glState.anim 直接放弃：上一张视差的退场淡出（~900ms）和本张的
   // depth:ready（~1s）几乎同时到期，抢先把升级 return 掉这张图就永远停在 2D
   // —— 真机表现恰好是「隔一张才有视差」。改为等退场走完再重试（2026-10-09）。
+  /** 当前稳态视差层是否缺消费方要的侧车（与 glLoadLayer 的按需取法同源） */
+  function sidecarMissing() {
+    const cur = glState.cur;
+    if (!cur) return false;
+    if ((cfg.humanMotion || cfg.dualLayer) && !cur.maskTex) return true;
+    if (cfg.dualLayer && !cur.bgTex) return true;
+    return false;
+  }
   /**
-   * mask 迟到升级（r84 追记）：当前层建层时 mask 还不存在，之后老缓存补派生
-   * （depth:ready）或人物生动刚打开 —— 换一层带 mask 的纹理，短淡化接上。
+   * sidecar 迟到升级（r84 追记；r85 追记扩到 bg）：当前层建层时 mask/背景板还不
+   * 存在（或被开关按需取侧车挡在建层外），之后老缓存补派生（depth:ready）或
+   * 双层视差/人物生动刚打开 —— 换一层带侧车的纹理，短淡化接上。
    * 不做的话要等下一张图才生效，用户看到的就是「开关改了没反应」。
    */
   async function tryMaskUpgrade(payload) {
-    if (!cfg.humanMotion || !cfg.depthEnabled || frozen) return;
+    if ((!cfg.humanMotion && !cfg.dualLayer) || !cfg.depthEnabled || frozen) return;
     if (!currentEntry || payload.path !== currentEntry.path) return;
     if (!glActive || !glState.cur || glState.cur.imgPath !== payload.path) return;
-    if (glState.cur.maskTex || (glState.anim && glState.anim.in)) return;
+    if (!sidecarMissing() || (glState.anim && glState.anim.in)) return;
     const cur = glState.cur;
     let dp = null;
     try { dp = await window.wp.depthFor(payload.path); } catch (_) { return; }
@@ -2382,14 +2406,18 @@ async function init() {
     if (!glActive || glState.cur !== cur || glState.anim) return;   // await 期间被抢
     const inLayer = await glLayerFor(payload.path, dp);
     if (!inLayer) return;
-    if (!inLayer.maskTex) { glFreeLayer(inLayer); return; }         // mask 还没落盘：等下次 ready
+    // 新层还是没拿到当前消费方要的那件（文件尚未落盘）：等下次 ready
+    const gained = (cfg.dualLayer && inLayer.bgTex)
+      || ((cfg.humanMotion || cfg.dualLayer) && inLayer.maskTex);
+    if (!gained) { glFreeLayer(inLayer); return; }
     if (!glActive || glState.cur !== cur || glState.anim) { glFreeLayer(inLayer); return; }
     inLayer.imgPath = payload.path;
     glState.anim = { t0: performance.now(), duration: 600, out: cur, in: inLayer };
     glState.cur = null;
     ensureRaf();
-    slog('mask 升级：人物生动生效', payload.path.split(/[\\/]/).pop());
+    slog('sidecar 升级：双层视差/人物生动生效', payload.path.split(/[\\/]/).pop());
   }
+  sidecarUpgradeHook = tryMaskUpgrade;
   window.wp.onDepthReady((payload) => {
     tryDepthUpgrade(payload);
     tryMaskUpgrade(payload);

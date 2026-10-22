@@ -5044,3 +5044,44 @@ r84 之后用户要「再多加点动效风格的种类」，先落三种**纯�
   + updater 21 + depth-service 20 + particles 19 + cleanplate 15 + segmodel 9）。
 - 待真机：三档观感，以及 figure8 是否适合留在 random 池（横纵同时动，晕动
   敏感的人可能更明显；轻柔档可兜底）。
+
+## r85 追记：双层视差关掉后「还在跑」的两个漏洞（2026-10-22）
+
+用户反馈「双层视差关了，但好像还在跑」。真机取证（`wp-live-userdata`，13:52 那次
+重启起算，两块屏 `dualLayer:false`、全局 `humanMotion:true humanAmp:0.3`）：
+
+| 产物 | 13:52 后新增 | 谁在消费 |
+|---|---|---|
+| `.depth.png` | 217 | 深度视差（开着，正常） |
+| `.mask.png` | 179 | 人物生动 + 双层视差 —— 人物生动开着，**合法** |
+| `.bg.jpg` | **176** | 只有双层视差 —— 已关，**全部白烧**（isnetis + 人像区补全填充） |
+
+两个漏洞（都是 r84 追记「按消费方派生」只改了补派生分支、没改主路径留下的）：
+
+1. **生成端**`depthService.pump()` 的新图分支无条件带 `outMask`+`outBg` 下发 ——
+   补派生分支早就按 `maskWanted()/segWanted()` 分了，新图这条忘了分。
+   修法：`if (maskWanted()) job.outMask`、`if (segWanted()) job.outBg`。
+2. **渲染端**`glLoadLayer()` 无条件取 mask+bg 两张侧车 —— 文件不存在就是
+   今天日志里 165 条 `wpimg 404`（mask 65 / bg 71，每张图两次重试）。
+   修法：`maskPath` 只在 `humanMotion||dualLayer` 时取，`bgPath` 只在 `dualLayer` 时取。
+
+漏洞 2 会连带一个回归：建层时按开关取侧车，那么**运行中把双层视差从关开到**，
+当前这张图的层里没有 bg 纹理，而 r84 追记的迟到升级只认 mask（`tryMaskUpgrade`
+首行还写着 `if (!cfg.humanMotion) return`）→ 要等下一张图才生效。一并补：
+- `tryMaskUpgrade` 扩成 sidecar 升级：闸门改成「当前层缺消费方要的任何一件
+  （mask 或 bg）」才重建（`sidecarMissing()`），新层拿到任意一件即接上；
+- `applyChannelConfig()` 记住换挡前的 `dualLayer/humanMotion`，只要有关从关到开
+  就当场调一次升级（模块作用域够不到 init 内的函数，走 `sidecarUpgradeHook`）。
+
+验证：`tools/test-depth-service.js` 加第 ④ 相「sidecar 按消费方派生」——
+两开关都关时新图只派深度（mask/bg 一个不派）✓；只开人物生动 → 老缓存补出 mask
+且不补 bg ✓；随后开双层视差 → 同一张图走 `depth_in` 补出 bg（不重推深度）✓，
+**24 通过 / 0 失败**（补派生两相用人物生动演示那张真图：合成白椭圆过不了
+`personBin` 的 2%~95% 面积闸门，isnetis 对它全图无响应 → 静默不产出，
+测具会 skip）。check-wiring 61/0；unit 链其余 296/0。
+- 待真机：需要**完全退出再 `npm start`**（单实例锁）；开关实时生效（双层视差
+  从关开到当前这张立刻接上背景板）与 404 日志归零，只有真机能判。
+- 顺带记录（未修）：Python 回落引擎的 stdin 发的是 `out_mask/out_bg/depth_in`
+  蛇形键，而 `pump()` 里写的是 camelCase —— JS 引擎正常时碰不到，Python 兜底
+  路径的 sidecar 一直收不到路径。
+

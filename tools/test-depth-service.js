@@ -161,6 +161,66 @@ async function main() {
       check.skip('V2 真模型兼容链路', '未同时安装 DA3 与 V2 模型');
     }
 
+    console.log('── ④ sidecar 按消费方派生（r85 追记：关掉双层视差不该继续烧分割+填充）');
+    {
+      depthService.shutdown();
+      const d4 = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-depth-sidecars-'));
+      const img4 = path.join(d4, 'person.png');
+      // 补派生（phase 2/3）要求分割真能认出人像：personBin 有 2%~95% 面积闸门，
+      // 合成白椭圆过不了（isnetis 对它全图响应 ≤127 → 静默跳过 mask/bg），
+      // 所以用人物生动演示那张真图（gitignored，缺时跳过这两相）。
+      const HUMAN_IMG = path.join(ROOT, 'tools', 'out', 'human-motion', 'test.png');
+      const hasPerson = fs.existsSync(HUMAN_IMG);
+      if (hasPerson) fs.copyFileSync(HUMAN_IMG, img4);
+      else await sharp({ create: { width: 512, height: 320, channels: 3, background: { r: 20, g: 20, b: 30 } } })
+        .composite([{
+          input: Buffer.from('<svg width="512" height="320"><ellipse cx="256" cy="170" rx="60" ry="130" fill="white"/></svg>'),
+        }]).png().toFile(img4);
+      const tally = () => {
+        const names = fs.readdirSync(d4);
+        const c = (s) => names.filter((n) => n.endsWith(s)).length;
+        return { depth: c('.depth.png'), mask: c('.mask.png'), bg: c('.bg.jpg') };
+      };
+      const waitFor = async (pred, ms = 60000) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) {
+          if (pred()) return true;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return false;
+      };
+      const ready4 = new Promise((resolve) => {
+        depthService.configure({
+          appRoot: ROOT, onnxModel: MODEL, cacheDir: d4, depthDevice: 'gpu',
+          wantMask: () => false, wantSeg: () => false, onReady: () => resolve('ready'),
+        });
+        setTimeout(() => resolve('timeout'), 90000).unref();
+      });
+      check('两个消费方都关：新图入队只派深度', depthService.lookup(img4) === null);
+      const how4 = await ready4;
+      const t0 = tally();
+      check('两个消费方都关：mask/bg 一个都没派（isnetis 与背景板填充都不跑）',
+        how4 === 'ready' && t0.depth === 1 && t0.mask === 0 && t0.bg === 0, JSON.stringify(t0));
+
+      depthService.configure({ wantMask: () => true, wantSeg: () => false });
+      depthService.prefetch(img4);
+      if (!hasPerson) {
+        check.skip('只开人物生动：老缓存补 mask', `缺人像测试图 ${HUMAN_IMG}`);
+        check.skip('之后开双层视差：同一张图补出 bg', '同上');
+      } else {
+        const gotMask = await waitFor(() => tally().mask === 1);
+        check('只开人物生动：老缓存补 mask，不生成没人用的 bg', gotMask && tally().bg === 0, JSON.stringify(tally()));
+
+        depthService.configure({ wantSeg: () => true });
+        depthService.prefetch(img4);
+        const gotBg = await waitFor(() => tally().bg === 1);
+        check('之后开双层视差：同一张图补出 bg（走 depth_in 不重推深度）', gotBg, JSON.stringify(tally()));
+      }
+
+      depthService.shutdown();
+      fs.rmSync(d4, { recursive: true, force: true });
+    }
+
     depthService.shutdown();
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
