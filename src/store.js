@@ -270,7 +270,7 @@ const PROFILE_KEYS = [
   'flowIso',                   // 流模式斜视角（0.6）
   'flowSteady',                // 流模式背景稳定点（0.3）
   'flowHeight',                // 流模式视差强度主旋钮（0.2）
-  'flowStyle',                 // 流模式动效轨迹：circle/orbital/dolly/horizontal/vertical/random（不写 = circle）
+  'flowStyle',                 // 流模式动效轨迹：circle/orbital/dolly/horizontal/vertical/tide/glide/figure8/random（不写 = circle）
   'flowGentle',                // 轻柔档（2026-10-18 防晕调研）：幅度×0.5、速度×0.7（不写 = 默认关）
   'flowQuality',               // 流模式 POM 步进质量 0.15~1（0.5=CLI 默认，低=省 GPU）
   'dualLayer',                 // 双层视差（2026-10-16）：人物层叠在补全背景板上（不写 = 默认关；无背景板的图自动单层）

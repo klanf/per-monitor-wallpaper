@@ -214,5 +214,31 @@ check('人物生动（UI/配置/shader/闸门 五端齐全）',
   && STAGE_SOURCE.includes('humanNow') && STAGE_SOURCE.includes('maskMetricsFor')
   && STAGE_SOURCE.includes('humanWarp') && STAGE_SOURCE.includes('uHumanBreath'));
 
+// ---- 动效风格扩充（r85）：潮汐/漂流/漫步 在引擎表/分支/随机池/设置下拉/预设 五端齐全 ----
+{
+  const NEW_STYLES = ['tide', 'glide', 'figure8'];
+  const sliceBetween = (src, start, end) => {
+    const a = src.indexOf(start);
+    const b = src.indexOf(end, a + 1);
+    return a >= 0 && b > a ? src.slice(a, b) : '';
+  };
+  const params = sliceBetween(STAGE_SOURCE, 'const FLOW_STYLE_PARAMS', '};');
+  const pool = sliceBetween(STAGE_SOURCE, 'const FLOW_RANDOM_POOL', ']');
+  const cam = sliceBetween(STAGE_SOURCE, 'function glCamFlow', 'function glDrawLayer');
+  const presets = sliceBetween(APP, 'const FLOW_PRESET_DEFAULTS', '};');
+  const labels = sliceBetween(APP, 'const FLOW_STYLE_LABEL', '};');
+  const cardOpts = sliceBetween(APP, 'function flowStyleOptions', 'function resolvedDepth');
+  const hasKey = (src, s) => new RegExp(`(^|[\\s{,])${s}:`, 'm').test(src);
+  const hasValue = (src, s) => new RegExp(`['"]${s}['"]`).test(src);
+  check('新动效风格五端齐全（引擎表/分支/随机池/设置下拉/预设与标签）',
+    NEW_STYLES.every((s) => hasKey(params, s))
+    && NEW_STYLES.every((s) => cam.includes(`style === '${s}'`))
+    && NEW_STYLES.every((s) => hasValue(pool, s))
+    && NEW_STYLES.every((s) => HTML.includes(`value="${s}"`))
+    && NEW_STYLES.every((s) => hasValue(cardOpts, s))
+    && NEW_STYLES.every((s) => hasKey(presets, s))
+    && NEW_STYLES.every((s) => hasKey(labels, s)));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

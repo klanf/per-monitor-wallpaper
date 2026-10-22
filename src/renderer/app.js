@@ -1429,7 +1429,9 @@ function animationOptions(value) {
 function flowStyleOptions(value) {
   const opts = [
     ['', '跟随全局'], ['circle', '环绕 · Circle'], ['orbital', '摆动环绕 · Orbital'], ['dolly', '推拉变焦 · Dolly'],
-    ['horizontal', '横移 · Horizontal'], ['vertical', '升降 · Vertical'], ['random', '随机 · 每次换图换一种'],
+    ['horizontal', '横移 · Horizontal'], ['vertical', '升降 · Vertical'],
+    ['tide', '潮汐 · Tide'], ['glide', '漂流 · Glide'], ['figure8', '漫步 · Figure 8'],
+    ['random', '随机 · 每次换图换一种'],
   ];
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
 }
@@ -2561,7 +2563,7 @@ function applyConfigToUI() {
     $(outId).textContent = fmt(v);
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
-  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical', 'random'].includes(c.flowStyle) ? c.flowStyle : 'circle';
+  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical', 'tide', 'glide', 'figure8', 'random'].includes(c.flowStyle) ? c.flowStyle : 'circle';
   $('cfg-flow-gentle').checked = c.flowGentle === true;
   // 氛围调色板（r73；不写 = auto）
   $('cfg-atmo-palette').value = ['golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(c.atmoPalette) ? c.atmoPalette : 'auto';
@@ -3044,12 +3046,17 @@ function bindSettings() {
     dolly:      { flowSteady: 0.35, flowHeight: 0.30 },
     horizontal: { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 横移：单轴正弦，参数同 Circle
     vertical:   { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 升降：纵向幅度已在引擎内减半
+    tide:       { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 潮汐：纵向非对称波，幅度同样内置减半
+    glide:      { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 漂流：横移变体
+    figure8:    { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 漫步：横纵叠加，引擎内已收量
     // random：轨迹每次换图才定，参数沿用 Circle 基准（切过来时刷回滑杆）
     random:     { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
   };
   const FLOW_STYLE_LABEL = {
     circle: '环绕 · Circle', orbital: '摆动环绕 · Orbital', dolly: '推拉变焦 · Dolly',
-    horizontal: '横移 · Horizontal', vertical: '升降 · Vertical', random: '随机 · 每次换图换一种',
+    horizontal: '横移 · Horizontal', vertical: '升降 · Vertical',
+    tide: '潮汐 · Tide', glide: '漂流 · Glide', figure8: '漫步 · Figure 8',
+    random: '随机 · 每次换图换一种',
   };
   $('cfg-flow-style').addEventListener('change', async (e) => {
     const v = e.target.value;

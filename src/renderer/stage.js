@@ -75,7 +75,7 @@ const cfg = {
   depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
   depthLight: 0.45,            // 灯光强度（profile.depthLight）
   // ---- DepthFlow 流模式参数（Circle 预设默认值；profile 同名键）----
-  flowStyle: 'circle',         // 动效轨迹：circle/orbital/dolly/horizontal/vertical/random（random=每次换图抽签）
+  flowStyle: 'circle',         // 动效轨迹：circle/orbital/dolly/horizontal/vertical/tide/glide/figure8/random
   flowGentle: false,           // 轻柔档（2026-10-18 防晕调研）：幅度×0.5、速度×0.7
   flowIntensity: 0.5,          // 轨迹幅度（0.5 = Circle 预设；鼠标接管幅度同源）
   flowIso: 0.6,                // 斜视角（越大立体越强、越歪）
@@ -1351,18 +1351,21 @@ const FLOW_STYLE_PARAMS = {
   dolly:      { focus: 0.35, zoom: 0.95 },
   horizontal: { focus: 0.0,  zoom: 1.0 },   // 横移：单轴正弦（2026-10-18 调研补齐，防晕首选）
   vertical:   { focus: 0.0,  zoom: 1.0 },   // 升降：单轴纵向（人眼对纵向运动更敏感，默认幅度已减半）
+  tide:       { focus: 0.0,  zoom: 1.0 },   // 潮汐：快涨慢退的非对称涌动（2026-10-22）
+  glide:      { focus: 0.0,  zoom: 1.0 },   // 漂流：两端缓停的横移（滑轨感）
+  figure8:    { focus: 0.0,  zoom: 1.0 },   // 漫步：8 字游走（Lissajous 1:2）
 };
 
 /** flowStyle='random'（2026-10-18）：每次换图抽一种具体轨迹（showFrame 时决定，
  * 同一张图显示期间不变）。zoom/dollyzoom 已删（用户实测晕感太强），不进池。 */
-const FLOW_RANDOM_POOL = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical'];
+const FLOW_RANDOM_POOL = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical', 'tide', 'glide', 'figure8'];
 
 /** 当前生效轨迹：非 random = 跟随配置；random = showFrame 时抽签落这里 */
 let flowStyleActive = 'circle';
 let flowStyleLast = '';        // 上一次抽中的轨迹：random 连续不重样（观感上保证「每次都换了」）
 
 /** 抽本次换图的流模式轨迹（对齐 pickAnimName 的做法）。
- * random 模式避开上一次的抽签（5 选 4），换图必有可感知变化；落 slog 便于取证。 */
+ * random 模式避开上一次的抽签（池内其余全参与），换图必有可感知变化；落 slog 便于取证。 */
 function pickFlowStyle() {
   flowStyleActive = cfg.flowStyle === 'random'
     ? (() => {
@@ -1385,6 +1388,9 @@ function pickFlowStyle() {
  *   dolly   —— offset=0，iso=0.5·(1-cos) 推拉变焦（height 0.30/steady 0.35/focus 0.35/zoom 0.95）
  *   horizontal —— offset=(sin,0)*amp 单轴横移（DepthFlow Horizontal，steady 缓冲走滑杆）
  *   vertical   —— offset=(0,-sin)*amp*0.5 单轴升降（纵向幅度减半：人眼对纵向运动更敏感易晕）
+ *   tide       —— 快涨慢退的非对称纵向涌动（sin+0.3·sin2 归一化）+ 0.12 倍横向微漂
+ *   glide      —— tanh 压平正弦两端的横移（滑轨缓停）+ 0.07 倍纵向微浮沉
+ *   figure8    —— offset=(sin,-sin2)*amp*{0.9,0.35} 8 字游走（纵向减量防晕）
  *   random     —— 每次换图从 FLOW_RANDOM_POOL 抽一种（pickFlowStyle 在 showFrame 落签）
  * 轻柔档（cfg.flowGentle）：幅度 ×0.5、速度 ×0.7 —— 防晕总闸（2026-10-18 社区调研）。
  * 鼠标接管：位移平滑淡入（iso 不受鼠标影响）。
@@ -1408,6 +1414,22 @@ function glCamFlow(tSec, nowMs) {
     ax = Math.sin(cycle) * amp;              // Horizontal：纯横移
   } else if (style === 'vertical') {
     ay = -Math.sin(cycle) * amp * 0.5;       // Vertical：纵向减半防晕
+  } else if (style === 'tide') {
+    // 潮汐：sin + 0.3·sin2 是「快涨慢退」的非对称波（归一化到 ±1）——
+    // 上涨段约 2.31 rad、回落段约 3.97 rad；纵向减半同 Vertical，横向微漂避免死板
+    const surge = (Math.sin(cycle) + 0.3 * Math.sin(2 * cycle)) / 1.1364;
+    ay = -surge * amp * 0.5;
+    ax = Math.sin(cycle + 1.2) * amp * 0.12;
+  } else if (style === 'glide') {
+    // 漂流：tanh 压平正弦两端 → 像滑轨一样在端点缓停、中段平滑掠过；
+    // 纵向只给 0.07 倍微浮沉（人眼对纵向更敏感）
+    const ease = Math.tanh(1.6 * Math.sin(cycle)) / 0.9217;   // tanh(1.6) ≈ 0.9217
+    ax = ease * amp;
+    ay = Math.sin(cycle) * amp * 0.07;
+  } else if (style === 'figure8') {
+    // 漫步：Lissajous 1:2 的 8 字路径，横向主导；纵向 0.35 倍防晕
+    ax = Math.sin(cycle) * amp * 0.9;
+    ay = -Math.sin(2 * cycle) * amp * 0.35;
   } else {                                   // dolly
     iso = 0.5 * (1.0 - Math.cos(cycle));     // Dolly：无位移，纯推拉变焦
   }

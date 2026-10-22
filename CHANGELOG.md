@@ -5020,3 +5020,27 @@ isnetis 的 mask 在腿缝窄处是实心的（512×896 的 mask 在膝盖一线
 验证：`node --check` ×3；check-wiring 60/0；verify:depth 20/0；临时端到端脚本
 （跑真引擎）9/0 —— 只开 wantMask 时补 mask 不生成 bg、只开 wantSeg 时补 bg
 不写 mask、两者都关时一个任务都不派。
+
+## r85：动效风格扩充 —— 潮汐 / 漂流 / 漫步（2026-10-22）
+
+r84 之后用户要「再多加点动效风格的种类」，先落三种**纯相机轨迹**（不改内容形变，
+可与人物生动叠加）：
+
+| 风格 | 轨迹（cycle=(t/8)·2π·depthDrift） | 设计意图 |
+|---|---|---|
+| 潮汐 · Tide | `ay=-(sin c+0.3·sin2c)/1.1364·amp·0.5`，`ax=sin(c+1.2)·amp·0.12` | 快涨慢退：8s 周期里涨 2.94s、退 5.06s，像潮水涌上来又慢慢退 |
+| 漂流 · Glide | `ax=tanh(1.6·sin c)/tanh(1.6)·amp`，`ay=sin c·amp·0.07` | 滑轨式横移：两端 35.5% 的时间缓停（纯正弦约 20%），中段平滑掠过 |
+| 漫步 · Figure 8 | `ax=sin c·amp·0.9`，`ay=-sin2c·amp·0.35` | 1:2 Lissajous 的 8 字，横向主导、纵向 0.35 倍防晕 |
+
+- 引擎（stage.js）：`FLOW_STYLE_PARAMS` 三条 + `glCamFlow` 三个分支；8s 周期
+  首尾闭合，轻柔档仍按幅度×0.5、周期拉伸到 8/0.7s 生效；iso 继续走用户滑杆。
+- 配置与 UI：随机池 5→8（random 会抽到新风格）；全局下拉、每屏卡片下拉、
+  预设默认值、切换 toast、恢复下拉的白名单五端补齐；store 的注释同步
+  （`flowStyle` 本来就按字符串透传，无需新增校验）。
+- 验证：`node --check` ×3；check-wiring 61/0（新增「新风格五端齐全」断言）；
+  从 stage.js 抠真实 `glCamFlow` 跑几何断言 20/0（8s 闭合、幅度上限、
+  快涨慢退、缓停平台占比、8 字三处极值、轻柔档减半与拉伸周期闭合）；
+  verify:unit 全链 316/0（scheduler 199 + scan-cache 19 + slideshow-guard 14
+  + updater 21 + depth-service 20 + particles 19 + cleanplate 15 + segmodel 9）。
+- 待真机：三档观感，以及 figure8 是否适合留在 random 池（横纵同时动，晕动
+  敏感的人可能更明显；轻柔档可兜底）。
