@@ -94,6 +94,7 @@ const state = {
   cacheLimitBytes: CACHE_LIMIT_BYTES,
   onReady: null,
   wantSeg: null,               // () => bool：是否有任何一路 profile 开着双层视差（缺省 null = 视为开，保持旧行为）
+  wantMask: null,              // () => bool：是否有任何一路要前景 mask（双层视差 / 人物生动；缺省 null = 视为开）
   segBackend: 'auto',          // 分割后端（'auto'=isnetis 精准 / 'fast'=u2netp 快速），随任务下发引擎线程
   // 运行态
   worker: null,
@@ -405,6 +406,11 @@ function segWanted() {
   return typeof state.wantSeg !== 'function' ? true : Boolean(state.wantSeg());
 }
 
+/** 是否有消费方等着前景 mask（双层视差合成 / 人物生动）。没探到时视为开（保持旧行为）。 */
+function maskWanted() {
+  return typeof state.wantMask !== 'function' ? true : Boolean(state.wantMask());
+}
+
 /* ---- 缓存 LRU（第十九轮）---- */
 
 /** 命中即 touch mtime（LRU 的「使用」信号；mtime 在 Windows 上可靠且 stat 免费顺带） */
@@ -575,15 +581,17 @@ function pump() {
   const trio = trioFor(job.path);
   if (!trio) { pump(); return; }
   if (fs.existsSync(trio.depth)) {
-    // 双层视差（2026-10-16）：老缓存缺背景板时补一次派生 —— JS 引擎恒 CPU
-    // （u2netp ~220ms + 人像区扩散填充亚秒），深度本体经 depth_in 直接收编
-    // 不再重推理；背景板也齐了才是真跳过。Python 协议不认识 out_bg，无害。
-    // 没有任何一路开双层视差时不再补派生 bg（纯烧 CPU，产物无人消费）。
-    if (state.engine === 'js' && segWanted() && !fs.existsSync(trio.bg)) {
+    // 双层视差（2026-10-16）/ 人物生动（r84）：老缓存缺 sidecar 时补一次派生 ——
+    // JS 引擎恒 CPU（u2netp ~220ms + 人像区扩散填充亚秒），深度本体经 depth_in
+    // 直接收编不再重推理。只补真正的消费方要的那几件（mask / bg 各算各的），
+    // 没人要的产物不烧 CPU。Python 协议不认识 out_bg，无害。
+    const needMask = maskWanted() && !fs.existsSync(trio.mask);
+    const needBg = segWanted() && !fs.existsSync(trio.bg);
+    if (state.engine === 'js' && (needMask || needBg)) {
       job.out = trio.depth;
       job.depthIn = trio.depth;
-      job.outMask = trio.mask;
-      job.outBg = trio.bg;
+      if (needMask) job.outMask = trio.mask;
+      if (needBg) job.outBg = trio.bg;
     } else { pump(); return; }
   } else {
     job.out = trio.depth;
@@ -640,21 +648,26 @@ function enqueue(job) {
  * 旧版「队列非空/worker 忙就放弃」实锤饿死：开机后台积压期间每次 tick 预取
  * 全部白跑，追不上切换节奏（用户实测：有的切过去已渲染好、有的切过去才开始渲）。
  * 新纪律：忙也照常入队 —— 队列 LIFO（队尾先出），后到的按需 miss 天然插队
- * 在预取前面，优先级不受损；已齐（深度+背景板都在）才跳过，缺 bg 的老缓存
- * 借预取补派生（pump 里的补派生分支会走 depth_in 收编，不重推理深度）。
+ * 在预取前面，优先级不受损；消费者要的 sidecar 都齐了才跳过，缺 mask/bg 的老
+ * 缓存借预取补派生（pump 里的补派生分支会走 depth_in 收编，不重推理深度）。
  * 不统计 hits/misses。
  */
 function prefetch(entryPath) {
   if (!state.enabled || !entryPath || !state.cacheDir) return;
   // 第七十七轮：探测期也先查缓存 —— 深度已在盘上的图不用入队占位，
   // 把队首留给真正缺缓存的新图（lookup 侧同步改为探测期可命中）。
-  const trioEarly = trioFor(entryPath);
-  // 没有双层视差消费方时，bg 不再是预取目标（新图派生时反正缺 bg，靠 depth 短路）
-  if (trioEarly && fs.existsSync(trioEarly.depth) && (fs.existsSync(trioEarly.bg) || !segWanted())) return;
+  // r84：mask 与 bg 分开判 —— 只开人物生动时缺的是 mask，不能按 bg 一刀跳过。
+  const complete = (trio) => {
+    if (!trio || !fs.existsSync(trio.depth)) return false;
+    if (maskWanted() && !fs.existsSync(trio.mask)) return false;
+    if (segWanted() && !fs.existsSync(trio.bg)) return false;
+    return true;
+  };
+  if (complete(trioFor(entryPath))) return;
   if (state.engine === 'probing') { enqueue({ path: entryPath }); return; }
   const trio = trioFor(entryPath);
   if (!trio) return;
-  if (fs.existsSync(trio.depth) && (fs.existsSync(trio.bg) || !segWanted())) return;
+  if (complete(trio)) return;
   enqueue({ path: entryPath });
 }
 
@@ -688,7 +701,7 @@ function lookup(entryPath) {
 
 function configure(patch) {
   const previousOnnx = state.onnxModel;
-  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'wantSeg', 'segBackend', 'appRoot', 'depthDevice']) {
+  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'wantSeg', 'wantMask', 'segBackend', 'appRoot', 'depthDevice']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
   // 设备偏好落 state（r33 起随每个任务下发到引擎线程；引擎线程存活时这里

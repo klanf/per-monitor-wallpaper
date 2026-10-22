@@ -2343,8 +2343,34 @@ async function init() {
   // ⚠️ 不能因 glState.anim 直接放弃：上一张视差的退场淡出（~900ms）和本张的
   // depth:ready（~1s）几乎同时到期，抢先把升级 return 掉这张图就永远停在 2D
   // —— 真机表现恰好是「隔一张才有视差」。改为等退场走完再重试（2026-10-09）。
+  /**
+   * mask 迟到升级（r84 追记）：当前层建层时 mask 还不存在，之后老缓存补派生
+   * （depth:ready）或人物生动刚打开 —— 换一层带 mask 的纹理，短淡化接上。
+   * 不做的话要等下一张图才生效，用户看到的就是「开关改了没反应」。
+   */
+  async function tryMaskUpgrade(payload) {
+    if (!cfg.humanMotion || !cfg.depthEnabled || frozen) return;
+    if (!currentEntry || payload.path !== currentEntry.path) return;
+    if (!glActive || !glState.cur || glState.cur.imgPath !== payload.path) return;
+    if (glState.cur.maskTex || (glState.anim && glState.anim.in)) return;
+    const cur = glState.cur;
+    let dp = null;
+    try { dp = await window.wp.depthFor(payload.path); } catch (_) { return; }
+    if (!dp) return;
+    if (!glActive || glState.cur !== cur || glState.anim) return;   // await 期间被抢
+    const inLayer = await glLayerFor(payload.path, dp);
+    if (!inLayer) return;
+    if (!inLayer.maskTex) { glFreeLayer(inLayer); return; }         // mask 还没落盘：等下次 ready
+    if (!glActive || glState.cur !== cur || glState.anim) { glFreeLayer(inLayer); return; }
+    inLayer.imgPath = payload.path;
+    glState.anim = { t0: performance.now(), duration: 600, out: cur, in: inLayer };
+    glState.cur = null;
+    ensureRaf();
+    slog('mask 升级：人物生动生效', payload.path.split(/[\\/]/).pop());
+  }
   window.wp.onDepthReady((payload) => {
     tryDepthUpgrade(payload);
+    tryMaskUpgrade(payload);
     tryCollageUpgrade(payload);   // 拼接模式：缺的格被补齐后整体升级 GL（r38）
   });
 

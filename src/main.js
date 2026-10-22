@@ -2277,13 +2277,25 @@ if (!gotLock) {
       modelDir: store.get().depthModelDir,
       depthDevice: store.get().depthDevice,   // 'cpu'=强制CPU；缺省=GPU(DML)优先（3070 Ti 实测快 5 倍）
       segBackend: store.get().segBackend,     // 分割后端：'fast'=u2netp 快速，缺省=isnetis 精准
-      // 双层视差消费方探测：顶层或任一显示器 profile 开着才算要（现取，改配置即时生效）
+      // 分割产物消费方探测（现取，改配置即时生效）：
+      //   wantSeg  = 双层视差要背景板；wantMask = 双层视差合成 / 人物生动要前景 mask。
+      // 两者分开：只开人物生计时别顺带烧 CPU 生成背景板，但缺 mask 的老缓存必须补。
       wantSeg: () => {
         const c = store.get();
         if (c.dualLayer === true) return true;
         if (c.monitors && typeof c.monitors === 'object') {
           for (const m of Object.values(c.monitors)) {
             if (m && m.dualLayer === true) return true;
+          }
+        }
+        return false;
+      },
+      wantMask: () => {
+        const c = store.get();
+        if (c.dualLayer === true || c.humanMotion === true) return true;
+        if (c.monitors && typeof c.monitors === 'object') {
+          for (const m of Object.values(c.monitors)) {
+            if (m && (m.dualLayer === true || m.humanMotion === true)) return true;
           }
         }
         return false;

@@ -4996,3 +4996,27 @@ isnetis 的 mask 在腿缝窄处是实心的（512×896 的 mask 在膝盖一线
   产出 `human-motion-ab.mp4`（全景）与 `human-motion-zoom.mp4`（腰腿 1.6× 放大）。
 - 真机待验收：开人物生动后全身图应有「重心慢摆、脚不动、头稳住」的观感；
   半身/坐姿图应完全无反应；幅度滑条拉到 2× 是否过头。
+
+## 人物生动（r84 追记二）：设置开关「改了没反应 / 像要重启」的根因（2026-10-22）
+
+用户反馈「在设置里动效切换好像要重启才生效」。查下来不是 IPC 链路的问题：
+`config:set → scheduler.rebuild → channels:changed → applyChannelConfig` 本来就是
+逐帧生效的。真正的两个缺口都出在 **mask 的供给** 上：
+
+1. **老缓存没有 mask**。mask/bg 的补派生过去只由「双层视差」触发（`wantSeg`）；
+   双层关着时，深度已缓存的图永远不会补 mask。人物生动的闸门是
+   `L.maskTex && L.human.stand`，没有 mask 就恒为关 —— 开关拨了也什么都不发生。
+   现在把消费方拆成两个探针：`wantSeg`（背景板）与 `wantMask`（前景 mask =
+   双层视差 或 人物生动），`pump` / `prefetch` 各补各的，只开人物生动时
+   不会顺带生成没人用的背景板。
+2. **mask 迟到后图层不换**。当前图已在 GL 上屏、mask 之后才补派生出来时，
+   `tryDepthUpgrade` 因为「这张图已是稳态视差」直接 return，纹理里永远没有 mask，
+   要等下一张图才生效。新增 `tryMaskUpgrade`：`depth:ready` 到达时若当前层缺
+   mask 就重建一层，600ms 淡化接上（同图同相位，不跳变）。
+
+另：站立闸门本身会跳过半身/坐姿/群像图 —— 用这类图测试会看起来「开关无效」，
+这是设计如此（见 r84 正文）。
+
+验证：`node --check` ×3；check-wiring 60/0；verify:depth 20/0；临时端到端脚本
+（跑真引擎）9/0 —— 只开 wantMask 时补 mask 不生成 bg、只开 wantSeg 时补 bg
+不写 mask、两者都关时一个任务都不派。
