@@ -206,5 +206,13 @@ check('idle 微动画已彻底移除（shader/开关/偏好/els 全无残留）'
     && !APP.includes('qtIdle') && !APP.includes('resolvedIdle') && !APP.includes('idleFx')
     && !STORE_SOURCE.includes('idleFx') && !HTML.includes('qt-idle'));
 
+// ---- 人物生动（r84）：UI / 配置 / mask 闸门 / shader 位移场 五端齐全 ----
+check('人物生动（UI/配置/shader/闸门 五端齐全）',
+  HTML.includes('cfg-human-motion') && HTML.includes('cfg-human-amp')
+  && APP.includes("$('cfg-human-motion')") && APP.includes("$('cfg-human-amp')")
+  && APP.includes('humanMotion') && STORE_SOURCE.includes("'humanMotion'")
+  && STAGE_SOURCE.includes('humanNow') && STAGE_SOURCE.includes('maskMetricsFor')
+  && STAGE_SOURCE.includes('humanWarp') && STAGE_SOURCE.includes('uHumanBreath'));
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

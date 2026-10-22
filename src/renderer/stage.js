@@ -93,6 +93,10 @@ const cfg = {
   depthBreath: false,          // 默认关（r80：设置页开关控制，profile.depthBreath=true 开）
   depthBreathAmp: 0.015,       // 自然量级：图像高度占比 ±1.5%（验证版曾用 ±0.05）
   depthBreathPeriod: 5000,     // 呼吸周期 ms（一吸一呼）
+  // ---- 人物生动（r84）：全身站立像的局部拟人微动（脚钉住 + 重心摆 + 呼吸）----
+  // 不是姿态模型：站立闸门 + 人像 mask bbox 估出髋/胸/头三段，位移只在人物像素内生效。
+  humanMotion: false,          // 默认关（设置页开关；需深度图 + mask，建议配双层视差）
+  humanAmp: 1.0,               // 幅度倍率（0.3~2；1.0 = 髋部约 1% 图像高度的慢摆）
 };
 
 // ---- 分层氛围（r73）：调色板档位选择 + 缓动 ----
@@ -746,11 +750,51 @@ uniform float uHasBg;       // 1 = 本层带背景板纹理（unit 3）且开关
 uniform float uAtmo;        // 分层氛围总开关（r71，profile.depthAtmo）
 uniform float uAtmoSel;     // 调色板档位（连续浮点，JS 端缓动防跳变）：0=白天 1=黄昏 2=黄金时刻 3=青橙好莱坞 4=赛博朋克 5=月光 6=褪色胶片
 uniform float uBreath;      // 深度呼吸律动（验证版 r79）：当前相位位移量（图像高度占比，-amp..amp），0=关
+// ---- 人物生动（r84）：人物像素内的局部位移场 ----
+uniform float uHuman;       // 1 = 生效（有 depth+mask 且站立闸门通过）
+uniform vec4  uHumanRect;   // 人像 bbox（图像 uv：xy=左上，zw=宽高；y 向下）
+uniform vec2  uHumanHip;    // 髋部“内容”位移（图像高度占比；x 右 y 下）
+uniform vec2  uHumanChest;  // 胸部延迟跟随
+uniform vec2  uHumanHead;   // 头部反向稳定
+uniform float uHumanTilt;   // 肩线微倾（高度占比 / 半身宽）
+uniform float uHumanBreath; // 局部呼吸（高度占比；正=吸气抬高）
 
 // stuv 域镜像重复采样 —— 等价 depthflow gtexture(..., true) 的边缘外扩，
 // 大角度视差露边时不再是黑边/钳位硬边（Tiefling「边缘扩展」同款思路）
 vec4 texMirror(sampler2D tex, vec2 stuv) {
   return texture2D(tex, 1.0 - abs(1.0 - mod(stuv, 2.0)));
+}
+
+/**
+ * 人物局部形变（r84）：把人像 bbox 纵向估成「头 0.08 / 胸 0.30 / 髋 0.56」三条带，
+ * 高斯权重叠加位移；下段 0.86~0.99 平滑归零 = 脚钉住。
+ * 位移是「内容位移」，采样坐标要反向减；x 以图像高度为物理单位（除以宽高比换 uv）。
+ * 只碰人物 mask 内的像素：mask 外原样返回（背景板/环境不动）。
+ * ⚠️ 这不是姿态模型 —— bbox 估段 + 站立闸门（maskMetricsFor），侧身/坐姿会主动不启用。
+ */
+vec2 humanWarp(vec2 st, float imgAspect) {
+  if (uHuman < 0.5) return st;
+  vec2 rel = (st - uHumanRect.xy) / max(uHumanRect.zw, vec2(1e-4));
+  if (rel.x < 0.0 || rel.x > 1.0 || rel.y < 0.0 || rel.y > 1.0) return st;
+  float m = texMirror(uMask, st).r;
+  if (m < 0.02) return st;
+  // 高斯权重（GLSL pow 对负底数未定义，手写 d*d）
+  float dHip   = (rel.y - 0.56) / 0.14;
+  float dChest = (rel.y - 0.30) / 0.15;
+  float dHead  = (rel.y - 0.08) / 0.10;
+  float wHip   = exp(-dHip * dHip);
+  float wChest = exp(-dChest * dChest);
+  float wHead  = exp(-dHead * dHead);
+  float pin = 1.0 - smoothstep(0.86, 0.99, rel.y);   // 脚/裙摆下缘钉住
+  wHip *= pin; wChest *= pin; wHead *= pin;
+  vec2 off = uHumanHip * wHip + uHumanChest * wChest + uHumanHead * wHead;
+  float cx = (rel.x - 0.5) * 2.0;
+  off.y += uHumanTilt * cx * wChest;                 // 肩线随重心微倾
+  off.x += uHumanBreath * cx * wChest * 0.5;         // 吸气时胸口横向微张
+  off.y -= uHumanBreath * wChest * 0.9;              // 吸气抬起胸/肩
+  off.y -= uHumanBreath * wHead * 0.35;              // 头部被呼吸带起一点点
+  st -= vec2(off.x / imgAspect, off.y);
+  return st;
 }
 
 // ---- 分层氛围（r72 重构）：luma 分层调色 + split-toning + 指数雾 + 主体金边 ----
@@ -906,15 +950,20 @@ vec3 flowSample(vec2 g0, vec2 off, float imgAspect) {
     float dW = texMirror(uDepth, stF).r;
     stF.y += uBreath * dW * dW;
   }
+  // 人物生动（r84）：只动「人物内部」的内容，轮廓钉在原位 —— mask 采样用
+  // 微动前的 stM。若让 mask 跟着微动走，等于把人物整体平移 1% 个身高，
+  // 边缘会露出补全背景板（洋葱皮填充在复杂背景处是糊的，实测一条明显虚影）；
+  // 钉住轮廓后，位移侧露出的只是原图里紧邻人物的真实背景，几乎看不出接缝。
+  vec2 stM = stF;
+  stF = humanWarp(stF, imgAspect);
   // stB：未扭曲基准坐标 —— 背景板钉在这里（sticky），氛围调色的 mask 锚点也用它
   vec2 stB = g0 / vec2(imgAspect, 1.0) * 0.5 + 0.5;
   vec3 col = texMirror(uImg, stF).rgb;
   // 双层合成（2026-10-16 路线 1）：人物移动露出的是补全背景而不是原图人物像素。
-  // mask 跟前景采样坐标对齐（含 POM 位移）；背景板钉在基准坐标 stB ——
-  // flow 模式 sticky 语义下远景本就几乎不动，人物位移全部显形为「贴在背景前」。
+  // mask 采样坐标含 POM 位移、但不含 humanWarp；背景板钉在基准坐标 stB。
   if (uHasBg > 0.5 && uHasMask > 0.5) {
     vec3 bgc = texMirror(uBg, stB).rgb;
-    col = mix(bgc, col, texMirror(uMask, stF).r);
+    col = mix(bgc, col, texMirror(uMask, stM).r);
   }
   col = atmoApply(col, stB, imgAspect);   // 分层氛围：调色板光照+雾+金边
   return col;
@@ -978,13 +1027,15 @@ void main() {
   vec2 uvP = uv - par;
   // 深度呼吸律动（验证版 r79）：经典 uAmp 路径同款 —— 近景（d 大）垂直微移
   if (uBreath != 0.0) uvP.y += uBreath * d * d;
+  vec2 uvM = clamp(uvP, vec2(0.0), vec2(1.0));   // 微动前的 mask 坐标（轮廓钉住）
+  uvP = humanWarp(uvP, uImgAspect);   // 人物生动（r84）：经典路径同样叠局部微动
   vec2 uvC = clamp(uvP, vec2(0.0), vec2(1.0));
   vec3 col = texture2D(uImg, uvC).rgb;
   // 双层合成（经典 uAmp 路径）：前景全幅视差、背景板 0.35× 低幅视差 ——
   // 人物（近，位移大）身后露出的是补全背景，深度断层处不再撕出原图人物残影
   if (uHasBg > 0.5 && uHasMask > 0.5) {
     vec3 bgc = texture2D(uBg, clamp(uv - par * 0.35, vec2(0.0), vec2(1.0))).rgb;
-    col = mix(bgc, col, texture2D(uMask, uvC).r);
+    col = mix(bgc, col, texture2D(uMask, uvM).r);
   }
 
   if (uHasDepth > 0.5) {
@@ -1042,6 +1093,38 @@ function breathNow(now) {
   return cfg.depthBreathAmp * (s * 2 - 1);            // -amp..amp
 }
 
+/**
+ * 人物生动（r84）：重心慢摆 + 上身延迟 + 头部反向 + 局部呼吸。
+ * 两个不可通约周期（9.4s / 5.7s）叠加 → 60s 内不重样，不像节拍器；
+ * 相位用绝对 tSec 永不重置。位移单位 = 图像高度占比（x 也按高度算物理量）。
+ * 幅度取真人静立量级：髋部横移 ~1% 图高（1920 高约 19px、2560 高约 26px），
+ * 已经是「看得出来但不夸张」的上限；humanAmp 0.3~2 供设置页调。
+ */
+function humanNow(tSec) {
+  if (!cfg.humanMotion) return null;
+  const amp = Math.min(2, Math.max(0, Number.isFinite(cfg.humanAmp) ? cfg.humanAmp : 1));
+  if (!amp) return null;
+  const w1 = (Math.PI * 2) / 9.4;
+  const w2 = (Math.PI * 2) / 5.7;
+  const sway = (t) => Math.sin(w1 * t) * 0.66 + Math.sin(w2 * t + 1.7) * 0.34;
+  const bob = (t) => Math.sin(w1 * t + 0.9) * 0.6 + Math.sin(w2 * t + 2.6) * 0.4;
+  const hipX = sway(tSec) * 0.0105 * amp;
+  const hipY = bob(tSec) * 0.0016 * amp;
+  // 胸/肩晚 0.55s、幅度 0.46；头部把胸部传上来的那一点抵消掉（反相 + 慢 0.95s），
+  // 观感是「下半身重心动了，肩膀跟着晚半拍，头基本留在原地」。
+  const chestX = sway(tSec - 0.55) * 0.0105 * amp * 0.46;
+  const chestY = bob(tSec - 0.55) * 0.0016 * amp * 0.5;
+  const headX = -sway(tSec - 0.95) * 0.0105 * amp * 0.06;
+  const headY = -chestY * 0.55;
+  return {
+    hip: [hipX, hipY],
+    chest: [chestX, chestY],
+    head: [headX, headY],
+    tilt: -hipX * 0.5,                                  // 肩线反相微倾
+    breath: Math.sin((Math.PI * 2 * tSec) / 4.6) * 0.0034 * amp,
+  };
+}
+
 function glInit() {
   if (glState.ok || glState.failed) return;
   try {
@@ -1070,7 +1153,8 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath']) U[n] = gl.getUniformLocation(prog, n);
+      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath',
+      'uHuman', 'uHumanRect', 'uHumanHip', 'uHumanChest', 'uHumanHead', 'uHumanTilt', 'uHumanBreath']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
     gl.uniform1i(U.uMask, 2);
@@ -1134,6 +1218,51 @@ function depthPixelsFor(depBmp) {
   }
 }
 
+/** 人物生动（r84）：从 mask 缩采样出人像 bbox + 站立闸门。
+ *  纯几何启发式（没有姿态模型）：bbox 够高够窄、头在画面上部、脚在画面下部、
+ *  面积占比合理、物理高宽比 >=1.5 —— 半身/坐姿/群像/小人物主动不启用，
+ *  宁可不做也不把腰当髋摆。阈值按「全身立绘」经验值定，宁可保守。
+ *  ⚠️ 必须在 maskBmp.close() 之前调。失败返回 null（该图不做人物生动）。 */
+const HUMAN_SAMPLE_MAX = 192;
+function maskMetricsFor(maskBmp) {
+  try {
+    const k = Math.min(1, HUMAN_SAMPLE_MAX / Math.max(maskBmp.width, maskBmp.height));
+    const w = Math.max(1, Math.round(maskBmp.width * k));
+    const h = Math.max(1, Math.round(maskBmp.height * k));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(maskBmp, 0, 0, w, h);
+    const d = cx.getImageData(0, 0, w, h).data;
+    let minX = w, minY = h, maxX = -1, maxY = -1, n = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4] <= 127) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        n += 1;
+      }
+    }
+    if (!n) return null;
+    const x0 = minX / w;
+    const y0 = minY / h;
+    const bw = (maxX + 1 - minX) / w;
+    const bh = (maxY + 1 - minY) / h;
+    const bottom = (maxY + 1) / h;
+    const cov = n / (w * h);
+    const aspect = maskBmp.width / maskBmp.height;
+    const physRatio = bh / Math.max(1e-4, bw * aspect);   // 物理高/宽（消掉画布宽高比）
+    const stand = bh >= 0.45 && bw <= 0.72 && y0 <= 0.42 && bottom >= 0.70
+      && cov >= 0.015 && cov <= 0.55 && physRatio >= 1.5;
+    return { x0, y0, w: bw, h: bh, cov, physRatio, stand };
+  } catch (_) {
+    return null;
+  }
+}
+
 /** 深度帧喂给粒子层；src 为空或开关关了都等于清除（粒子层内部幂等） */
 function feedParticleDepth(src) {
   if (!particleFx || !particleFx.setDepth) return;
@@ -1175,6 +1304,7 @@ async function glLoadLayer(imagePath, depthPath) {
       iw: bmp.width,
       ih: bmp.height,                // r74：粒子遮挡的 cover 映射用原图尺寸（位图关后仍在）
       depthPx: (depBmp && cfg.particleDepth) ? depthPixelsFor(depBmp) : null,
+      human: maskBmp ? maskMetricsFor(maskBmp) : null,   // 人物生动：bbox + 站立闸门（在 close 前算）
     };
     if (depBmp) depBmp.close();
     if (maskBmp) maskBmp.close();
@@ -1318,6 +1448,24 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   gl.uniform1f(glState.U.uAtmoSel, atmoSelNow());       // 调色板档位（JS 端每帧缓动防跳变）
   gl.uniform1f(glState.U.uAlpha, alpha);
   gl.uniform1f(glState.U.uBreath, breathNow(performance.now()));   // 深度呼吸律动（验证版 r79）
+  // 人物生动（r84）：每层按自己的 mask bbox 生效；过渡中两层共用同一相位，不打架
+  const hnow = (cfg.humanMotion && L.maskTex && L.human && L.human.stand) ? humanNow(tSec) : null;
+  gl.uniform1f(glState.U.uHuman, hnow ? 1 : 0);
+  if (hnow) {
+    gl.uniform4f(glState.U.uHumanRect, L.human.x0, L.human.y0, L.human.w, L.human.h);
+    gl.uniform2f(glState.U.uHumanHip, hnow.hip[0], hnow.hip[1]);
+    gl.uniform2f(glState.U.uHumanChest, hnow.chest[0], hnow.chest[1]);
+    gl.uniform2f(glState.U.uHumanHead, hnow.head[0], hnow.head[1]);
+    gl.uniform1f(glState.U.uHumanTilt, hnow.tilt);
+    gl.uniform1f(glState.U.uHumanBreath, hnow.breath);
+  } else {
+    gl.uniform4f(glState.U.uHumanRect, 0, 0, 1, 1);
+    gl.uniform2f(glState.U.uHumanHip, 0, 0);
+    gl.uniform2f(glState.U.uHumanChest, 0, 0);
+    gl.uniform2f(glState.U.uHumanHead, 0, 0);
+    gl.uniform1f(glState.U.uHumanTilt, 0);
+    gl.uniform1f(glState.U.uHumanBreath, 0);
+  }
   gl.uniform2f(glState.U.uFlowOff, flowOff[0], flowOff[1]);
   gl.uniform1f(glState.U.uFlowIso, flowIso);
   gl.uniform1f(glState.U.uFlowSteady, cfg.flowSteady);
@@ -2012,6 +2160,9 @@ function applyChannelConfig() {
   if (p.depthBreath !== undefined) cfg.depthBreath = Boolean(p.depthBreath);
   if (Number.isFinite(Number(p.depthBreathAmp))) cfg.depthBreathAmp = Math.max(0, Number(p.depthBreathAmp));
   if (Number.isFinite(Number(p.depthBreathPeriod))) cfg.depthBreathPeriod = Math.max(1500, Number(p.depthBreathPeriod));
+  // 人物生动（r84，profile 不写 = 默认关）：幅度收紧 0~2（0 视同关）
+  if (p.humanMotion !== undefined) cfg.humanMotion = Boolean(p.humanMotion);
+  if (Number.isFinite(Number(p.humanAmp))) cfg.humanAmp = Math.min(2, Math.max(0, Number(p.humanAmp)));
   // 呼吸节奏（主树 47 轮：周期/幅度可配；profile 不写 = 6000ms / ±2%）
   if (Number.isFinite(Number(p.breathPeriod))) {
     cfg.breathPeriod = Math.min(Math.max(Math.round(Number(p.breathPeriod)), 2000), 15000);

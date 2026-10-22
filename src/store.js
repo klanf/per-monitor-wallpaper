@@ -280,6 +280,8 @@ const PROFILE_KEYS = [
   'depthBreath',               // 深度呼吸律动（r79）：近景按深度加权缓慢起伏（r80 默认关，设置页开关）
   'depthBreathAmp',            // 呼吸幅度（图像高度占比小数，默认 0.015 = ±1.5%；设置页滑条按 % 存取）
   'depthBreathPeriod',         // 呼吸周期 ms（不写 = 渲染端默认 5000，收紧 ≥1500）
+  'humanMotion',               // 人物生动（r84）：全身像脚钉住 + 重心慢摆 + 胸部延迟 + 呼吸（不写 = 默认关）
+  'humanAmp',                  // 人物生动幅度倍率（0.3~2，不写 = 渲染端默认 1.0）
   // depthBgDrift/depthBgDriftAmp 已移除（r82）：背景动效验证版被否，远景漂移整体撤下
 ];
 

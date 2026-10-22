@@ -427,6 +427,16 @@
             <input type="range" id="cfg-depth-breath-amp" min="0.5" max="5" step="0.5" style="flex:1">
             <output class="field-value" id="cfg-depth-breath-amp-out">±1.5%</output>
           </div>
+          <!-- 人物生动（r84）：全身立绘的局部拟人微动；半身/坐姿/群像自动不启用 -->
+          <label class="check" for="cfg-human-motion" style="margin-top:6px">
+            <input type="checkbox" id="cfg-human-motion">
+            <span>人物生动（全身像：脚不动、重心慢摆、胸口呼吸、头部稳住；需深度图 + 人像蒙版，建议同时开双层视差）</span>
+          </label>
+          <div class="field-row sub" id="cfg-human-amp-row" style="display:none">
+            <span class="field-label" style="flex:0 0 84px">生动幅度</span>
+            <input type="range" id="cfg-human-amp" min="0.3" max="2" step="0.1" style="flex:1">
+            <output class="field-value" id="cfg-human-amp-out">×1.0</output>
+          </div>
         </div>
       </div>
 

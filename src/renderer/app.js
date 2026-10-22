@@ -2571,6 +2571,12 @@ function applyConfigToUI() {
   $('cfg-depth-breath-amp').value = String(Math.min(Math.max(dbaPct, 0.5), 5));
   $('cfg-depth-breath-amp-out').textContent = `±${$('cfg-depth-breath-amp').value}%`;
   $('cfg-depth-breath-amp-row').style.display = c.depthBreath === true ? '' : 'none';
+  // 人物生动（r84）：默认关；幅度倍率 0.3~2，存小数
+  $('cfg-human-motion').checked = c.humanMotion === true;
+  const haV = Number.isFinite(Number(c.humanAmp)) ? Number(c.humanAmp) : 1;
+  $('cfg-human-amp').value = String(Math.min(Math.max(haV, 0.3), 2));
+  $('cfg-human-amp-out').textContent = `×${Number($('cfg-human-amp').value).toFixed(1)}`;
+  $('cfg-human-amp-row').style.display = c.humanMotion === true ? '' : 'none';
   // 开关联动显隐重算（r21：隐藏代替置灰；applyConfigToUI 回填后必须跑一遍）
   syncConditionalUI();
 
@@ -2998,6 +3004,21 @@ function bindSettings() {
     const pct = Number($('cfg-depth-breath-amp').value);
     await save({ depthBreathAmp: pct / 100 });
     toast(`呼吸幅度：±${pct}%`);
+  });
+
+  // ---- 人物生动（r84）：全身像局部拟人微动；半身/坐姿/群像由渲染端闸门自动跳过 ----
+  $('cfg-human-motion').addEventListener('change', async (e) => {
+    $('cfg-human-amp-row').style.display = e.target.checked ? '' : 'none';
+    await save({ humanMotion: e.target.checked });
+    toast(e.target.checked ? '人物生动已开启：仅对全身单人生效，半身/群像自动跳过' : '人物生动已关闭');
+  });
+  $('cfg-human-amp').addEventListener('input', () => {
+    $('cfg-human-amp-out').textContent = `×${Number($('cfg-human-amp').value).toFixed(1)}`;
+  });
+  $('cfg-human-amp').addEventListener('change', async () => {
+    const v = Number($('cfg-human-amp').value);
+    await save({ humanAmp: v });
+    toast(`人物生动幅度：×${v.toFixed(1)}`);
   });
 
   // ---- 氛围调色板（r73）----
