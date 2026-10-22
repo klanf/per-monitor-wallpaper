@@ -793,6 +793,10 @@ vec2 humanWarp(vec2 st, float imgAspect) {
   off.x += uHumanBreath * cx * wChest * 0.5;         // 吸气时胸口横向微张
   off.y -= uHumanBreath * wChest * 0.9;              // 吸气抬起胸/肩
   off.y -= uHumanBreath * wHead * 0.35;              // 头部被呼吸带起一点点
+  // 贴轮廓的一圈（mask 0.55~0.98）把位移渐隐到 0：这一圈正是双层合成里
+  // 人物与背景板混合的羽化带，动了就会把人物内容拽进低 alpha 区，露出一条
+  // 背景板亮边（实测 t=11.48 腰腿处可见）。钉住轮廓、只让内部形变，接缝消失。
+  off *= smoothstep(0.55, 0.98, m);
   st -= vec2(off.x / imgAspect, off.y);
   return st;
 }
