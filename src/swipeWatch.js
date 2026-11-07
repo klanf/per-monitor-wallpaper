@@ -55,6 +55,13 @@ const DX_DY_RATIO = 4;
 const FLICK_WINDOW_MS = 300;
 /** flick 最短持续：低于此（近乎瞬移）不算，防 SetCursorPos 式跳变误触 */
 const FLICK_MIN_SPAN_MS = 40;
+/**
+ * 瞬移守卫（单步位移上限，px）：真扫动是逐帧连续移动（16ms 一拍，哪怕 9000px/s
+ * 的极限甩动单步也只有 ~150px）；触摸屏上 WM_POINTER 合成会把光标**一步跳**到
+ * 新触点（点按右边缘 = 从上次落点瞬移几百 px，插值拉长到 2~3 帧刚好逃过
+ * FLICK_MIN_SPAN_MS 守卫）—— 单步超过上限视为瞬移，不判 flick。
+ */
+const TELEPORT_STEP_PX = 150;
 
 /**
  * 触摸横扫判定（纯函数）。samples 为按时间升序的光标轨迹（都在桌面上采到），
@@ -73,6 +80,12 @@ function evaluateFlick(samples, now) {
   if (!start || start === last) return null;
   const span = last.t - start.t;
   if (span < FLICK_MIN_SPAN_MS || span > FLICK_WINDOW_MS) return null;
+  // 瞬移守卫：任何相邻两样本的步进超过上限 = 光标被合成层瞬移过（触摸点按
+  // /程序跳光标），不是手指连续扫过 —— 整段轨迹作废
+  for (let i = 1; i < samples.length; i++) {
+    const p = samples[i - 1], s = samples[i];
+    if (Math.hypot(s.x - p.x, s.y - p.y) > TELEPORT_STEP_PX) return null;
+  }
   return evaluateSwipe(start, last);
 }
 
@@ -220,6 +233,15 @@ function tick() {
     const now = Date.now();
     const pt = cursorPoint();
     if (pt && isDesktopPoint(pt)) {
+      const n = samples.length;
+      if (n >= 2) {
+        const p = samples[n - 1];
+        // 瞬移步（触摸点按把合成光标一步跳过来）：清轨迹防毒化后续窗口，
+        // 只保留新点当新轨迹的起点（守卫细则见 TELEPORT_STEP_PX 注释）
+        if (Math.hypot(pt.x - p.x, pt.y - p.y) > TELEPORT_STEP_PX) {
+          samples.length = 0;
+        }
+      }
       samples.push({ x: pt.x, y: pt.y, t: now });
     } else {
       samples.length = 0;         // 出了桌面（进了应用/任务栏）：整段轨迹作废
@@ -266,5 +288,5 @@ module.exports = {
   start,
   stop,
   resetForTest: () => { press = null; lastFire = 0; samples.length = 0; },
-  CONST: { POLL_MS, MIN_DX, DX_DY_RATIO, MAX_PRESS_MS, DEBOUNCE_MS, VK_LBUTTON, GA_ROOT, FLICK_WINDOW_MS, FLICK_MIN_SPAN_MS },
+  CONST: { POLL_MS, MIN_DX, DX_DY_RATIO, MAX_PRESS_MS, DEBOUNCE_MS, VK_LBUTTON, GA_ROOT, FLICK_WINDOW_MS, FLICK_MIN_SPAN_MS, TELEPORT_STEP_PX },
 };

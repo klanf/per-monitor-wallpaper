@@ -64,6 +64,13 @@ const ITEMS = [
     sortOrder: 20,
   },
   {
+    key: 'copy',
+    keyName: 'WallpaperSwitcherDesktopCopy',
+    label: '复制这张壁纸图片',
+    arg: '--copy-wallpaper-at-cursor',
+    sortOrder: 12,
+  },
+  {
     key: 'pause',
     keyName: 'WallpaperSwitcherDesktopPause',
     label: '暂停 / 继续壁纸',
