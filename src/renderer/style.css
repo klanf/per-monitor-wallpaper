@@ -226,6 +226,9 @@ body.idle { cursor: none; }
 .quick-toggles-wrap { position: relative; }
 .rescan-group { position: relative; }  /* Auto/▾/菜单的定位锚 */
 .autoscan-menu { left: 0; }
+/* 相簿名标签（2026-11-08）：可点击快切当前预览屏的相簿 */
+#folder-label { cursor: pointer; }
+.album-menu { min-width: 240px; }
 .autoscan-hint {
   padding: 6px 10px 4px;
   margin-top: 3px;
@@ -236,6 +239,8 @@ body.idle { cursor: none; }
 }
 .qchip-text { font-size: 11px; padding: 3px 9px; }
 .qchip-caret { padding: 3px 6px; margin-left: -3px; }
+/* 当前动效徽章（2026-10-28）：只读展示，不给点击态 */
+#flow-style-chip { cursor: default; }
 
 /* 预览目标徽章组：每台显示器一枚，点谁预览谁 */
 .badge-group { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; }
@@ -278,6 +283,9 @@ body.idle { cursor: none; }
 }
 .pm-item:hover { background: rgba(255, 255, 255, 0.07); }
 .pm-item.active { color: var(--accent); }
+/* 相簿快切菜单里的空相簿（0 张图）：置灰提示不可切，点了带去相簿管理 */
+.pm-item.empty { opacity: 0.5; }
+.pm-item.empty:hover { background: transparent; }
 .pm-item > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-meta { color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; flex: none; }
 

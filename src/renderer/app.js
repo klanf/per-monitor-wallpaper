@@ -37,10 +37,11 @@ const els = {
   qtAuto: $('qt-auto'),
   btnRescanCaret: $('btn-rescan-caret'),
   autoscanMenu: $('autoscan-menu'),
+  albumMenu: $('album-menu'),
+  albumItems: $('album-items'),
   quickToggles: $('quick-toggles'),
   qtVideo: $('qt-video'),
   qtDepth: $('qt-depth'),
-  qtDual: $('qt-dual'),
   qtParticles: $('qt-particles'),
   segModelOverlay: $('seg-model-overlay'),
   segModelTitle: $('seg-model-title'),
@@ -51,7 +52,6 @@ const els = {
   segModelOk: $('seg-model-ok'),
   segModelCancel: $('seg-model-cancel'),
   qtPointer: $('qt-pointer'),
-  qtAtmo: $('qt-atmo'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
   counter: $('counter'),
@@ -126,6 +126,19 @@ const state = {
   lastAutoScanAt: 0,          // 上次定时自动扫描的时刻（0 = 本次会话还没扫过）
   editMonitorId: null,        // 每屏卡片当前正在编辑哪块屏（r21 合并：4 张长卡 → 胶囊切换 + 1 张卡）
   update: null,               // 主进程更新服务的瞬时状态（不写 config）
+  flowStyle: new Map(),       // channelId → { style, live }（stage 上报的当前动效，顶栏徽章用）
+};
+
+/** 动效风格显示名（模块级：顶栏徽章 + 设置页 change 提示共用一份） */
+const FLOW_STYLE_LABEL = {
+  circle: '环绕 · Circle', orbital: '摆动环绕 · Orbital', dolly: '推拉变焦 · Dolly',
+  tide: '潮汐 · Tide', glide: '漂流 · Glide', figure8: '漫步 · Figure 8',
+  pulse: '脉动 · Pulse', ellipse: '椭圆 · Ellipse', cascade: '斜织 · Cascade',
+  heart: '心动 · Heart', vortex: '涡旋 · Vortex', sine: '正弦 · Sine',
+  spiro: '万花尺 · Spiro', infinite: '无穷 · Lemniscate', trefoil: '三叶 · Trefoil', astroid: '星芒 · Astroid',
+  rose: '花瓣 · Rose', cardioid: '心脏线 · Cardioid', butterfly: '蝶舞 · Butterfly',
+  weave: '织网 · Weave', squircle: '方圆 · Squircle',
+  random: '随机 · 每次换图换一种',
 };
 
 /* ------------------------------------------------------------ 胶片条状态 */
@@ -1429,8 +1442,12 @@ function animationOptions(value) {
 function flowStyleOptions(value) {
   const opts = [
     ['', '跟随全局'], ['circle', '环绕 · Circle'], ['orbital', '摆动环绕 · Orbital'], ['dolly', '推拉变焦 · Dolly'],
-    ['horizontal', '横移 · Horizontal'], ['vertical', '升降 · Vertical'],
     ['tide', '潮汐 · Tide'], ['glide', '漂流 · Glide'], ['figure8', '漫步 · Figure 8'],
+    ['pulse', '脉动 · Pulse'], ['ellipse', '椭圆 · Ellipse'], ['cascade', '斜织 · Cascade'],
+    ['heart', '心动 · Heart'], ['vortex', '涡旋 · Vortex'], ['sine', '正弦 · Sine'],
+    ['spiro', '万花尺 · Spiro'], ['infinite', '无穷 · Lemniscate'], ['trefoil', '三叶 · Trefoil'], ['astroid', '星芒 · Astroid'],
+    ['rose', '花瓣 · Rose'], ['cardioid', '心脏线 · Cardioid'], ['butterfly', '蝶舞 · Butterfly'],
+    ['weave', '织网 · Weave'], ['squircle', '方圆 · Squircle'],
     ['random', '随机 · 每次换图换一种'],
   ];
   return opts.map(([v, t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
@@ -1458,14 +1475,6 @@ function resolvedParticles(chId) {
   const ov = (cfg.monitors || {})[chId] || {};
   if (typeof ov.particles === 'string') return ov.particles;  // '' = 该屏显式关
   return cfg.particles || '';
-}
-
-/** 双层视差（2026-10-16）生效值：布尔 profile 键，不写 = 默认关（与 stage.js cfg 默认一致） */
-function resolvedDual(chId) {
-  const cfg = state.config || {};
-  const ov = (cfg.monitors || {})[chId] || {};
-  if (ov.dualLayer === true || ov.dualLayer === false) return ov.dualLayer;
-  return cfg.dualLayer === true;
 }
 
 /**
@@ -1544,14 +1553,6 @@ function resolvedPointerFx(chId) {
   return cfg.pointerFx !== false;
 }
 
-/** 分时段氛围（r71）生效值：布尔 profile 键，不写 = 默认关（与 stage.js cfg 默认一致） */
-function resolvedAtmo(chId) {
-  const cfg = state.config || {};
-  const ov = (cfg.monitors || {})[chId] || {};
-  if (ov.depthAtmo === true || ov.depthAtmo === false) return ov.depthAtmo;
-  return cfg.depthAtmo === true;
-}
-
 /* Auto 开关「灭→亮」时回落的间隔：会话内记住最后一次非零档位（缺省 1 小时） */
 let lastAutoScanMinutes = 60;
 
@@ -1564,10 +1565,8 @@ function updateQuickToggles() {
   const set = (el, on) => { el.classList.toggle('on', on); el.setAttribute('aria-pressed', String(on)); };
   set(els.qtVideo, resolvedVideoFull(ch.id));
   set(els.qtDepth, resolvedDepth(ch.id));
-  set(els.qtDual, resolvedDual(ch.id));
   set(els.qtParticles, resolvedParticles(ch.id) !== '');
   set(els.qtPointer, resolvedPointerFx(ch.id));
-  set(els.qtAtmo, resolvedAtmo(ch.id));
   // Auto 是全局开关（不跟屏）：亮=autoScanMinutes>0；▾ 只在亮时显示
   const autoOn = ((state.config || {}).autoScanMinutes || 0) > 0;
   set(els.qtAuto, autoOn);
@@ -1647,6 +1646,21 @@ function updateBadges() {
     ].filter(Boolean).join('\n');
     els.previewBadges.appendChild(b);
   }
+  updateFlowChip();
+}
+
+/** 顶栏「当前动效」徽章（2026-10-28）：显示当前预览频道 stage 上报的轨迹名。
+ *  随机模式每次换图换一种 —— 用户看到观感差的，照着徽章名字去设置里换掉。 */
+function updateFlowChip() {
+  const chip = document.getElementById('flow-style-chip');
+  if (!chip) return;
+  const info = state.flowStyle.get(state.previewId);
+  if (!info || !info.style) { chip.hidden = true; return; }
+  chip.hidden = false;
+  chip.textContent = FLOW_STYLE_LABEL[info.style] || info.style;
+  // 深度视差没开时轨迹不在跑（stage 报 live=false），徽章置灰提示
+  chip.style.opacity = info.live === false ? '0.45' : '';
+  chip.title = `当前预览的显示器正在运行的动效轨迹${info.live === false ? '（深度视差未开，轨迹未在跑）' : ''}\n随机模式每次换图换一种；观感差的记下名字，到设置 › 外观 › 动效风格里换成固定`;
 }
 
 /** 相簿下拉的公共选项（每屏卡片与统一模式共用同一份） */
@@ -2546,9 +2560,9 @@ function applyConfigToUI() {
   $('cfg-particle-depth').checked = c.particleDepth !== false;
 
   // ---- 深度视差（第十一轮；不写 = stage.js 内置默认）----
-  // 总开关已搬顶栏快捷开关（r41）：这里只留设备/模型/参数等细粒度项。
+  // 总开关已搬顶栏快捷开关（r41）：这里只留设备/参数等细粒度项。
+  // （分割模型选择已移除：固定用精准 isnetis —— segBackend 键保留，缺省即 auto）
   $('cfg-depth-device').value = c.depthDevice === 'cpu' ? 'cpu' : 'gpu';  // 缺省 = GPU(DML)
-  $('cfg-seg-backend').value = c.segBackend === 'fast' ? 'fast' : 'auto';  // 缺省 = 精准（isnetis）
   const flowKeys = [
     ['cfg-flow-intensity', 'cfg-flow-intensity-out', 'flowIntensity', 0.5, (v) => v.toFixed(2)],
     ['cfg-depth-drift', 'cfg-depth-drift-out', 'depthDrift', 1.0, (v) => `${v.toFixed(1)}×`],
@@ -2563,22 +2577,9 @@ function applyConfigToUI() {
     $(outId).textContent = fmt(v);
   }
   $('cfg-fps-cap').value = String(Number.isFinite(c.fpsCap) ? c.fpsCap : 30);
-  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical', 'tide', 'glide', 'figure8', 'random'].includes(c.flowStyle) ? c.flowStyle : 'circle';
+  $('cfg-flow-style').value = ['circle', 'orbital', 'dolly', 'tide', 'glide', 'figure8', 'pulse', 'ellipse', 'cascade', 'heart', 'vortex', 'sine', 'spiro', 'infinite', 'trefoil', 'astroid', 'rose', 'cardioid', 'butterfly', 'weave', 'squircle', 'random'].includes(c.flowStyle) ? c.flowStyle : 'circle';
   $('cfg-flow-gentle').checked = c.flowGentle === true;
-  // 氛围调色板（r73；不写 = auto）
-  $('cfg-atmo-palette').value = ['golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(c.atmoPalette) ? c.atmoPalette : 'auto';
-  // 深度呼吸律动（r80）：顶层键 depthBreath 默认关；幅度存小数、滑条按 %
-  $('cfg-depth-breath').checked = c.depthBreath === true;
-  const dbaPct = Number.isFinite(Number(c.depthBreathAmp)) ? Number(c.depthBreathAmp) * 100 : 1.5;
-  $('cfg-depth-breath-amp').value = String(Math.min(Math.max(dbaPct, 0.5), 5));
-  $('cfg-depth-breath-amp-out').textContent = `±${$('cfg-depth-breath-amp').value}%`;
-  $('cfg-depth-breath-amp-row').style.display = c.depthBreath === true ? '' : 'none';
-  // 人物生动（r84）：默认关；幅度倍率 0.3~2，存小数
-  $('cfg-human-motion').checked = c.humanMotion === true;
-  const haV = Number.isFinite(Number(c.humanAmp)) ? Number(c.humanAmp) : 1;
-  $('cfg-human-amp').value = String(Math.min(Math.max(haV, 0.3), 2));
-  $('cfg-human-amp-out').textContent = `×${Number($('cfg-human-amp').value).toFixed(1)}`;
-  $('cfg-human-amp-row').style.display = c.humanMotion === true ? '' : 'none';
+  // （氛围调色板/深度呼吸律动/人物生动的设置入口已移除：默认全关，配置键保留）
   // 开关联动显隐重算（r21：隐藏代替置灰；applyConfigToUI 回填后必须跑一遍）
   syncConditionalUI();
 
@@ -2594,7 +2595,7 @@ function applyConfigToUI() {
 
   // ---- 删除 ----
   $('cfg-confirm-delete').checked = c.confirmDelete !== false;
-  $('cfg-dual-hint').checked = c.dualLayerHint !== false;
+  // （双层视差性能提示开关已移除；dualLayerHint 键保留，缺省 true 不变）
   // 桌面右键菜单的开关状态不在 config 里，而在注册表里 —— 以实际注册结果为准
   refreshDesktopMenu();
 
@@ -2610,9 +2611,8 @@ function applyConfigToUI() {
   $('cfg-filmstrip-range').value = film.range;
   $('cfg-filmstrip-range-out').textContent = `${film.range} 张`;
 
-  // ---- 右键菜单 ----
-  $('cfg-context-menu').checked = c.contextMenu !== false;
-  $('cfg-info-panel').checked = c.infoPanel !== false;
+  // （「在图片上启用右键菜单」「启用图片信息面板」两个开关已移除：
+  //   contextMenu / infoPanel 键保留，缺省都为 true，行为不变）
 
   $('cfg-animation').value = c.animation;
   setSegment('cfg-fit', c.fit);
@@ -2962,14 +2962,6 @@ function bindSettings() {
     toast(v === 'cpu' ? '深度推理已切到 CPU（下一张图生效）' : '深度推理已切到 GPU（下一张图生效）');
     refreshDepthStatus();
   });
-  // 分割模型选择（isnetis 精准 / u2netp 快速）：写配置即生效 —— 主进程实时转发给
-  // 深度引擎线程，下一张图按新后端跑；已生成的缓存 sidecar 不重算。
-  $('cfg-seg-backend').addEventListener('change', async (e) => {
-    const v = e.target.value === 'fast' ? 'fast' : 'auto';
-    await save({ segBackend: v });
-    toast(v === 'fast' ? '分割模型已切到快速（u2netp，下一张图生效）' : '分割模型已切到精准（isnetis，下一张图生效）');
-    refreshDepthStatus();
-  });
   // （深度模型切换（自动/DA3/V2）选项已移除（r68）：DA3 弃用 —— 2×2 隔离对拍实锤
   //   人物区深度扁平 15~18%「2D 纸片」观感是模型特性，候选链还原 master 只认 V2）
   // （DepthFlow 流动模式开关已移除（r23）：恒开 —— 用户实测关掉效果非常差，
@@ -2993,44 +2985,7 @@ function bindSettings() {
     });
   }
 
-  // ---- 深度呼吸律动（r80）：默认关；开 = 近景按深度加权缓慢起伏 ----
-  $('cfg-depth-breath').addEventListener('change', async (e) => {
-    $('cfg-depth-breath-amp-row').style.display = e.target.checked ? '' : 'none';
-    await save({ depthBreath: e.target.checked });
-    toast(e.target.checked ? '深度呼吸已开启：近景缓慢起伏' : '深度呼吸已关闭');
-  });
-  $('cfg-depth-breath-amp').addEventListener('input', () => {
-    $('cfg-depth-breath-amp-out').textContent = `±${$('cfg-depth-breath-amp').value}%`;
-  });
-  $('cfg-depth-breath-amp').addEventListener('change', async () => {
-    const pct = Number($('cfg-depth-breath-amp').value);
-    await save({ depthBreathAmp: pct / 100 });
-    toast(`呼吸幅度：±${pct}%`);
-  });
-
-  // ---- 人物生动（r84）：全身像局部拟人微动；半身/坐姿/群像由渲染端闸门自动跳过 ----
-  $('cfg-human-motion').addEventListener('change', async (e) => {
-    $('cfg-human-amp-row').style.display = e.target.checked ? '' : 'none';
-    await save({ humanMotion: e.target.checked });
-    toast(e.target.checked ? '人物生动已开启：仅对全身单人生效，半身/群像自动跳过' : '人物生动已关闭');
-  });
-  $('cfg-human-amp').addEventListener('input', () => {
-    $('cfg-human-amp-out').textContent = `×${Number($('cfg-human-amp').value).toFixed(1)}`;
-  });
-  $('cfg-human-amp').addEventListener('change', async () => {
-    const v = Number($('cfg-human-amp').value);
-    await save({ humanAmp: v });
-    toast(`人物生动幅度：×${v.toFixed(1)}`);
-  });
-
-  // ---- 氛围调色板（r73）----
-  // 总开关在顶栏太阳图标（depthAtmo，跟显示器）；这里只管「开起来之后长什么样」。
-  $('cfg-atmo-palette').addEventListener('change', async (e) => {
-    const v = e.target.value;
-    await save({ atmoPalette: v });
-    const names = { auto: '自动（按时间：白天/黄昏）', golden: '黄金时刻', tealorange: '好莱坞青橙', cyberpunk: '赛博朋克', moonlight: '月光蓝', faded: '褪色胶片' };
-    toast(`氛围调色板：${names[v] || v}（需顶栏氛围开关点亮）`);
-  });
+  // （深度呼吸律动/人物生动/氛围调色板的监听已随设置入口一并移除，配置键保留）
 
   $('cfg-fps-cap').addEventListener('change', async (e) => {
     const v = Number(e.target.value);
@@ -3044,24 +2999,44 @@ function bindSettings() {
     circle:     { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
     orbital:    { flowSteady: 0.30, flowHeight: 0.20 },
     dolly:      { flowSteady: 0.35, flowHeight: 0.30 },
-    horizontal: { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 横移：单轴正弦，参数同 Circle
-    vertical:   { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 升降：纵向幅度已在引擎内减半
     tide:       { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 潮汐：纵向非对称波，幅度同样内置减半
     glide:      { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 漂流：横移变体
     figure8:    { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 漫步：横纵叠加，引擎内已收量
+    pulse:      { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 脉动：环绕+半径呼吸，引擎内已收量
+    ellipse:    { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 椭圆：扁平轨道，纵向 0.42 倍
+    cascade:    { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 斜织：斜轴滑轨往返
+    heart:      { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 心动：心形参数曲线，纵向引擎内已压缩
+    vortex:     { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 涡旋：转圈收放螺旋
+    sine:       { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 正弦：三波浪 S 形游走
+    spiro:      { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 万花尺：三环内嵌花纹
+    infinite:   { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 无穷：Bernoulli ∞
+    trefoil:    { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 三叶：三瓣交错大环
+    astroid:    { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 星芒：四尖点顿挫走位
+    rose:       { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 花瓣：四瓣玫瑰线
+    cardioid:   { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 心脏线：单尖泪滴
+    butterfly:  { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 蝶舞：四翼扑轨
+    weave:      { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 织网：Lissajous 3:2
+    squircle:   { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },   // 方圆：超椭圆轨道
     // random：轨迹每次换图才定，参数沿用 Circle 基准（切过来时刷回滑杆）
     random:     { flowIso: 0.6,  flowSteady: 0.30, flowHeight: 0.20 },
   };
-  const FLOW_STYLE_LABEL = {
-    circle: '环绕 · Circle', orbital: '摆动环绕 · Orbital', dolly: '推拉变焦 · Dolly',
-    horizontal: '横移 · Horizontal', vertical: '升降 · Vertical',
-    tide: '潮汐 · Tide', glide: '漂流 · Glide', figure8: '漫步 · Figure 8',
-    random: '随机 · 每次换图换一种',
-  };
+  // FLOW_STYLE_LABEL 已上移模块级（state 下方）—— 顶栏「当前动效」徽章共用
   $('cfg-flow-style').addEventListener('change', async (e) => {
     const v = e.target.value;
     const defaults = FLOW_PRESET_DEFAULTS[v] || {};
     await save({ flowStyle: v, ...defaults });
+    // 全局风格变更 = 权威意图：把各屏残留的 flowStyle 覆盖一并清掉 ——
+    // 每屏 override 只要存在就永远压过全局（writeProfile 只在写该屏时才对比全局清理），
+    // 锁着旧值时用户改全局「看起来不生效」，就是「固定风格不固定」的根因之一（2026-10-28）。
+    // 想给某块屏单独设风格，清完之后再到每屏卡片里选一次即可。
+    const monitors = (state.config && state.config.monitors) || {};
+    const withOverride = Object.keys(monitors)
+      .filter((id) => monitors[id] && typeof monitors[id].flowStyle !== 'undefined');
+    let cleared = 0;
+    for (const id of withOverride) {
+      const r = await pushProfile(id, { flowStyle: null });
+      if (r && r.ok) cleared++;
+    }
     // 把写回的预设值刷进滑杆 UI（iso 滑杆在 orbital/dolly 下无效，一并提示）
     for (const [key, val] of Object.entries(defaults)) {
       const input = $(`cfg-${key.replace(/^flow/, 'flow-').toLowerCase()}`);
@@ -3071,7 +3046,7 @@ function bindSettings() {
         out.textContent = Number(val).toFixed(2);
       }
     }
-    toast(`动效风格：${FLOW_STYLE_LABEL[v] || v}`);
+    toast(`动效风格：${FLOW_STYLE_LABEL[v] || v}${cleared > 0 ? `（已同步清除 ${cleared} 块屏的旧覆盖）` : ''}`);
   });
 
   // 轻柔档（2026-10-18 防晕调研）：幅度×0.5、速度×0.7，全局生效
@@ -3115,23 +3090,14 @@ function bindSettings() {
       : '删除将直接移入回收站（不再询问）');
   });
 
-  // ---- 双层视差性能提示（r72）----
-
-  $('cfg-dual-hint').addEventListener('change', async (e) => {
-    const on = e.target.checked;
-    await save({ dualLayerHint: on });
-    toast(on
-      ? '开启双层视差前会先弹性能提示'
-      : '开启双层视差将不再提示（首次生成会有可感知的卡顿）');
-  });
-
   $('btn-del-current').addEventListener('click', deleteCurrentImage);
 
   // ---- 桌面右键菜单 ----
-  // 三项（切下一张 / 暂停继续 / 删除）各自一个开关，各自读写自己那条注册表项。
+  // 四项（切下一张 / 复制图片 / 暂停继续 / 删除）各自一个开关，各自读写自己那条注册表项。
   // 不是所有人都想要「删除」摆在桌面右键上——误点的代价比多点一下大得多。
   for (const [key, el] of [
     ['next', $('cfg-desktop-menu-next')],
+    ['copy', $('cfg-desktop-menu-copy')],
     ['pause', $('cfg-desktop-menu-pause')],
     ['delete', $('cfg-desktop-menu-delete')],
   ]) {
@@ -3237,12 +3203,7 @@ function bindSettings() {
     updateFilmstrip(true);
   });
 
-  // ---- 右键菜单 ----
-  $('cfg-context-menu').addEventListener('change', (e) => save({ contextMenu: e.target.checked }));
-  $('cfg-info-panel').addEventListener('change', async (e) => {
-    await save({ infoPanel: e.target.checked });
-    if (!e.target.checked) closeInfo();
-  });
+  // （「在图片上启用右键菜单」「启用图片信息面板」两个开关已移除，键与行为不变）
 
   // ---- 快捷文件夹 ----
   $('btn-quick-add').addEventListener('click', async () => {
@@ -3488,6 +3449,7 @@ async function refreshDesktopMenu() {
 function applyDesktopMenuStatus(status) {
   const boxes = {
     next: $('cfg-desktop-menu-next'),
+    copy: $('cfg-desktop-menu-copy'),
     pause: $('cfg-desktop-menu-pause'),
     delete: $('cfg-desktop-menu-delete'),
   };
@@ -3625,6 +3587,73 @@ function bindEvents() {
     if (!els.autoscanMenu.hidden && !els.autoscanMenu.contains(event.target)) {
       els.autoscanMenu.hidden = true;
     }
+    if (!els.albumMenu.hidden && !els.albumMenu.contains(event.target)) {
+      els.albumMenu.hidden = true;
+    }
+  });
+
+  /* ---- 相簿快切（2026-11-08）：点顶栏相簿名 → 下拉所有相簿 →
+     选谁就把「当前预览的那块屏」切到谁（走 pushProfile 同款重建，同相簿保位置）。
+     空相簿（0 张图）不许切 —— 切过去只会看到空态页；点它直接带去相簿管理加目录。 ---- */
+  function renderAlbumMenu() {
+    const ch = previewChannel();
+    const cur = ch && ch.profile ? ch.profile.albumId : '';
+    els.albumItems.innerHTML = state.albums.length
+      ? state.albums.map((a) => {
+        const on = a.folders.filter((f) => f.enabled).length;
+        const empty = a.imageCount === 0;
+        const meta = a.id === cur ? '✓ ' : (typeof a.imageCount === 'number' ? `${a.imageCount.toLocaleString('zh-CN')} 张图` : '…');
+        return `<button type="button" class="pm-item${a.id === cur ? ' active' : ''}${empty ? ' empty' : ''}" data-album-id="${escapeHtml(a.id)}">
+          <span title="${escapeHtml(a.name)}（${on}/${a.folders.length} 目录${empty ? '，没有图片' : ''}）">${escapeHtml(a.name)}</span>
+          <span class="pm-meta">${meta}</span>
+        </button>`;
+      }).join('')
+      : '<button type="button" class="pm-item" disabled><span>还没有相簿 —— 去「相簿」页添加</span></button>';
+  }
+
+  /** 打开菜单时张数未必齐（没扫过的目录要现场 readdir）→ 异步补齐后重渲染 */
+  async function fillAlbumCounts() {
+    try {
+      const counts = await window.wp.albumCounts();
+      for (const a of state.albums) {
+        if (typeof counts[a.id] === 'number') a.imageCount = counts[a.id];
+      }
+      if (!els.albumMenu.hidden) renderAlbumMenu();
+    } catch { /* 拿不到就按旧知识渲染：空相簿那项最多切过去看空态页 */ }
+  }
+
+  els.folderLabel.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!previewChannel()) { toast('先在右边选一个要预览的屏幕'); return; }
+    if (els.albumMenu.hidden) {
+      renderAlbumMenu();
+      els.albumMenu.hidden = false;
+      // 左缘对齐相簿名（offsetParent 与菜单同为 .bar-group，直接用 offsetLeft）
+      els.albumMenu.style.left = `${els.folderLabel.offsetLeft}px`;
+      fillAlbumCounts();
+    } else {
+      els.albumMenu.hidden = true;
+    }
+  });
+
+  els.albumMenu.addEventListener('click', async (event) => {
+    const item = event.target.closest('.pm-item');
+    if (!item || !item.dataset.albumId) return;
+    const ch = previewChannel();
+    if (!ch) return;
+    const album = albumOf(item.dataset.albumId);
+    els.albumMenu.hidden = true;
+    // 空相簿不许切：切过去只会看到空态页，直接带去相簿管理加目录/重扫才有出路
+    if (album && album.imageCount === 0) {
+      toast(`相簿「${album.name}」里还没有图片 —— 已打开相簿管理，加个有图的目录或点「重新扫描」`);
+      if (!state.albumsPageOpen) toggleAlbumsPage();
+      return;
+    }
+    // 换相簿：写入频道 profile 并重建（scheduler 对同一相簿会保留播放位置）
+    await pushProfile(ch.id, { albumId: item.dataset.albumId });
+    toast(album
+      ? `已把${shortChannelName(ch)}切到相簿「${album.name}」`
+      : '已清空这块屏的相簿（不再轮播图片）');
   });
   $('btn-settings').addEventListener('click', toggleSettings);
   $('btn-albums').addEventListener('click', toggleAlbumsPage);
@@ -3697,28 +3726,6 @@ function bindEvents() {
       const on = !resolvedDepth(id);
       await pushProfile(id, { depthParallax: on });
       note = on ? '这块屏深度视差已开启' : '这块屏深度视差已关闭（回退普通平移缩放）';
-    } else if (btn === els.qtDual) {
-      // 双层视差（2026-10-16）：人物层叠在补全背景板上；需要背景板（深度缓存自动派生）。
-      // 开启方向先过性能警告（r72），再查分割模型（r73：缺模型走遮罩弹窗按需下载）。
-      const on = !resolvedDual(id);
-      if (on) {
-        const ok = await window.wp.dualLayerWithConfirm();
-        if (!ok) { note = '已取消：双层视差保持关闭'; }
-        else {
-          const st = await window.wp.segModelStatus().catch(() => ({ available: false }));
-          if (!st.available) {
-            const result = await ensureSegModel();
-            if (result !== 'downloaded') { note = '已取消：双层视差需要分割模型'; }
-          }
-          if (note === '') {
-            await pushProfile(id, { dualLayer: true });
-            note = '这块屏双层视差已开启（人物动、背景稳）';
-          }
-        }
-      } else {
-        await pushProfile(id, { dualLayer: false });
-        note = '这块屏双层视差已关闭';
-      }
     } else if (btn === els.qtParticles) {
       // 粒子是「种类值」不是布尔：关 = 覆盖写 ''（显式关）；开 = 有全局种类就跟全局（null），
       // 全局也关着就给 random 兜底 —— 一键点亮总有粒子看。
@@ -3731,11 +3738,6 @@ function bindEvents() {
       const on = !resolvedPointerFx(id);
       await pushProfile(id, { pointerFx: on });
       note = on ? '这块屏鼠标影响动效已开启（鼠标动时镜头临时跟随，停手回落自动轨迹）' : '这块屏鼠标影响动效已关闭（镜头恒走预设轨迹）';
-    } else if (btn === els.qtAtmo) {
-      // 分时段氛围（r71）：按系统时间自动切四档光照（色温/亮度/远景雾连续过渡，黄昏金边）
-      const on = !resolvedAtmo(id);
-      await pushProfile(id, { depthAtmo: on });
-      note = on ? '这块屏分时段氛围已开启（按系统时间自动切清晨/白天/黄昏/夜晚光照）' : '这块屏分时段氛围已关闭';
     }
     // Auto 已搬进 rescan-group（r41），不在本组监听范围内 —— 单独挂，见下。
     state.config = await window.wp.getConfig();
@@ -3943,6 +3945,14 @@ function bindEvents() {
     applyChannelInfo(payload || {});
   });
 
+  // stage 报来的当前动效（抽签/改配置/绑定时会推）→ 缓存 + 顶栏徽章刷新
+  window.wp.onFlowStyleChanged((payload) => {
+    const id = payload && payload.channelId;
+    if (!id) return;
+    state.flowStyle.set(id, { style: payload.style, live: payload.live });
+    updateFlowChip();
+  });
+
   /**
    * 主进程按「切到下一台显示器」热键时，把预览切过去。
    * 主进程已经改过它自己的 currentPreviewId，这里跟着切才不会有「热键在 A 屏、界面在看 B 屏」的漂移。
@@ -4007,13 +4017,6 @@ function bindEvents() {
     const on = payload ? payload.confirmDelete !== false : false;
     state.config.confirmDelete = on;
     $('cfg-confirm-delete').checked = on;
-  });
-
-  /** 用户在双层视差警告框里勾了「不再提示」，把设置里的开关同步过来 */
-  window.wp.onDualHintChanged((payload) => {
-    const on = payload ? payload.dualLayerHint !== false : true;
-    state.config.dualLayerHint = on;
-    $('cfg-dual-hint').checked = on;
   });
 
   // 分割模型下载进度/阶段（r73）：弹窗开着才消费，其他时候丢弃

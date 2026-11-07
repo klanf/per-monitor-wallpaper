@@ -1478,6 +1478,37 @@ async function main() {
     schedS.stop();
   }
 
+  // ---- 相簿张数清点（countAlbumImages，2026-11-08 顶栏快切「空相簿禁切」的闸门）----
+  // 目录名用 dirCnt*：dirA~dirC 已被上面的用例占用，重名会把旧文件算进来
+  {
+    const dirCnt = path.join(tmpDir, 'dirCnt');
+    const dirCntSub = path.join(dirCnt, 'sub');
+    fs.mkdirSync(dirCntSub, { recursive: true });
+    fs.copyFileSync(RED, path.join(dirCnt, 'k-1.bmp'));
+    fs.copyFileSync(GREEN, path.join(dirCnt, 'k-2.bmp'));
+    fs.copyFileSync(RED, path.join(dirCntSub, 'k-3.bmp'));
+
+    const storeN = new Store(path.join(tmpDir, 'config-counts.json'));
+    const albFull = { id: 'alb_cnt_full', name: '有图', folders: [{ path: dirCnt, enabled: true }] };
+    const albNest = { id: 'alb_cnt_nest', name: '父子目录', folders: [{ path: dirCnt, enabled: true }, { path: dirCntSub, enabled: true }] };
+    const albGone = { id: 'alb_cnt_gone', name: '目录失效', folders: [{ path: path.join(tmpDir, 'no-such-dir'), enabled: true }] };
+    const albOff = { id: 'alb_cnt_off', name: '目录全停用', folders: [{ path: dirCnt, enabled: false }] };
+    storeN.set({ albums: [albFull, albNest, albGone, albOff], perMonitor: true, applyToSystem: false, applyOnStart: false });
+    const schedN = new MonitorScheduler({
+      store: storeN,
+      cacheDir: tmpDir,
+      enumerate: () => ({ ok: true, monitors: [FAKE_MONITORS[0]] }),
+      resolveUnifiedTarget: () => ({ monitorId: null, label: '全部显示器' }),
+      writeWallpaper: async () => ({ ok: true, method: 'test' }),
+    });
+    const counts = await schedN.countAlbumImages();
+    check('有图相簿张数正确（含子目录）', counts.get(albFull.id) === 3, `n=${counts.get(albFull.id)}`);
+    check('父子目录同时添加不重复计', counts.get(albNest.id) === 3, `n=${counts.get(albNest.id)}`);
+    check('目录失效 = 0（现场扫实证，不因缓存缺席放行）', counts.get(albGone.id) === 0, `n=${counts.get(albGone.id)}`);
+    check('目录全停用 = 0', counts.get(albOff.id) === 0, `n=${counts.get(albOff.id)}`);
+    schedN.stop();
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);

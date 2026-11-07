@@ -25,12 +25,80 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
+const shellMenu = require('./shellMenu');
+const win32 = require('./win32');
+
+/*
+ * ============================================================
+ * 快速转发通道（2026-11-08）：菜单点击秒转发，不再加载整个应用
+ * ============================================================
+ * 桌面右键菜单每次点击都由 Explorer 冷启动一个 Electron 进程来转交动作。
+ * 之前这条路径也要把整个模块图（深度引擎/缩略图/调度器/更新器……）require 完
+ * 才走到下面的拿锁转发，用户感知就是「右键删除一段时间不用就卡一下」。
+ *
+ * 所以在任何重模块之前先做三件事：
+ *   1. 定位 userData（环境变量 / 注册表命令注入的 --wp-user-data=）；
+ *   2. 是菜单命令就把点击瞬间的光标写进「遗嘱」文件（见下方注释）；
+ *   3. 尝试拿单实例锁 —— 锁被别人拿着（App 在跑）说明本进程只是转发员，
+ *      转发数据在锁调用内已交给第一实例，process.exit 立刻走人，下面的
+ *      重模块一行不碰。锁拿到（App 没在跑）才继续加载完整应用走启动补办。
+ */
+if (process.env.WP_USER_DATA) app.setPath('userData', path.resolve(process.env.WP_USER_DATA));
+
+/*
+ * 同一件事的命令行形式：桌面右键菜单的注册表命令会带 `--wp-user-data="<路径>"`
+ * （shellMenu.commandLine 注入）。不带的话，点菜单新起的进程会用**默认** userData
+ * —— 锁按 userData 分钥匙，它跟正在跑的隔离实例互不认识，就自己成了完整实例：
+ * 挂自己的舞台盖住原实例（用户看到「舞台消失又瞬间加回来」），800ms 后把动作
+ * 办在一个将死的进程上再退出 —— 运行中的实例毫无感知（暂停不生效、删错图的根因）。
+ * Windows 引号规则 `a="b c"` 解析成单个参数 `a=b c`，但这里还是兼容带引号的形式。
+ */
+(function applyArgvUserData() {
+  const raw = process.argv.find((a) => typeof a === 'string' && a.startsWith('--wp-user-data='));
+  if (!raw) return;
+  const p = raw.slice('--wp-user-data='.length).replace(/^"(.*)"$/, '$1').trim();
+  if (p) app.setPath('userData', path.resolve(p));
+})();
+
+/*
+ * 桌面菜单命令的「光标遗嘱」（2026-11-03，删错屏 bug 的根因修复）：
+ *
+ * 菜单点击 → Explorer 起新进程 → second-instance 转发到运行中的实例，这条链要
+ * 0.5~2s（Electron 冷启动 + 拿锁转发）。之前运行中的实例在**处理时**才读
+ * GetCursorPos —— 用户点完菜单鼠标往往已经挪走（很常见：甩回主工作屏），于是
+ * 「在副屏点的删除」解析成主屏频道，删掉的是主屏正在显示的那张（2026-11-03 实锤：
+ * 回收站 $I 时间戳 × live-debug.log，删除后主屏舞台立刻重绘新当前帧）。
+ *
+ * 修法：新进程**一睁眼**（userData 定位之后、拿锁之前）先把光标位置写进
+ * userData/desktop-menu-cursor.json；运行中的实例处理菜单动作时优先用这份
+ * 「点击瞬间的光标」，10 秒内且菜单项对得上才认，否则回落实时读。
+ * 内存里同时留一份 —— 启动补办路径（App 没在跑，本进程自己办完就退）直接用。
+ */
+let menuCursorClaim = null;
+const menuClaimItem = shellMenu.itemFromArgv(process.argv);
+if (menuClaimItem) {
+  const pt = win32.cursorPoint();
+  if (pt) {
+    menuCursorClaim = { x: pt.x, y: pt.y, at: Date.now(), key: menuClaimItem.key };
+    try {
+      fs.writeFileSync(
+        path.join(app.getPath('userData'), 'desktop-menu-cursor.json'),
+        JSON.stringify(menuCursorClaim),
+        'utf8',
+      );
+    } catch { /* 写不进就算了：处理端回落实时读光标 */ }
+  }
+  // 本进程只是转发员：锁拿不到就立刻退出。用 process.exit 而不是 app.exit ——
+  // app.exit 不中断同步执行，后面几百行模块照载，等于白修。转发数据（argv）
+  // 在锁调用内已交给第一实例，立刻退出不影响送达。
+  if (!app.requestSingleInstanceLock()) process.exit(0);
+}
+
 const thumbnails = require('./thumbnails');
 const { readImageInfo } = require('./exif');
 const { readImageSize } = require('./imageSize');
 const fileActions = require('./fileActions');
 const tray = require('./tray');
-const shellMenu = require('./shellMenu');
 const stageProtocol = require('./stageProtocol');
 const videoOptimize = require('./videoOptimize');
 const liveStage = require('./liveStage');
@@ -43,7 +111,7 @@ stageProtocol.registerScheme();
 
 const { Store, UNIFIED_MONITOR, newAlbumId, findAlbum } = require('./store');
 const { probeFile } = require('./scanner');
-const win32 = require('./win32');
+// （win32 已在文件顶部「快速转发通道」提前 require，这里不再重复）
 const desktopWallpaper = require('./desktopWallpaper');
 const slideshowGuard = require('./slideshowGuard');
 const { MonitorScheduler, UNIFIED_ID } = require('./scheduler');
@@ -93,27 +161,8 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 // CefSharp#5174 同症状同修法；Electron#54627（43.x 跨 DPI 挪屏内容持久偏移）同族。
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,RemoveRedirectionBitmap');
 
-/*
- * 测试隔离钩子：环境变量把 userData（配置 / 单实例锁 / 播放存档）整个换目录。
- * requestSingleInstanceLock 按 userData 分钥匙，所以端到端验证得以和
- * 用户正在跑的真实实例并存，互不干扰。必须在下面拿锁之前生效。
- */
-if (process.env.WP_USER_DATA) app.setPath('userData', path.resolve(process.env.WP_USER_DATA));
-
-/*
- * 同一件事的命令行形式：桌面右键菜单的注册表命令会带 `--wp-user-data="<路径>"`
- * （shellMenu.commandLine 注入）。不带的话，点菜单新起的进程会用**默认** userData
- * —— 锁按 userData 分钥匙，它跟正在跑的隔离实例互不认识，就自己成了完整实例：
- * 挂自己的舞台盖住原实例（用户看到「舞台消失又瞬间加回来」），800ms 后把动作
- * 办在一个将死的进程上再退出 —— 运行中的实例毫无感知（暂停不生效、删错图的根因）。
- * Windows 引号规则 `a="b c"` 解析成单个参数 `a=b c`，但这里还是兼容带引号的形式。
- */
-(function applyArgvUserData() {
-  const raw = process.argv.find((a) => typeof a === 'string' && a.startsWith('--wp-user-data='));
-  if (!raw) return;
-  const p = raw.slice('--wp-user-data='.length).replace(/^"(.*)"$/, '$1').trim();
-  if (p) app.setPath('userData', path.resolve(p));
-})();
+// （WP_USER_DATA / --wp-user-data= / 光标遗嘱的处理已上移到文件顶部「快速转发通道」，
+//   必须赶在所有重模块 require 之前执行，菜单转发的冷启动进程才能秒进秒出。）
 
 let store = null;
 let mainWindow = null;
@@ -634,6 +683,10 @@ async function channelAt(pt) {
   if (!id && scheduler.channels.has(UNIFIED_ID)) id = UNIFIED_ID;
   if (!id && scheduler.channels.size === 1) id = [...scheduler.channels.keys()][0];
 
+  // 定位结果落盘（2026-11-03）：console.log 只进 stdout（GUI 子系统接不住），
+  // 删错屏排查时回收站 × 日志对不上账，就是因为删除/复制/切换的定位从没进过日志。
+  debugLog.dlog('desktop-menu', `定位 pt=(${pt.x},${pt.y}) monitor=${monitorId ? monitorId.slice(-26) : 'null'} → ${id ? (id === UNIFIED_ID ? 'unified' : id.slice(-26)) : '无'}`);
+
   if (!id) {
     const labels = scheduler.list().map((c) => c.label).join('、');
     return {
@@ -646,10 +699,11 @@ async function channelAt(pt) {
   return { ok: true, id, label: channelLabel(id), channel: scheduler.channels.get(id) };
 }
 
-async function channelAtCursor() {
-  const pt = win32.cursorPoint();
-  if (!pt) return { ok: false, text: '读不到光标位置' };
-  return channelAt(pt);
+/** pt = 菜单命令的「光标遗嘱」（见文件顶部的 menuCursorClaim）；没有就实时读 */
+async function channelAtCursor(pt) {
+  const p = pt || win32.cursorPoint();
+  if (!p) return { ok: false, text: '读不到光标位置' };
+  return channelAt(p);
 }
 
 /**
@@ -686,13 +740,13 @@ async function stepWallpaperAt(pt, dir) {
   };
 }
 
-async function stepWallpaperAtCursor() {
-  const pt = win32.cursorPoint();
-  if (!pt) {
+async function stepWallpaperAtCursor(pt) {
+  const p = pt || win32.cursorPoint();
+  if (!p) {
     send('notice', { text: '读不到光标位置，切不了', error: true });
     return { ok: false, error: '读不到光标位置' };
   }
-  return stepWallpaperAt(pt, 1);
+  return stepWallpaperAt(p, 1);
 }
 
 /* 手动暂停集（桌面右键「暂停/继续壁纸」）：与 fullscreenWatch 的自动暂停并集生效。
@@ -731,8 +785,8 @@ function broadcastPauseState(pausedIds, away, reasons) {
  * 桌面右键「暂停 / 继续壁纸」：切换光标所在那块屏的手动暂停。
  * 暂停 = 渲染冻结（rAF 停、GPU 归零）+ 调度器该屏不推进（isPaused 感知）。
  */
-async function togglePauseAtCursor() {
-  const at = await channelAtCursor();
+async function togglePauseAtCursor(pt) {
+  const at = await channelAtCursor(pt);
   if (!at.ok) {
     send('notice', { text: `${at.text}，暂停不了`, error: true });
     return { ok: false, error: at.text };
@@ -778,8 +832,8 @@ async function togglePauseAtCursor() {
 /**
  * 删掉「光标所在那块屏」正在轮播的那张 —— 桌面右键菜单「删除当前显示器的壁纸」。
  */
-async function deleteWallpaperAtCursor() {
-  const at = await channelAtCursor();
+async function deleteWallpaperAtCursor(pt) {
+  const at = await channelAtCursor(pt);
   if (!at.ok) {
     send('notice', { text: `${at.text}，删不掉`, error: true });
     return { ok: false, error: at.text };
@@ -793,6 +847,8 @@ async function deleteWallpaperAtCursor() {
   }
 
   console.log(`[desktop-menu] 删除 ${label} 当前这张：${entry.path}`);
+  // 同 2026-10-09 暂停的教训：stdout 接不住，删了哪张必须落日志才能对账
+  debugLog.dlog('desktop-menu', `删除 ${label} 当前这张：${entry.path}`);
   const result = await trashChannelCurrent(id);
   tray.refresh(scheduler.list());
 
@@ -804,16 +860,68 @@ async function deleteWallpaperAtCursor() {
 }
 
 /**
+ * 把「光标所在那块屏」正在轮播的那张复制进剪贴板 —— 桌面右键菜单「复制这张壁纸图片」。
+ *
+ * 复制管线整条复用 fileActions.copyImageWithNotice（与图片右键菜单「复制图像」
+ * 同一条：进度先发 → W3C 异步写 → 原生直写兜底 → 回读验证），这里只负责定位
+ * 「哪张」：光标那块屏的当前 entry（与 deleteWallpaperAtCursor 同一套解析）。
+ */
+async function copyWallpaperAtCursor(pt) {
+  const at = await channelAtCursor(pt);
+  if (!at.ok) {
+    send('notice', { text: `${at.text}，复制不了`, error: true });
+    return { ok: false, error: at.text };
+  }
+
+  const { id, label } = at;
+  const entry = at.channel.files[at.channel.index];
+  if (!entry) {
+    send('notice', { text: `${label} 现在没有图片，没什么可复制的`, error: true });
+    return { ok: false, error: '这一路没有图片', channelId: id, label };
+  }
+
+  console.log(`[desktop-menu] 复制 ${label} 当前这张：${entry.path}`);
+  const result = await fileActions.copyImageWithNotice(entry.path, (text) => send('notice', { text }));
+  if (!result.ok) return { ...result, channelId: id, label };
+
+  // 窗口可见时渲染层已经收到进度/完成 notice，别重复；藏进托盘才需要气泡
+  if (!isWindowVisible() && store.get().tray !== false) {
+    tray.notify('壁纸切换器', `已复制到剪贴板：${(result.name) || entry.name}（${label}）`);
+  }
+  return { ...result, channelId: id, label };
+}
+
+/**
+ * 读回「光标遗嘱」（写入见文件顶部 menuCursorClaim）。
+ * 只认 10 秒内、同一个菜单项的 —— 过期/别的项一律不认，回落实时读光标。
+ */
+function readMenuCursorClaim(key) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(app.getPath('userData'), 'desktop-menu-cursor.json'),
+      'utf8',
+    ));
+    if (raw && raw.key === key && typeof raw.x === 'number' && typeof raw.y === 'number'
+      && Date.now() - raw.at <= 10000) {
+      return { x: raw.x, y: raw.y, at: raw.at };
+    }
+  } catch { /* 没有遗嘱就回落实时读 */ }
+  return null;
+}
+
+/**
  * 桌面右键菜单点了哪一项 → 干什么。
  * 第二实例转发（App 已经在跑）和启动补办（App 没在跑）都走这一个入口，
  * 免得两条路径各写一份 switch、加菜单项时漏改一处。
  */
-function runDesktopMenuAction(item) {
-  debugLog.dlog('desktop-menu', `入口 key=${item && item.key}（second-instance 转发或启动补办）`);
+function runDesktopMenuAction(item, pt) {
+  const ageMs = pt && typeof pt.at === 'number' ? Date.now() - pt.at : null;
+  debugLog.dlog('desktop-menu', `入口 key=${item && item.key}（second-instance 转发或启动补办）${pt ? `，光标遗嘱=(${pt.x},${pt.y})${ageMs != null ? `，点击→处理 ${ageMs}ms` : ''}` : '，无遗嘱，实时读'}`);
   switch (item.key) {
-    case 'next': return stepWallpaperAtCursor();
-    case 'delete': return deleteWallpaperAtCursor();
-    case 'pause': return togglePauseAtCursor();
+    case 'next': return stepWallpaperAtCursor(pt);
+    case 'copy': return copyWallpaperAtCursor(pt);
+    case 'delete': return deleteWallpaperAtCursor(pt);
+    case 'pause': return togglePauseAtCursor(pt);
     default:
       console.warn('[desktop-menu] 不认识的菜单项:', item.key);
       return Promise.resolve({ ok: false, error: `不认识的菜单项：${item.key}` });
@@ -1661,6 +1769,11 @@ function registerIpc() {
     debugLog.dlog('stage', msg);
   });
 
+  // 动效轨迹上报（2026-10-28）：stage 抽签/改配置时推来，转发主界面顶栏「当前动效」徽章
+  ipcMain.on('stage:flow-style', (_e, payload) => {
+    send('flow-style:changed', payload || {});
+  });
+
   ipcMain.handle('stage:video-ended', async (_e, channelId) => {
     if (!scheduler || typeof channelId !== 'string') return { advanced: false };
     const next = await scheduler.videoEnded(channelId);
@@ -1824,6 +1937,16 @@ function registerIpc() {
   // ---- 相簿管理 ----
 
   ipcMain.handle('album:list', () => (store.get().albums || []).map((a) => ({ ...a, cover: albumCoverPath(a) })));
+
+  /**
+   * 每个相簿的图片张数（顶栏相簿快切菜单的「空相簿禁切」闸门）。
+   * 缓存命中零开销，没命中现场扫（见 scheduler.countAlbumImages）；
+   * 打开菜单时异步取，取到前菜单先按旧知识渲染，取到后重渲染。
+   */
+  ipcMain.handle('album:counts', async () => {
+    if (!scheduler) return {};
+    return Object.fromEntries(await scheduler.countAlbumImages());
+  });
 
   /**
    * 相簿封面：第一个启用目录在扫描缓存里的第一张图。
@@ -2173,7 +2296,12 @@ async function setChannelProfile(channelId, patch) {
 
 /* ------------------------------------------------------------------ 生命周期 */
 
-const gotLock = app.requestSingleInstanceLock();
+/*
+ * 拿单实例锁。注意：菜单命令进程已经在顶部「快速转发通道」拿过锁了
+ * （menuClaimItem 存在且能走到这里 = 早期拿锁成功，走启动补办）——
+ * 同进程对同一份 userData 重复调 requestSingleInstanceLock 没有契约保证，别再调。
+ */
+const gotLock = menuClaimItem ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
   /*
    * 这个进程只是「来转交一个开关的」，要立刻死掉。
@@ -2189,7 +2317,8 @@ if (!gotLock) {
     // 别把窗口翻出来打断用户（他正在看桌面）。
     const item = shellMenu.itemFromArgv(argv);
     if (item) {
-      runDesktopMenuAction(item).catch((err) => console.error('[desktop-menu]', err.message));
+      runDesktopMenuAction(item, readMenuCursorClaim(item.key))
+        .catch((err) => console.error('[desktop-menu]', err.message));
       return;
     }
     showWindow();
@@ -2451,7 +2580,9 @@ if (!gotLock) {
     const startupItem = shellMenu.itemFromArgv(process.argv);
     if (startupItem) {
       setTimeout(() => {
-        runDesktopMenuAction(startupItem)
+        // 启动补办用进程自己一睁眼抓的光标（menuCursorClaim）—— 800ms 延迟里
+        // 鼠标同样可能已经挪走，道理和 second-instance 路径一样
+        runDesktopMenuAction(startupItem, menuCursorClaim ? { x: menuCursorClaim.x, y: menuCursorClaim.y } : null)
           .catch((err) => console.error('[desktop-menu]', err.message))
           .finally(() => app.quit());
       }, 800);

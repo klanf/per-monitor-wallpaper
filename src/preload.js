@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('wp', {
 
   // ---- 相簿 ----
   listAlbums: () => ipcRenderer.invoke('album:list'),
+  /** 每个相簿的图片张数 { albumId: n }（快切菜单的空相簿禁切闸门） */
+  albumCounts: () => ipcRenderer.invoke('album:counts'),
   createAlbum: (name) => ipcRenderer.invoke('album:create', name),
   /** 全量更新：{ name?, folders?: [{ path, enabled }] }；folders 由界面组装好整包传上来 */
   updateAlbum: (id, patch) => ipcRenderer.invoke('album:update', id, patch),
@@ -177,6 +179,11 @@ contextBridge.exposeInMainWorld('wp', {
     ipcRenderer.on('channels:changed', (_event, payload) => cb(payload));
   },
 
+  /** stage 报来的当前动效轨迹（主界面顶栏徽章用） */
+  onFlowStyleChanged: (cb) => {
+    ipcRenderer.on('flow-style:changed', (_event, payload) => cb(payload));
+  },
+
   /**
    * 主进程要求切换「当前操作的显示器」（「切到下一台显示器」热键触发）。
    * 反向通道 —— 热键是全局的，窗口可能藏在托盘里，这时候只有主进程知道该切到哪一路。
@@ -203,6 +210,11 @@ contextBridge.exposeInMainWorld('wp', {
   /** stage 渲染端诊断日志 → 主进程落 live-debug.log（VBS 丢 stdout 的兜底） */
   stageLog: (msg) => {
     ipcRenderer.send('stage:log', String(msg).slice(0, 500));
+  },
+
+  /** stage 上报当前动效轨迹（抽签/改配置时）→ 主进程转发主界面顶栏徽章 */
+  reportFlowStyle: (payload) => {
+    ipcRenderer.send('stage:flow-style', payload && typeof payload === 'object' ? payload : {});
   },
 
   /** 主进程告诉 stage 窗口「你绑定哪个频道」（动态桌面 stage 页专用） */

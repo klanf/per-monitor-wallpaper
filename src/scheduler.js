@@ -54,6 +54,7 @@ const SCAN_CACHE_SAVE_DELAY_MS = 3000;              // 扫描后延迟落盘（�
 const SCAN_CACHE_REFRESH_AFTER_STARTUP_MS = 300000; // 启动用了磁盘缓存 → 五分钟后后台刷新一次（第七十六轮：120s→300s，避开开机后用户点托盘/看预览的操作高峰，别让全量重扫抢那几分钟的 IO）
 const SCAN_CACHE_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // 缓存条目 30 天不用 —— 目录结构大改后老缓存不值得信
 const SCAN_CACHE_MAX_FILES = 400000;                 // 单目录条目的文件数护栏（防异常膨胀）
+const EMPTY_RECHECK_DELAY_MS = 60000;                // 「有图 → 突然扫空」的复核延迟：给同步/盘忙留恢复窗口
 
 /** 拼接邻居（r38）：拼格里只放得下静态图，这些扩展名之外的（视频/网页）跳过 */
 const COLLAGE_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif', '.gif', '.tif', '.tiff']);
@@ -167,6 +168,8 @@ class MonitorScheduler {
     this.lastEnumError = null;
     /** 定时自动扫描的定时器（见 _armAutoScan）；关闭时为 null */
     this.scanTimer = null;
+    /** 「有图 → 突然扫空」复核定时器（见 _rebuild 末尾的空态自愈）；闲时为 null */
+    this._emptyRecheckTimer = null;
     /** 上次自动扫描的时刻（时间戳，0 = 本次会话还没扫过）；渲染层据此显示「上次扫描 …」 */
     this.lastAutoScanAt = 0;
 
@@ -219,6 +222,10 @@ class MonitorScheduler {
       ch.timer = null;
       ch.retired = true;
     }
+    // 清掉之前记一份「每路原有几张图」：空态自愈（见 _rebuild 末尾）要用它判断
+    // 「原来有图 → 这一轮扫出 0 张」的突变，而不是把本来就空的相簿反复复核
+    const prevCounts = new Map();
+    for (const ch of this.channels.values()) prevCounts.set(ch.id, ch.files.length);
     this.channels.clear();
 
     // 等在途的写入收尾：否则旧配置的那一张会在切换之后才写上去，把新配置的图盖掉。
@@ -340,6 +347,22 @@ class MonitorScheduler {
       this.channels.set(channel.id, channel);
     }
 
+    /*
+     * 空态自愈：原来有图的频道这一轮扫出 0 张 —— 几乎可以断定是扫描那一瞬间
+     * 目录读不到 / 正被搬空的误判（空结果已不进缓存，见 _scan），但本次 rebuild
+     * 已经把空列表 adopt 进来了，光不缓存救不了这一轮。安排一次延迟 autoScan
+     * 复核：目录恢复 → 图回来（autoScan 不洗牌不动画面）；目录真被清空/删掉
+     * → 复核结果还是 0，prevCounts 归零后不再复核，不会循环。
+     * （目录失效和短暂不可读在 probeFile 层面区分不了，统一复核 —— 代价只是
+     * 60s 后多一次扫描。）
+     */
+    const wentEmpty = [...built].filter((item) =>
+      !item.files.length && (prevCounts.get(item.id) || 0) > 0);
+    if (wentEmpty.length) {
+      console.log(`[scheduler] ${wentEmpty.length} 个频道从有图扫成空（目录都在），${Math.round(EMPTY_RECHECK_DELAY_MS / 1000)}s 后复核一次`);
+      this._armEmptyRecheck();
+    }
+
     this.tookOver = true;
 
     // 启动接管：立刻把当前帧写上去，否则最长要等一个 interval 才看得到变化。
@@ -399,6 +422,20 @@ class MonitorScheduler {
      * 不靠这个定时器 —— 而定时器到点照旧会开火（只要进程还活着）。
      */
     if (typeof this.scanTimer.unref === 'function') this.scanTimer.unref();
+  }
+
+  /**
+   * 「有图 → 突然扫空」的延迟复核（自愈链的最后一环，见 _rebuild 末尾）。
+   * 走 autoScan：不洗牌、按路径找回当前帧，画面不动；只挂一个，重复触发不叠加。
+   */
+  _armEmptyRecheck() {
+    if (this._emptyRecheckTimer) return;
+    this._emptyRecheckTimer = setTimeout(() => {
+      this._emptyRecheckTimer = null;
+      console.log('[scheduler] 空态复核：重新扫描一次');
+      this.autoScan().catch((err) => console.error('[scheduler] 空态复核失败:', err && err.message));
+    }, EMPTY_RECHECK_DELAY_MS);
+    if (typeof this._emptyRecheckTimer.unref === 'function') this._emptyRecheckTimer.unref();
   }
 
   /**
@@ -526,9 +563,51 @@ class MonitorScheduler {
       folder,
       recursive,
     };
-    this.scanCache.set(key, result);
-    this._markScanDirty();
+    /*
+     * 空结果**不进缓存**：目录读不到的那一瞬间（Syncthing 同步锁、盘繁忙、
+     * 杀软扫描），scanFolder 会把 readdir 失败静默当「目录为空」返回 ——
+     * 缓存住它之后每次 rebuild 都复用，相簿就被钉死在空态，只能手动重扫
+     * （2026-10-28 用户实报：桌面还在播、托盘却说没图）。空目录每次 rebuild
+     * 重扫一遍只是一次 readdir 的开销，换来「误判空」在下次重建必然自愈。
+     */
+    if (result.files.length) {
+      this.scanCache.set(key, result);
+      this._markScanDirty();
+    }
     return result;
+  }
+
+  /**
+   * 每个相簿的图片张数（顶栏相簿快切菜单的「空相簿禁切」闸门用，2026-11-08）。
+   *
+   * 缓存命中的目录直接用（零磁盘）；没命中的现场扫一遍 —— 空结果不进缓存
+   * （见 _scan），所以「缓存里没有」可能是从未扫过、也可能目录已失效
+   * （如目录被改名/盘没挂），必须 readdir 才能确认，不能只信缓存把空相簿放行。
+   * scanFolder 只是 readdir 级开销，菜单打开时几百毫秒可接受；扫过的结果
+   * 顺手进缓存，下次 rebuild 直接复用。
+   *
+   * @returns {Promise<Map<string, number>>} albumId → 图片张数（无启用目录 = 0）
+   */
+  async countAlbumImages() {
+    const albums = this.store.get().albums || [];
+    const out = new Map();
+    for (const a of albums) {
+      const seen = new Set();   // 按文件路径去重：父子目录同加、递归/非递归两键都在时不重复计
+      let hasEnabled = false;
+      for (const f of a.folders || []) {
+        if (f.enabled === false) continue;
+        hasEnabled = true;
+        let files = null;
+        for (const recursive of [1, 0]) {
+          const cached = this.scanCache.get(`${f.path}::${recursive}`);
+          if (cached) { files = cached.files; break; }
+        }
+        if (!files) files = (await this._scan(f.path, true)).files;
+        for (const file of files) seen.add(file.path);
+      }
+      out.set(a.id, hasEnabled ? seen.size : 0);
+    }
+    return out;
   }
 
   /**
@@ -1420,6 +1499,10 @@ class MonitorScheduler {
     if (this._startupRefreshTimer) {
       clearTimeout(this._startupRefreshTimer);
       this._startupRefreshTimer = null;
+    }
+    if (this._emptyRecheckTimer) {
+      clearTimeout(this._emptyRecheckTimer);
+      this._emptyRecheckTimer = null;
     }
     this.channels.clear();
     // 退出前把最后那张的位置落盘 —— 否则「刚换完图就关程序」会丢掉这一步

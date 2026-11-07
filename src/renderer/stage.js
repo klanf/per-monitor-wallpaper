@@ -54,6 +54,7 @@ const RESIZE_DEBOUNCE = 200;
 /* ------------------------------------------------------------------ 状态 */
 
 let myChannel = null;          // 本窗口绑定的频道 id（stage:bind 指定）
+let myMonitor = null;          // 本窗口绑定的显示器 id（stage:bind 指定，动效上报用）
 let channels = [];             // 频道信息表（channels:changed 维护）
 let currentEntry = null;       // 当前帧（resize 重绘要用）
 let currentDir = 1;
@@ -75,7 +76,7 @@ const cfg = {
   depthDrift: 1.0,             // 自动漂移速度倍率（profile.depthDrift）
   depthLight: 0.45,            // 灯光强度（profile.depthLight）
   // ---- DepthFlow 流模式参数（Circle 预设默认值；profile 同名键）----
-  flowStyle: 'circle',         // 动效轨迹：circle/orbital/dolly/horizontal/vertical/tide/glide/figure8/random
+  flowStyle: 'circle',         // 动效轨迹：circle/orbital/dolly/tide/glide/figure8/pulse/ellipse/cascade/heart/vortex/sine/spiro/infinite/trefoil/astroid/rose/cardioid/butterfly/weave/squircle/random
   flowGentle: false,           // 轻柔档（2026-10-18 防晕调研）：幅度×0.5、速度×0.7
   flowIntensity: 0.5,          // 轨迹幅度（0.5 = Circle 预设；鼠标接管幅度同源）
   flowIso: 0.6,                // 斜视角（越大立体越强、越歪）
@@ -85,7 +86,7 @@ const cfg = {
   dualLayer: false,            // 双层视差（2026-10-16 路线 1，profile.dualLayer）：人物层叠在补全背景板上，人物动、背景稳
   depthAtmo: false,            // 分层氛围总开关（r71，profile.depthAtmo）：调色板光照+雾+金边
   atmoPalette: 'auto',         // 氛围调色板（r73）：auto=按时间（白天/黄昏）；golden/tealorange/cyberpunk/moonlight/faded=固定档
-  pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=镜头被鼠标临时接管；关=恒走预设轨迹（profile 不写 = 默认开）
+  pointerFx: true,             // 鼠标影响动效（r70，profile.pointerFx）：开=GL 视差镜头被鼠标临时接管；关=恒走预设轨迹。只管镜头 —— 裁切平移（cropPan）/粒子避让有各自的开关（2026-10-28 前关它会连坐 cropPan，已修）
   particleDepth: true,         // 粒子深度遮挡（r74，profile.particleDepth）：开=前景挡住粒子（雨/雪/樱花首批；需深度图，无深度自动跳过）
   cropPan: true,               // 鼠标平移裁切（r37，profile.cropPan=false 关；只对铺满裁切且图片有溢出时生效）
   // ---- 深度呼吸律动（r79：真机感知度验收过关 —— ±5% 验证幅度清晰可见，r73「差速感知不到」翻案）----
@@ -98,6 +99,13 @@ const cfg = {
   humanMotion: false,          // 默认关（设置页开关；需深度图 + mask，建议配双层视差）
   humanAmp: 1.0,               // 幅度倍率（0.3~2；1.0 = 髋部约 1% 图像高度的慢摆）
 };
+
+/*
+ * 裁切平移的「停手保持」窗口（2026-11-08 用户要求）：铺满裁切跟鼠标走，
+ * 喂送层的 mouseUntil 只延续 2.5s，之前停手 2.5s 就开始回中 —— 用户嫌太快，
+ * 在此基础上再续 15s（共约 17.5s）才开始缓回居中。2D panTick 与 GL 驱动两处共用。
+ */
+const CROP_PAN_RECENTER_EXTRA_MS = 15000;
 
 // ---- 分层氛围（r73）：调色板档位选择 + 缓动 ----
 // auto：按系统时间白天/黄昏两档（用户实测清晨与白天不明显→并入白天，夜晚档删）。
@@ -747,6 +755,7 @@ uniform float uFlowZoom;    // 图像缩放（zoom：1=满幅，Orbital 0.98/Dol
 uniform float uFit;         // 填充：0=cover（铺满裁切）1=contain（核心外透明，透出 2D 模糊底）2=mirror（核心外镜像延展）
 uniform vec4  uCore;        // contain/mirror 的核心矩形（屏幕像素，xy=左上角顶为 0，zw=宽高）——每层按自己宽高比现算
 uniform vec4  uXf;          // 切换动画层变换（r76，cover 专用）：xy=平移（屏幕宽/高占比），z=绕中心缩放；identity=(0,0,1,0)
+uniform vec2  uPan;         // 裁切平移（2026-10-28，cover 专用）：图像 UV 偏移，鼠标平移裁切窗口（JS 端已按溢出量限幅，无溢出轴=0）
 uniform sampler2D uMask;    // 前景 mask（isnetis/Otsu 派生+羽化，与深度图同分辨率同缓存键；双层视差用）
 uniform float uHasMask;     // 1 = 本层带 mask 纹理（unit 2）
 uniform sampler2D uBg;      // 干净背景板（人像区扩散填充；双层视差，与原图同尺寸）
@@ -1018,6 +1027,7 @@ void main() {
     if (uvS.x < 0.0 || uvS.x > 1.0 || uvS.y < 0.0 || uvS.y > 1.0) { gl_FragColor = vec4(0.0); return; }
     vec2 off = uFlowOff * crop;   // 屏幕位移 → 图像 gluv 空间（cover 裁切同比缩放）
     vec2 g0 = (vec2(0.5) + (uvS - 0.5) * crop - 0.5) * 2.0 * vec2(uImgAspect, 1.0);
+    g0 += uPan * 2.0 * vec2(uImgAspect, 1.0);   // 裁切平移：窗口位移（图像 UV）→ gluv 同比
     gl_FragColor = vec4(flowSample(g0, off, uImgAspect), uAlpha);
     return;
   }
@@ -1028,7 +1038,7 @@ void main() {
 
   float margin = uAmp * 0.55 + 0.015;
   vec2 zoom = crop * (1.0 - 2.0 * margin);
-  vec2 uv = vec2(0.5) + (uvS - 0.5) * zoom;
+  vec2 uv = vec2(0.5) + (uvS - 0.5) * zoom + uPan;   // +uPan：裁切平移（cover 时 JS 端已限幅在真实溢出内）
 
   float d = mix(0.5, texture2D(uDepth, uv).r, uHasDepth);   // 无深度=平面
   vec2 par = uCam * (d - 0.5) * uAmp;
@@ -1086,6 +1096,14 @@ const glState = {
   anim: null,       // { t0, duration, out:{imgTex,depTex,aspect}|null, in:{...}|null }
   mouse: [0, 0], mouseUntil: 0, mouseW: 0,
 };
+
+/**
+ * GL 裁切平移状态（2026-10-28）：与 2D panTick 同语义，但走 GL 采样偏移。
+ * 生效条件（glTick 内现查）：cropPan 开 + fit=cover + pointerFx 关 ——
+ * pointerFx 开时鼠标属于视差镜头接管（glCam/glCamFlow），二者不叠加。
+ * x/y ∈ [-0.25, 0.25]（对齐 2D panTick 的鼠标半程映射）。
+ */
+const glPan = { x: 0, y: 0 };
 
 /**
  * 深度呼吸律动（r79 转正版）：当前相位位移量（图像高度占比，-amp..amp）。
@@ -1161,7 +1179,7 @@ function glInit() {
     for (const n of ['uImg', 'uDepth', 'uCanvas', 'uImgAspect', 'uTime', 'uCam', 'uAmp',
       'uNrm', 'uLight', 'uLightsOn', 'uHasDepth', 'uAlpha', 'uFlow', 'uFlowOff',
       'uFlowIso', 'uFlowSteady', 'uFlowHeight', 'uFlowQ', 'uFlowFocus', 'uFlowZoom',
-      'uFit', 'uCore', 'uXf', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath',
+      'uFit', 'uCore', 'uXf', 'uPan', 'uMask', 'uHasMask', 'uBg', 'uHasBg', 'uAtmo', 'uAtmoSel', 'uBreath',
       'uHuman', 'uHumanRect', 'uHumanHip', 'uHumanChest', 'uHumanHead', 'uHumanTilt', 'uHumanBreath']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform1i(U.uImg, 0);
     gl.uniform1i(U.uDepth, 1);
@@ -1327,12 +1345,15 @@ async function glLoadLayer(imagePath, depthPath) {
   }
 }
 
-/** 相机：自动漂移为主，鼠标动过后 2.5s 内接管（权重快进慢出，平滑淡回） */
+/** 相机：自动漂移为主，鼠标动过后 2.5s 内接管（权重快进慢出，平滑淡回）。
+ * pointerFx 关（r70「鼠标影响动效」）只挡这条接管 —— 平移裁切（panTick）与
+ * 粒子避让各吃各的开关，不受此闸门连坐（2026-10-28 用户实报：关 pointerFx
+ * 后 cropPan 一起哑火，根因是喂送层被同一闸门挡住）。 */
 function glCam(tSec, nowMs) {
   const s = cfg.depthDrift;
   const ax = Math.sin(tSec * 0.11 * s) * 0.7 + Math.sin(tSec * 0.041 * s + 2.0) * 0.3;
   const ay = Math.sin(tSec * 0.073 * s + 1.3) * 0.65 + Math.sin(tSec * 0.033 * s + 4.0) * 0.35;
-  const active = nowMs < glState.mouseUntil;
+  const active = cfg.pointerFx !== false && nowMs < glState.mouseUntil;
   glState.mouseW += ((active ? 1 : 0) - glState.mouseW) * (active ? 0.10 : 0.02);
   return [
     ax * (1 - glState.mouseW) + glState.mouse[0] * glState.mouseW * 1.2,
@@ -1356,24 +1377,41 @@ const FLOW_STYLE_PARAMS = {
   circle:     { focus: 0.0,  zoom: 1.0 },
   orbital:    { focus: 0.30, zoom: 0.98 },
   dolly:      { focus: 0.35, zoom: 0.95 },
-  horizontal: { focus: 0.0,  zoom: 1.0 },   // 横移：单轴正弦（2026-10-18 调研补齐，防晕首选）
-  vertical:   { focus: 0.0,  zoom: 1.0 },   // 升降：单轴纵向（人眼对纵向运动更敏感，默认幅度已减半）
   tide:       { focus: 0.0,  zoom: 1.0 },   // 潮汐：快涨慢退的非对称涌动（2026-10-22）
   glide:      { focus: 0.0,  zoom: 1.0 },   // 漂流：两端缓停的横移（滑轨感）
   figure8:    { focus: 0.0,  zoom: 1.0 },   // 漫步：8 字游走（Lissajous 1:2）
+  pulse:      { focus: 0.0,  zoom: 1.0 },   // 脉动：环绕半径随呼吸强弱起伏（2026-10-28）
+  ellipse:    { focus: 0.0,  zoom: 1.0 },   // 椭圆：横向主导的扁平轨道（比环绕更沉稳）
+  cascade:    { focus: 0.0,  zoom: 1.0 },   // 斜织：斜向往返 + 端点缓停（漂流的斜向版）
+  heart:      { focus: 0.0,  zoom: 1.0 },   // 心动：沿心形线（参数曲线）游走（2026-10-28 奇趣档）
+  vortex:     { focus: 0.0,  zoom: 1.0 },   // 涡旋：旋转中收放的螺旋（转圈特效）
+  sine:       { focus: 0.0,  zoom: 1.0 },   // 正弦：1:3 Lissajous 的三波浪 S 形游走
+  spiro:      { focus: 0.0,  zoom: 1.0 },   // 万花尺：外旋轮线（R2:r1 三环内嵌花纹，转圈完全体）
+  infinite:   { focus: 0.0,  zoom: 1.0 },   // 无穷：Bernoulli 双纽线（标准 ∞，比 figure8 更饱满）
+  trefoil:    { focus: 0.0,  zoom: 1.0 },   // 三叶：三叶结投影（三瓣交错大环）
+  astroid:    { focus: 0.0,  zoom: 1.0 },   // 星芒：星形线 cos³/sin³（四尖点顿挫走位）
+  rose:       { focus: 0.0,  zoom: 1.0 },   // 花瓣：四瓣玫瑰线 r=cos2θ（路径穿越画面中心）
+  cardioid:   { focus: 0.0,  zoom: 1.0 },   // 心脏线：r=1+cosθ（单尖泪滴，一次掠过中心）
+  butterfly:  { focus: 0.0,  zoom: 1.0 },   // 蝶舞：蝴蝶曲线简化版 r=e^sinθ−2cos4θ（四翼扑轨）
+  weave:      { focus: 0.0,  zoom: 1.0 },   // 织网：Lissajous 3:2 编织轨
+  squircle:   { focus: 0.0,  zoom: 1.0 },   // 方圆：超椭圆 n=4 轨道（圆角方形走位）
 };
+/* horizontal/vertical 已删（2026-10-28 用户反馈呆板）：单轴匀速的活儿由
+ * glide（横移·滑轨感）/ tide（纵向·涌动感）接管；配置残留值按未知回落 circle。 */
 
 /** flowStyle='random'（2026-10-18）：每次换图抽一种具体轨迹（showFrame 时决定，
  * 同一张图显示期间不变）。zoom/dollyzoom 已删（用户实测晕感太强），不进池。 */
-const FLOW_RANDOM_POOL = ['circle', 'orbital', 'dolly', 'horizontal', 'vertical', 'tide', 'glide', 'figure8'];
+const FLOW_RANDOM_POOL = ['circle', 'orbital', 'dolly', 'tide', 'glide', 'figure8', 'pulse', 'ellipse', 'cascade', 'heart', 'vortex', 'sine', 'spiro', 'infinite', 'trefoil', 'astroid', 'rose', 'cardioid', 'butterfly', 'weave', 'squircle'];
 
 /** 当前生效轨迹：非 random = 跟随配置；random = showFrame 时抽签落这里 */
 let flowStyleActive = 'circle';
 let flowStyleLast = '';        // 上一次抽中的轨迹：random 连续不重样（观感上保证「每次都换了」）
 
 /** 抽本次换图的流模式轨迹（对齐 pickAnimName 的做法）。
- * random 模式避开上一次的抽签（池内其余全参与），换图必有可感知变化；落 slog 便于取证。 */
+ * random 模式避开上一次的抽签（池内其余全参与），换图必有可感知变化；落 slog 便于取证。
+ * 固定模式也落一行「轨迹变更」日志——2026-10-28 用户报「固定风格不固定」时的取证锚点。 */
 function pickFlowStyle() {
+  const prev = flowStyleActive;
   flowStyleActive = cfg.flowStyle === 'random'
     ? (() => {
       const candidates = FLOW_RANDOM_POOL.filter((s) => s !== flowStyleLast);
@@ -1383,7 +1421,21 @@ function pickFlowStyle() {
       return pick;
     })()
     : (FLOW_STYLE_PARAMS[cfg.flowStyle] ? cfg.flowStyle : 'circle');
+  if (flowStyleActive !== prev) {
+    slog('流模式轨迹:', flowStyleActive, `（上次=${prev}，配置=${cfg.flowStyle}）`);
+    reportFlowStyle();          // 推给主界面顶栏的「当前动效」徽章（随机换图跟着变）
+  }
   return flowStyleActive;
+}
+
+/** 当前动效上报（2026-10-28）：stage 抽签/改配置时推给主界面顶栏显示。
+ *  主界面按 channelId 对齐预览徽章 —— 统一模式全部报 '__unified__'，每屏独立各报各的。 */
+function reportFlowStyle() {
+  try {
+    if (window.wp && window.wp.reportFlowStyle) {
+      window.wp.reportFlowStyle({ channelId: myChannel, monitorId: myMonitor, style: flowStyleActive, live: Boolean(cfg.depthFlow) });
+    }
+  } catch (_) { /* 上报失败别影响渲染 */ }
 }
 /**
  * 流模式（DepthFlow 预设移植）相机：返回 { off:[x,y], iso }。
@@ -1393,11 +1445,24 @@ function pickFlowStyle() {
  *   circle  —— offset=(cos,-sin)*amp，iso 恒定（滑杆）
  *   orbital —— offset=(sin,0)*amp，iso=0.5·cos+0.75 摆动环绕（focus 0.30/zoom 0.98）
  *   dolly   —— offset=0，iso=0.5·(1-cos) 推拉变焦（height 0.30/steady 0.35/focus 0.35/zoom 0.95）
- *   horizontal —— offset=(sin,0)*amp 单轴横移（DepthFlow Horizontal，steady 缓冲走滑杆）
- *   vertical   —— offset=(0,-sin)*amp*0.5 单轴升降（纵向幅度减半：人眼对纵向运动更敏感易晕）
  *   tide       —— 快涨慢退的非对称纵向涌动（sin+0.3·sin2 归一化）+ 0.12 倍横向微漂
  *   glide      —— tanh 压平正弦两端的横移（滑轨缓停）+ 0.07 倍纵向微浮沉
  *   figure8    —— offset=(sin,-sin2)*amp*{0.9,0.35} 8 字游走（纵向减量防晕）
+ *   pulse      —— 环绕叠加 2 倍频半径呼吸（[0.24,1.0]·amp），涌动节奏
+ *   ellipse    —— 扁平椭圆轨道（横向主导，纵向 0.42 倍）
+ *   cascade    —— 25° 斜轴上的滑轨往返（tanh 缓停）
+ *   heart      —— 心形参数曲线（16sin³t / 归一化心高），纵向 0.5 倍防晕
+ *   vortex     —— 2 倍频角速度转圈 + 基频半径呼吸（螺旋收放）
+ *   sine       —— Lissajous 1:3 的三波浪 S 形（纵向 0.3 倍）
+ *   spiro      —— 外旋轮线 R2:r1:d1.3（三环内嵌万花尺纹，/4.3 归一化）
+ *   infinite   —— Bernoulli 双纽线（标准 ∞，y 天然 0.354 倍再乘 0.8）
+ *   trefoil    —— 三叶结投影（三瓣交错大环，y 归一化后 0.4 倍）
+ *   astroid    —— 星形线 cos³/sin³（四尖点速度归零的顿挫走位）
+ *   rose       —— 四瓣玫瑰线 r=cos2θ（四次穿越画面中心，运动平滑）
+ *   cardioid   —— 心脏线 r=1+cosθ（单尖泪滴，/2 归一化）
+ *   butterfly  —— 蝴蝶曲线简化版 r=e^sinθ−2cos4θ（数值扫描归一化 2.9063/3.1296）
+ *   weave      —— Lissajous 3:2 编织轨
+ *   squircle   —— 超椭圆 n=4 极坐标（圆角方轨道，/1.1892 归一化）
  *   random     —— 每次换图从 FLOW_RANDOM_POOL 抽一种（pickFlowStyle 在 showFrame 落签）
  * 轻柔档（cfg.flowGentle）：幅度 ×0.5、速度 ×0.7 —— 防晕总闸（2026-10-18 社区调研）。
  * 鼠标接管：位移平滑淡入（iso 不受鼠标影响）。
@@ -1417,10 +1482,6 @@ function glCamFlow(tSec, nowMs) {
   } else if (style === 'orbital') {
     ax = Math.sin(cycle) * amp;
     iso = 0.5 * Math.cos(cycle) + 0.75;      // Orbital：isometric 动态摆动
-  } else if (style === 'horizontal') {
-    ax = Math.sin(cycle) * amp;              // Horizontal：纯横移
-  } else if (style === 'vertical') {
-    ay = -Math.sin(cycle) * amp * 0.5;       // Vertical：纵向减半防晕
   } else if (style === 'tide') {
     // 潮汐：sin + 0.3·sin2 是「快涨慢退」的非对称波（归一化到 ±1）——
     // 上涨段约 2.31 rad、回落段约 3.97 rad；纵向减半同 Vertical，横向微漂避免死板
@@ -1437,10 +1498,99 @@ function glCamFlow(tSec, nowMs) {
     // 漫步：Lissajous 1:2 的 8 字路径，横向主导；纵向 0.35 倍防晕
     ax = Math.sin(cycle) * amp * 0.9;
     ay = -Math.sin(2 * cycle) * amp * 0.35;
+  } else if (style === 'pulse') {
+    // 脉动：环绕轨道上叠加半径呼吸（2 倍频，一圈两缩一伸）——
+    // 半径在 [0.24, 1.0]·amp 间起伏，有「涌上来退下去」的节奏感；纵向 0.85 防晕
+    const r = amp * (0.62 + 0.38 * Math.sin(2 * cycle));
+    ax = Math.cos(cycle) * r;
+    ay = -Math.sin(cycle) * r * 0.85;
+  } else if (style === 'ellipse') {
+    // 椭圆：扁平的横向主导轨道 —— 走位比 Circle 沉稳，纵向只有 0.42 倍
+    ax = Math.cos(cycle) * amp;
+    ay = -Math.sin(cycle) * amp * 0.42;
+  } else if (style === 'cascade') {
+    // 斜织：漂流的斜向版 —— tanh 缓停节奏放在 25° 斜轴上往返
+    const ease = Math.tanh(1.6 * Math.sin(cycle)) / 0.9217;
+    ax = ease * amp * 0.75;
+    ay = -ease * amp * 0.35;
+  } else if (style === 'heart') {
+    // 心动：经典心形参数曲线 x=16sin³t / y=13cost−5cos2t−2cos3t−cos4t ——
+    // 归一化后横向 ±0.95·amp、纵向压缩到 0.5 倍防晕（心形天然纵向跨度大）；
+    // 纯三角函数周期 2π，天然无缝循环
+    const hy = (13 * Math.cos(cycle) - 5 * Math.cos(2 * cycle)
+              - 2 * Math.cos(3 * cycle) - Math.cos(4 * cycle)) / 17;
+    ax = Math.pow(Math.sin(cycle), 3) * amp * 0.95;
+    ay = -hy * amp * 0.5;
+  } else if (style === 'vortex') {
+    // 涡旋（转圈特效）：角速度 2 倍频（8 秒绕两圈），半径按基频呼吸 [0.24,1.0]·amp ——
+    // 匀速旋转叠加「旋进去再荡出来」的螺旋收放；整数倍频保证无缝；纵向 0.8 倍收量
+    const r = amp * (0.62 + 0.38 * Math.cos(cycle));
+    ax = Math.cos(2 * cycle) * r;
+    ay = -Math.sin(2 * cycle) * r * 0.8;
+  } else if (style === 'sine') {
+    // 正弦：Lissajous 1:3 —— 横向一次摆动、纵向三段波浪，像沿 S 形丝带游走；
+    // 纵向 0.3 倍防晕（频率高，幅度必须更小）
+    ax = Math.sin(cycle) * amp * 0.9;
+    ay = -Math.sin(3 * cycle) * amp * 0.3;
+  } else if (style === 'spiro') {
+    // 万花尺：外旋轮线 R=2,r=1,d=1.3（x=3cost−1.3cos3t / y=3sint−1.3sin3t，
+    // 归一化 /4.3）—— 大环上叠三个内嵌小环，转圈系完全体；d>r 无尖点、纯整数倍频无缝；
+    // 纵向 0.85 倍收量防晕（环纹形状仍在）
+    ax = (3 * Math.cos(cycle) - 1.3 * Math.cos(3 * cycle)) / 4.3 * amp;
+    ay = -(3 * Math.sin(cycle) - 1.3 * Math.sin(3 * cycle)) / 4.3 * amp * 0.85;
+  } else if (style === 'infinite') {
+    // 无穷：Bernoulli 双纽线（x=cost/(1+sin²t)，y=sint·cost/(1+sin²t)）——
+    // 标准 ∞ 符号，饱满蛋圆双瓣、交叉点收得紧；天然 2π 闭合；
+    // y 本身天然只有 x 的 0.354 倍，再乘 0.8 收量防晕
+    const den = 1 + Math.sin(cycle) * Math.sin(cycle);
+    ax = Math.cos(cycle) / den * amp * 0.95;
+    ay = -(Math.sin(cycle) * Math.cos(cycle) / den) * amp * 0.8;
+  } else if (style === 'trefoil') {
+    // 三叶：三叶结的正交投影（x=sint+2sin2t，y=cost−2cos2t，各除以自身极值
+    // 归一化）—— 三瓣交错的大环，一圈路径自己打三个结；整数倍频无缝；纵向 0.4 倍防晕
+    ax = (Math.sin(cycle) + 2 * Math.sin(2 * cycle)) / 2.6 * amp * 0.9;
+    ay = -(Math.cos(cycle) - 2 * Math.cos(2 * cycle)) / 3.0 * amp * 0.4;
+  } else if (style === 'astroid') {
+    // 星芒：星形线 x=cos³t / y=sin³t —— 四个尖点处速度归零（顿挫感），
+    // 尖与尖之间滑行；节奏像「滑-停-拐弯-滑」；纯三次幂周期 2π 无缝；纵向减半防晕
+    ax = Math.pow(Math.cos(cycle), 3) * amp * 0.95;
+    ay = -Math.pow(Math.sin(cycle), 3) * amp * 0.5;
+  } else if (style === 'rose') {
+    // 花瓣：四瓣玫瑰线 r=cos2θ（x=r·cosθ，y=−r·sinθ）—— 四次从瓣尖荡回
+    // 穿过画面中心再甩向下一瓣；r 过零 = 路径自交，运动本身平滑（速度不为零）；
+    // 2π 闭合无缝；纵向 0.7 倍防晕
+    ax = Math.cos(2 * cycle) * Math.cos(cycle) * amp * 0.95;
+    ay = -Math.cos(2 * cycle) * Math.sin(cycle) * amp * 0.7;
+  } else if (style === 'cardioid') {
+    // 心脏线：r=1+cosθ（归一化 /2）—— 单尖泪滴，底部尖点处掠过画面中心一次；
+    // 与心动的多谐波心形不同，它是纯极坐标心脏线；2π 闭合无缝；纵向 0.75 倍防晕
+    const cr = (1 + Math.cos(cycle)) / 2;
+    ax = cr * Math.cos(cycle) * amp * 0.95;
+    ay = -cr * Math.sin(cycle) * amp * 0.75;
+  } else if (style === 'butterfly') {
+    // 蝶舞：蝴蝶曲线简化版 r=e^sinθ−2cos4θ（去掉 sin⁵(θ/12) 长周期项保证 2π 闭合），
+    // 归一化常数取自数值扫描（max|x|=2.9063 / max|y|=3.1296）—— 四翼扑轨；
+    // 纵向 0.8 倍收量防晕
+    const br = Math.exp(Math.sin(cycle)) - 2 * Math.cos(4 * cycle);
+    ax = br * Math.cos(cycle) / 2.9063 * amp * 0.95;
+    ay = -br * Math.sin(cycle) / 3.1296 * amp * 0.8;
+  } else if (style === 'weave') {
+    // 织网：Lissajous 3:2 —— 横向三摆纵向两摆的编织轨（figure8 1:2 与 sine 1:3 的中间档）；
+    // 整数比无缝；纵向 0.35 倍防晕
+    ax = Math.sin(3 * cycle) * amp * 0.85;
+    ay = -Math.sin(2 * cycle) * amp * 0.35;
+  } else if (style === 'squircle') {
+    // 方圆：超椭圆 n=4 的极坐标 r=(|cosθ|⁴+|sinθ|⁴)^(-1/4)（/1.1892 归一化）——
+    // 圆角方形轨道，四角圆缓四边平直，比环绕「方正」；处处光滑无奇点；纵向 0.75 倍
+    const qr = Math.pow(Math.pow(Math.abs(Math.cos(cycle)), 4) + Math.pow(Math.abs(Math.sin(cycle)), 4), -0.25) / 1.1892;
+    ax = qr * Math.cos(cycle) * amp * 0.95;
+    ay = -qr * Math.sin(cycle) * amp * 0.75;
   } else {                                   // dolly
     iso = 0.5 * (1.0 - Math.cos(cycle));     // Dolly：无位移，纯推拉变焦
   }
-  const active = nowMs < glState.mouseUntil;
+  // pointerFx 关只挡视差镜头的鼠标接管（闸门在 glCam/glCamFlow 消费端），
+  // 喂送层无条件更新 —— panTick（裁切平移）也吃这份坐标，不能被连坐
+  const active = cfg.pointerFx !== false && nowMs < glState.mouseUntil;
   glState.mouseW += ((active ? 1 : 0) - glState.mouseW) * (active ? 0.10 : 0.02);
   const w = glState.mouseW;
   return {
@@ -1541,6 +1691,17 @@ function glDrawLayer(L, alpha, cam, tSec, xf) {
   }
   gl.uniform1f(glState.U.uFit, uFit);
   gl.uniform4f(glState.U.uCore, core[0], core[1], core[2], core[3]);
+  // 裁切平移 → 图像 UV（2026-10-28，cover 专属）：窗口位移 = pan × 溢出占比(1-crop)，
+  // 无溢出轴 (1-crop)=0 天然不动 —— 与 2D drawSource 的 (W-r.w)×(pan+0.5) 同一数学。
+  // contain/mirror 没有溢出可滑，恒 0。经典路径 zoom 缩过 margin，(1-crop)/2 > 0.25×(1-crop)
+  // 的上限放得下；POM 路径 texMirror 兜边，CPU 限幅保证不出真实像素。
+  {
+    const ca = w / h;
+    const cropX = L.aspect > ca ? ca / L.aspect : 1;
+    const cropY = L.aspect > ca ? 1 : L.aspect / ca;
+    const on = uFit === 0 && cfg.cropPan && cfg.fit === 'cover' && cfg.pointerFx === false;
+    gl.uniform2f(glState.U.uPan, on ? glPan.x * (1 - cropX) : 0, on ? glPan.y * (1 - cropY) : 0);
+  }
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -1553,6 +1714,18 @@ function glTick(now) {
   const gl = glState.gl;
   const tSec = (now - t0GL) / 1000;
   const cam = cfg.depthFlow ? glCamFlow(tSec, now) : glCam(tSec, now);
+  // GL 裁切平移驱动（2026-10-28）：插值节奏对齐 2D panTick（0.12 活跃 / 0.03 回中）
+  if (cfg.cropPan && cfg.fit === 'cover' && cfg.pointerFx === false) {
+    const live = now < glState.mouseUntil + CROP_PAN_RECENTER_EXTRA_MS;   // 停手 15s 后才开始回中
+    const tx = live ? glState.mouse[0] / 2 : 0;   // ∈ [-0.25, 0.25]，同 2D tx = (mouse+1)/2-0.5
+    const ty = live ? glState.mouse[1] / 2 : 0;
+    const k = live ? 0.12 : 0.03;
+    glPan.x += (tx - glPan.x) * k;
+    glPan.y += (ty - glPan.y) * k;
+  } else {
+    glPan.x *= 0.97;   // 条件不满足（含运行时关掉）：缓回居中
+    glPan.y *= 0.97;
+  }
   gl.disable(gl.BLEND);
   if (glState.anim) {
     const A = glState.anim;
@@ -1753,7 +1926,8 @@ function dropLayerBmp(layer) {
 /**
  * 裁切平移（r37，小红车同款）：铺满裁切的图溢出屏幕的部分，跟着鼠标滑动露出。
  * 语义与深度视差的鼠标接管完全同源：mousemove 喂 glState.mouse/mouseUntil（2.5s），
- * 活动期间目标值=鼠标位置，停手缓回居中；插值系数 0.12/0.03 对齐 glCam 的权重节奏。
+ * 活动期间目标值=鼠标位置，停手后再续 15s 才缓回居中（CROP_PAN_RECENTER_EXTRA_MS，
+ * 2026-11-08 用户要求延后）；插值系数 0.12/0.03 对齐 glCam 的权重节奏。
  * 只对 2D 铺满路径生效 —— GL 在管时鼠标属于视差镜头，contain/mirror 没有溢出可滑。
  */
 function panTick(now) {
@@ -1761,7 +1935,7 @@ function panTick(now) {
   if (!currentEntry || kindOf(currentEntry) !== 'image') return;
   const layer = layers[active];
   if (!layer || !layer.bmp) return;
-  const live = now < glState.mouseUntil;
+  const live = now < glState.mouseUntil + CROP_PAN_RECENTER_EXTRA_MS;   // 停手 15s 后才开始回中
   const tx = live ? (glState.mouse[0] + 1) / 2 - 0.5 : 0;
   const ty = live ? (glState.mouse[1] + 1) / 2 - 0.5 : 0;
   const k = live ? 0.12 : 0.03;
@@ -2168,6 +2342,11 @@ function applyChannelConfig() {
   if (typeof p.flowStyle === 'string' && (p.flowStyle === 'random' || FLOW_STYLE_PARAMS[p.flowStyle])) {
     cfg.flowStyle = p.flowStyle;
     pickFlowStyle();   // 立刻换签：当前图显示中改配置也要马上生效
+  } else if (typeof p.flowStyle === 'string' && p.flowStyle !== '' && p.flowStyle != null) {
+    // 配置里带着本窗口不认识的新风格名 = 渲染端代码比配置旧（stage 窗口是长命的，
+    // 加了新风格的版本要整个应用重启才进得来）—— 以前这里是静默保留旧轨迹，
+    // 用户看就是「固定风格不固定」（2026-10-28 排查结论之一），必须留个声。
+    slog('流模式风格未识别:', p.flowStyle, '—— 本窗口渲染代码较旧？整个应用重启后生效');
   }
   if (p.flowGentle !== undefined) cfg.flowGentle = Boolean(p.flowGentle);
   if (Number.isFinite(p.flowQuality)) cfg.flowQuality = Math.min(1, Math.max(0.15, p.flowQuality));
@@ -2180,12 +2359,12 @@ function applyChannelConfig() {
   if (p.atmoPalette !== undefined) {
     cfg.atmoPalette = ['auto', 'golden', 'tealorange', 'cyberpunk', 'moonlight', 'faded'].includes(p.atmoPalette) ? p.atmoPalette : 'auto';
   }
-  // 鼠标影响动效（r70，profile 不写 = 默认开）：关 = 两个喂入口闸门不更新
-  // glState.mouse，并立刻清 mouseUntil —— 混合权重 mouseW 按 0.02/帧平滑衰减，
-  // ~2s 内镜头无跳变地回到预设轨迹。
+  // 鼠标影响动效（r70，profile 不写 = 默认开）：只挡 GL 视差镜头的鼠标接管
+  // （闸门在 glCam/glCamFlow 消费端，mouseW 按 0.02/帧平滑衰减，~2s 无跳变回
+  // 预设轨迹）。喂送层保持无条件 —— 裁切平移（panTick）也吃这份坐标，
+  // 2026-10-28 修「关 pointerFx 连坐 cropPan」时从喂入口挪到了消费端。
   if (p.pointerFx !== undefined) {
     cfg.pointerFx = Boolean(p.pointerFx);
-    if (!cfg.pointerFx) glState.mouseUntil = 0;
   }
   // 视频播完再切（profile 不写 = 默认关，按 interval 定时切）
   if (p.videoPlayFull !== undefined) cfg.videoPlayFull = Boolean(p.videoPlayFull);
@@ -2332,10 +2511,12 @@ async function init() {
 
   window.wp.onStageBind((payload) => {
     myChannel = payload && payload.channelId;
+    myMonitor = payload && payload.monitorId;
     // bind 里带的是创建瞬间的暂停态（轮询事件只在变化时发，晚创建的窗口
     // 只等事件会错过当前状态）
     setFrozen(Boolean(payload && payload.paused));
     applyChannelConfig();
+    reportFlowStyle();          // 绑定即报一次当前风格（无变化时 pickFlowStyle 不会报）
     wp.listChannels().then(applyChannels);
   });
   // 渲染端未捕获异常 → live-debug.log（「功能死了但没有报错」场景的唯一取证线索）
@@ -2353,11 +2534,10 @@ async function init() {
   // ⚠️ raised-WorkerW 挂载后这条本地 mousemove 收不到（见下方 onStageMouse）——
   // 保留它作为「挂载拓扑允许原生输入到达舞台」时的兜底，两条路并存不冲突。
   window.addEventListener('mousemove', (e) => {
-    // pointerFx 关（r70）：不喂视差镜头（粒子避让光标喂送不受此闸门管，独立开关）
-    if (cfg.pointerFx !== false) {
-      glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
-      glState.mouseUntil = performance.now() + 2500;
-    }
+    // 喂送无条件（坐标是共享原料）：pointerFx 只在 GL 消费端挡视差镜头接管，
+    // 裁切平移（panTick）/粒子避让各有各的开关，见 2026-10-28 连坐修复
+    glState.mouse = [(e.clientX / Math.max(1, innerWidth)) * 2 - 1, (e.clientY / Math.max(1, innerHeight)) * 2 - 1];
+    glState.mouseUntil = performance.now() + 2500;
     if (particleFx && cfg.particleCursor) particleFx.setCursor(e.clientX, e.clientY);
   }, { passive: true });
   // raised-WorkerW 挂载后桌面空白点的输入被图标层（SHELLDLL_DefView）截走，
@@ -2368,11 +2548,9 @@ async function init() {
   if (window.wp.onStageMouse) {
     window.wp.onStageMouse((p) => {
       if (!p || typeof p.nx !== 'number') return;
-      // pointerFx 关（r70）：同本地 mousemove 的闸门 —— 只挡视差镜头喂送
-      if (cfg.pointerFx !== false) {
-        glState.mouse = [p.nx, p.ny];
-        glState.mouseUntil = performance.now() + 2500;
-      }
+      // 同本地 mousemove：无条件喂，pointerFx 的闸门在 GL 消费端（2026-10-28 连坐修复）
+      glState.mouse = [p.nx, p.ny];
+      glState.mouseUntil = performance.now() + 2500;
       if (particleFx && cfg.particleCursor) particleFx.setCursor(p.x, p.y);
     });
   }
