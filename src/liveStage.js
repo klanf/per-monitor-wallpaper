@@ -342,13 +342,20 @@ async function createStage(ch) {
     if (!rec.preloaded) await win.loadFile(path.join(__dirname, 'renderer', 'stage.html'));
     if (!running || rec.retired) { win.destroy(); return; }
 
-    // 先让 Windows 11 24H2+ 进入 raised-desktop，保证存在图标层下方的 WorkerW。
-    // 每次创建都重新 snapshot：Explorer 可能重启过，所有句柄都会变。
-    const raised = desktopHost.raiseDesktop();
-    if (!raised.ok) throw new Error(`raised-desktop 初始化失败：${raised.error}`);
-    const snap = desktopHost.snapshot({});
-    const choice = desktopHost.chooseMountParent(snap);
-    if (!choice.ok) throw new Error(`挂载点判定失败：${choice.reason}`);
+    // 24H2+ raised-desktop：只在图标层下方的 WorkerW **确实缺失**时才发 0x052C。
+    // ⚠️ 2026-10-27 实锤：0x052C 本来就是 Shell 自己在 Win+Tab/桌面切换时发的消息
+    // （cast1e 的 24H2 桌面机制研究），反复重发等于反复戳「桌面切换」状态机 ——
+    // 新电脑实测会强行弹任务视图，退出后残留状态右键桌面仍弹，重启 Explorer 才清。
+    // 所以先 snapshot 看挂载点在不在，缺了才 raiseDesktop，消息量压到接近零。
+    let snap = desktopHost.snapshot({});
+    let choice = desktopHost.chooseMountParent(snap);
+    if (!choice.ok) {
+      const raised = desktopHost.raiseDesktop();
+      if (!raised.ok) throw new Error(`raised-desktop 初始化失败：${raised.error}`);
+      snap = desktopHost.snapshot({});
+      choice = desktopHost.chooseMountParent(snap);
+      if (!choice.ok) throw new Error(`挂载点判定失败：${choice.reason}`);
+    }
     rec.anchor = {
       parentHwnd: choice.parentHwnd,
       insertAfterHwnd: choice.insertAfterHwnd,
@@ -376,6 +383,9 @@ async function createStage(ch) {
     console.log(`[live-stage] 频道 ${ch.id} 的舞台已挂载（strategy=${choice.strategy}）`);
   } catch (err) {
     console.error('[live-stage] 创建失败:', err.message);
+    // 2026-11-02 补：这条失败只走 console.error，VBS 启动下 stdout 丢失 ——
+    // 「冷开机舞台没挂载但日志一片安静」排查了半天才定位。必须落 live-debug.log。
+    debugLog.dlog('live-stage', `频道 ${ch.id} 创建失败：${err.message}`);
     rec.fails = (rec.fails || 0) + 1;
     rec.degraded = rec.fails >= DEGRADED_AFTER;
     if (rec.win && !rec.win.isDestroyed()) rec.win.destroy();
@@ -517,10 +527,15 @@ function watchOnce() {
         rec.fails += 1;
         if (rec.win && !rec.win.isDestroyed()) {
           rec.win.hide();
-          const raised = desktopHost.raiseDesktop();
-          if (!raised.ok) throw new Error(`raised-desktop 重建失败：${raised.error}`);
-          const snap = desktopHost.snapshot({});
-          const choice = desktopHost.chooseMountParent(snap);
+          // 同 createStage：WorkerW 缺失才发 0x052C（见那里的 2026-10-27 注释）
+          let snap = desktopHost.snapshot({});
+          let choice = desktopHost.chooseMountParent(snap);
+          if (!choice.ok) {
+            const raised = desktopHost.raiseDesktop();
+            if (!raised.ok) throw new Error(`raised-desktop 重建失败：${raised.error}`);
+            snap = desktopHost.snapshot({});
+            choice = desktopHost.chooseMountParent(snap);
+          }
           if (choice.ok) {
             rec.anchor = {
               parentHwnd: choice.parentHwnd,

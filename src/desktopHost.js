@@ -150,15 +150,23 @@ function flatten(nodes, out = []) {
  */
 function findDefView(snap) {
   const all = flatten(snap && snap.topLevel);
-  const defView = all.find((n) => n.cls === DEFVIEW_CLASS) || null;
-  if (!defView) {
+  const candidates = all.filter((n) => n.cls === DEFVIEW_CLASS);
+  if (!candidates.length) {
     return { defView: null, holder: null, error: `整棵树里找不到 ${DEFVIEW_CLASS}（桌面图标层不在，桌面可能没起来）` };
   }
-  const holder = all.find((n) => n.hwnd === defView.parentHwnd) || null;
+  // 2026-11-02 冷开机实锤：桌面里会出现**僵死的桌面标签宿主**（ShellTabWindowClass，
+  // 0×0、不可见，里面躺着一个死 DefView），且枚举序可能排在正主 Progman 前面 ——
+  // 直接取第一个会把挂载判定带沟里（白名单拒绝 → 舞台永远起不来，错误还只走
+  // console.error，VBS 下日志里一片安静）。这里优先挑「可见 + 有真实尺寸」的正主，
+  // 全都不可见时才退回第一个（保持老行为）。
+  const real = candidates.find((n) => n.visible === true
+    && n.rect && n.rect.w > 0 && n.rect.h > 0)
+    || candidates[0];
+  const holder = all.find((n) => n.hwnd === real.parentHwnd) || null;
   if (!holder) {
-    return { defView, holder: null, error: `找到了 ${DEFVIEW_CLASS}，但它的父窗口不在快照里（parentHwnd=0x${(defView.parentHwnd || 0).toString(16)}）` };
+    return { defView: real, holder: null, error: `找到了 ${DEFVIEW_CLASS}，但它的父窗口不在快照里（parentHwnd=0x${(real.parentHwnd || 0).toString(16)}）` };
   }
-  return { defView, holder, error: null };
+  return { defView: real, holder, error: null };
 }
 
 /**

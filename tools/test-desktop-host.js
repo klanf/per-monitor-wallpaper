@@ -105,6 +105,29 @@ function main() {
     check('找到 DefView 但父窗口不在快照里 ⇒ 报错', r.defView !== null && r.holder === null && /父窗口不在快照里/.test(String(r.error)), String(r.error));
   }
 
+  {
+    // 2026-11-02 冷开机实锤：僵死的桌面标签宿主（ShellTabWindowClass，0×0 不可见）
+    // 排在正主 Progman 前面 —— findDefView 必须挑可见有尺寸的那个，而不是第一个
+    const deadDefView = node('SHELLDLL_DefView', 0x1034c, {
+      parentHwnd: 0x102dc, visible: false,
+      rect: { x: 462, y: 421, w: 0, h: 0 },
+    });
+    const deadHost = node('ShellTabWindowClass', 0x102dc, {
+      parentHwnd: 0, visible: false,
+      rect: { x: 462, y: 421, w: 0, h: 0 },
+      children: [deadDefView],
+    });
+    const s = realSnapshot();
+    s.topLevel.unshift(deadHost);        // 僵死宿主排在 Progman 前面（实机枚举序）
+    const r = desktopHost.findDefView(s);
+    check('僵死标签宿主在前 ⇒ 仍选中可见正主 DefView',
+      r.defView && r.defView.hwnd === 0x1014e, r.defView ? `0x${r.defView.hwnd.toString(16)}` : 'null');
+    check('僵死标签宿主在前 ⇒ 持有者仍是 Progman',
+      r.holder && r.holder.cls === 'Progman', r.holder ? r.holder.cls : 'null');
+    const d = desktopHost.chooseMountParent(s);
+    check('僵死标签宿主在前 ⇒ 挂载判定仍 ok', d.ok === true, d.reason || d.strategy);
+  }
+
   /* ================= 2. 挂载决策 ================= */
   console.log('\n===== 2. 挂载决策（chooseMountParent）=====');
   {

@@ -248,6 +248,11 @@ function enumMonitors() {
 
     const width = rect ? rect.right - rect.left : 0;
     const height = rect ? rect.bottom - rect.top : 0;
+    // 僵尸显示条目过滤（2026-10-26 新电脑实测）：扩展过屏后拓扑残留的幽灵显示器，
+    // GetMonitorRect 给 0×0 —— 显示不了任何东西，却照常占一个壁纸频道，
+    // 轮换/切图时真屏那路被搅乱（现象：主显示器"换不动"、幽灵屏"在换"）。0×0 一律跳过。
+    if (width <= 0 || height <= 0) continue;
+
     // Windows 约定：主显示器的原点就是虚拟桌面原点 (0,0)
     const primary = Boolean(rect && rect.left === 0 && rect.top === 0);
 
