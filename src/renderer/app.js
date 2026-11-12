@@ -51,6 +51,15 @@ const els = {
   segModelStage: $('seg-model-stage'),
   segModelOk: $('seg-model-ok'),
   segModelCancel: $('seg-model-cancel'),
+  depthModelBtn: $('depth-model-btn'),
+  depthModelOverlay: $('depth-model-overlay'),
+  depthModelTitle: $('depth-model-title'),
+  depthModelText: $('depth-model-text'),
+  depthModelProgress: $('depth-model-progress'),
+  depthModelProgressFill: $('depth-model-progress-fill'),
+  depthModelStage: $('depth-model-stage'),
+  depthModelOk: $('depth-model-ok'),
+  depthModelCancel: $('depth-model-cancel'),
   qtPointer: $('qt-pointer'),
   hudTitle: $('hud-title'),
   hudMeta: $('hud-meta'),
@@ -1545,6 +1554,52 @@ function ensureSegModel() {
   });
 }
 
+/**
+ * 深度模型按需下载（r88，issue IKQ6OH）：外观页状态行「下载深度模型」按钮发起，
+ * 复用 r73 遮罩三态（提示/进度/错误）。成功后主进程已自动 configure 重探，
+ * 这里只管关弹窗 + 刷新状态行。
+ */
+function startDepthModelDownload() {
+  const setPrompt = () => {
+    els.depthModelTitle.textContent = '需要下载深度模型';
+    els.depthModelText.hidden = false;
+    els.depthModelProgress.hidden = true;
+    els.depthModelStage.hidden = true;
+    els.depthModelOk.hidden = false;
+    els.depthModelOk.textContent = '开始下载';
+    els.depthModelCancel.textContent = '取消';
+  };
+  setPrompt();
+  els.depthModelOverlay.hidden = false;
+  let downloading = false;
+  els.depthModelOk.onclick = async () => {
+    els.depthModelOk.disabled = true;
+    downloading = true;
+    try {
+      await window.wp.depthModelDownload();   // 完成时 resolve（进度走推送）
+      els.depthModelProgressFill.style.width = '100%';
+      els.depthModelOverlay.hidden = true;
+      refreshDepthStatus();   // 主进程已重探，状态行应变「就绪」
+    } catch (err) {
+      downloading = false;
+      els.depthModelTitle.textContent = '下载失败';
+      els.depthModelText.hidden = false;
+      els.depthModelText.textContent = err && err.message ? String(err.message) : String(err);
+      els.depthModelProgress.hidden = true;
+      els.depthModelStage.hidden = true;
+      els.depthModelOk.hidden = false;
+      els.depthModelOk.textContent = '重试下载';
+      els.depthModelCancel.textContent = '关闭';
+    } finally {
+      els.depthModelOk.disabled = false;
+    }
+  };
+  els.depthModelCancel.onclick = async () => {
+    if (downloading) await window.wp.depthModelCancel().catch(() => {});   // 半截文件保留，续传
+    els.depthModelOverlay.hidden = true;
+  };
+}
+
 /** 鼠标影响动效（r70）生效值：布尔 profile 键，不写 = 默认开（与 stage.js cfg 默认一致） */
 function resolvedPointerFx(chId) {
   const cfg = state.config || {};
@@ -1593,6 +1648,11 @@ async function refreshDepthStatus() {
     } else {
       el.textContent = `深度生成不可用：${s.disabledReason || '依赖缺失'}（视差自动回退普通平移缩放）`;
       el.title = '';
+    }
+    // r88：模型可按需下载时亮出「下载深度模型」按钮（下载走遮罩三态）
+    if (els.depthModelBtn) {
+      els.depthModelBtn.hidden = !s.modelDownloadable;
+      els.depthModelBtn.onclick = s.modelDownloadable ? startDepthModelDownload : null;
     }
   } catch (_) {
     el.textContent = '';
@@ -1717,7 +1777,7 @@ function cardHtml(ch) {
         </svg>${previewing ? '预览中' : '预览'}
       </button>
     </div>
-    <div class="mc-path${album ? '' : ' empty'}" title="${escapeHtml(albumPathTitle)}">${
+    <div class="mc-path${album ? '' : ' pm-empty'}" title="${escapeHtml(albumPathTitle)}">${
       album
         ? `${escapeHtml(album.name)} · ${album.folders.filter((f) => f.enabled).length}/${album.folders.length} 目录`
         : '未选择相簿'
@@ -1942,7 +2002,7 @@ function renderAlbums() {
     const used = usedBy(album.id);
     const cover = album.cover
       ? `<img class="album-cover" src="${window.wp.thumbUrl(album.cover)}" alt="" loading="lazy">`
-      : '<div class="album-cover empty" aria-hidden="true"></div>';
+      : '<div class="album-cover cover-empty" aria-hidden="true"></div>';
     const dirsHtml = album.folders.map((f, i) => `
       <div class="album-dir${f.enabled ? '' : ' off'}">
         <input type="checkbox" data-album-act="toggle" data-path="${escapeHtml(f.path)}"${f.enabled ? ' checked' : ''}
@@ -3603,7 +3663,7 @@ function bindEvents() {
         const on = a.folders.filter((f) => f.enabled).length;
         const empty = a.imageCount === 0;
         const meta = a.id === cur ? '✓ ' : (typeof a.imageCount === 'number' ? `${a.imageCount.toLocaleString('zh-CN')} 张图` : '…');
-        return `<button type="button" class="pm-item${a.id === cur ? ' active' : ''}${empty ? ' empty' : ''}" data-album-id="${escapeHtml(a.id)}">
+        return `<button type="button" class="pm-item${a.id === cur ? ' active' : ''}${empty ? ' pm-empty' : ''}" data-album-id="${escapeHtml(a.id)}">
           <span title="${escapeHtml(a.name)}（${on}/${a.folders.length} 目录${empty ? '，没有图片' : ''}）">${escapeHtml(a.name)}</span>
           <span class="pm-meta">${meta}</span>
         </button>`;
@@ -4030,6 +4090,20 @@ function bindEvents() {
     if (!p || els.segModelOverlay.hidden) return;
     els.segModelStage.hidden = false;
     els.segModelStage.textContent = p.stage;
+  });
+
+  // 深度模型下载进度/阶段（r88）：弹窗开着才消费，其他时候丢弃
+  window.wp.onDepthModelProgress((p) => {
+    if (!p || els.depthModelOverlay.hidden) return;
+    els.depthModelProgressFill.style.width = `${Math.max(0, Math.min(100, Number(p.pct) || 0))}%`;
+    els.depthModelProgress.hidden = false;
+    els.depthModelStage.hidden = false;
+    els.depthModelStage.textContent = `${p.pct}%（${(p.bytes / 1048576).toFixed(0)} / ${(p.total / 1048576).toFixed(0)} MB）`;
+  });
+  window.wp.onDepthModelStage((p) => {
+    if (!p || els.depthModelOverlay.hidden) return;
+    els.depthModelStage.hidden = false;
+    els.depthModelStage.textContent = p.stage;
   });
 
   // 拉取最新频道状态（供外部测试脚本与手动刷新共用）

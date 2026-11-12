@@ -58,6 +58,33 @@ npm run restore-wallpaper  # 还原壁纸（不带参数＝按存档逐屏还原
 npm run dist               # 打包（需先 npm i -D electron-builder）
 ```
 
+## 2026-11-12：深度模型运行时按需下载（Gitee issue IKQ6OH 闭环）
+
+### 现象
+
+- 用户 nevermorezhou 提 issue：装完报「深度生成不可用：JS 引擎不可用（ONNX 模型不存在（D:\workbuddy\...depth-onnx-exp\...）），且缺少 Python 解释器（F:\miniconda3\python.exe）、worker 脚本（...）、深度模型（D:\workbuddy\tools\MoyuFloat\...）」——满屏都是**作者开发机的 legacy 兜底路径**。
+- 根因：`models/` 整目录 gitignore 不进库，源码自打包时 extraResources 无米下锅**静默**出废包；报错文案把 LEGACY_PATHS 写死的开发机路径原样甩给终端用户。
+
+### 第一批修复（0a80577）
+
+- `depthService.js` 加 `friendlyJsReason`：jsReason 报的 ONNX 路径是 legacy 兜底时剥路径换「未随本包附带」；模型全缺时 `disabledReason` 只给一条可行动指引（官方 Setup / 手动放模型），不再堆 Python 三件套噪声，完整路径留日志。
+- `tools/after-pack-check.js`（afterPack 守卫挂 package.json）：产物缺 v2_small.onnx 即报警。r88 起降级为**警告不阻断**（运行时下载可自愈）。
+
+### 本轮：运行时按需下载（r88，复用 r73 segModel 成熟链路）
+
+- 新模块 `src/depthModel.js`：hf-mirror 直拉 `onnx-community/depth-anything-v2-small`（onnx/model.onnx，99,060,839B）——r36 对拍实锤与自导出 ONNX 逐像素等价（CORR=1.0000/MAD=0）且 0.2.1 起官方包内就是这份文件（SHA256 `afb6a5c2…` 本机复核锚定）；Range 断点续传 + 3 次重试 + SHA256 校验 + URL 白名单（含 Xet CDN `.hf.co` 尾缀坑）；落 `userData\models\depth-anything\`。
+- `depthService.js`：onnxModel 候选链在打包候选与 legacy 之间插 userData 候选（configure 新键 `userModelDir` 注入）；`status()` 增 `modelDownloadable`（ONNX 缺失且非用户覆盖 → 状态行亮下载按钮）。
+- `main.js`：`model:depth-status/download/cancel` 三 handler（进度 120ms 限流推送，同 seg 模式）；**下载成功即 `configure({userModelDir})` 全新探测**——resolveRuntime 吃进 userData 候选，视差自愈，不用重启。
+- 渲染端：外观页深度视差状态行旁「下载深度模型」按钮（`modelDownloadable` 才亮）+ `depth-model-overlay` 遮罩三态（提示/进度/错误重试，复用 r73 的 modal 结构与交互）。
+- 单测 `tools/test-depthmodel.js`（11 断言：status 四态/白名单含锚点 URL/SHA 锚点防漂）挂进 verify:unit。
+
+### 验证
+
+- `node --check` ×6 全过；verify:unit 全链 0 失败（新增 depthmodel 11/0）；test-depth-service 24/0。
+- **真实端到端下载冒烟**：stub userData + 隐藏仓库候选 → 真下载 99MB（hf-mirror，4.4s）→ SHA256 过 → 落点正确 → 仓库候选还原。
+- **闭环重探验证**：模拟打包缺模型（appRoot 无 models）→ configure → engine=js 且 onnxModel 指向 userData、`modelDownloadable` 翻 false（真 ORT 会话识别 Depth-Anything-V2-Small）。
+- 已知无关失败：check-wiring 58/3（双层视差警告/分割下载链/人物生动三条在 HEAD 即失败，r84~r87 遗留，与本轮无关）。
+
 ## 2026-11-08：设置面板精简 + 桌面菜单「秒转发」（不再卡一下）
 
 ### 用户需求（六条）
@@ -86,6 +113,7 @@ npm run dist               # 打包（需先 npm i -D electron-builder）
 
 - 顶栏「相簿名 · N/M 目录」标签改为可点击：弹出全部相簿的下拉（当前相簿打 ✓），点谁就把**当前预览的那块屏**切到谁的相簿——与设置页每屏卡片走同一条 `pushProfile(albumId)` 重建链，同相簿保留播放位置；无预览屏时提示先选屏。
 - **空相簿禁切（用户实报追补）**：菜单每项显示图片张数；0 张的相簿置灰、点了不切换，直接弹 toast 并打开相簿管理页引导加目录/重扫。张数由新 IPC `album:counts` → `scheduler.countAlbumImages()` 现场清点：缓存命中零开销，没命中（从未扫过 / 目录失效）现场 readdir 实证——空结果不进扫描缓存，光看缓存会把「目录被改名」的空相簿放行。按文件路径去重，父子目录同加不重复计。
+- **修：菜单点不动（用户实报「好像多了一层覆盖」）**：空相簿项的置灰类名用了裸 `empty`，撞上空状态页的 `.empty { position:absolute; inset:0 }` 定位样式 → 该按钮被铺满整个菜单，半透明地盖住所有项吃掉全部点击。改名 `pm-empty`；同雷排掉 `.mc-path.empty`（信息面板无相簿路径行）与 `.album-cover.empty`（相簿封面无图占位）→ `pm-empty` / `cover-empty`。已用 Electron 复刻页 + elementFromPoint 命中测试回归：修复前 7 项中 6 项的点击全被空相簿按钮截胡，修复后逐项命中自身。
 
 **④ 铺满裁切回中延迟（stage.js）**
 
