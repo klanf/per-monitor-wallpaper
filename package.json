@@ -1,6 +1,6 @@
 {
   "name": "electron-wallpaper",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "description": "Windows 多显示器壁纸轮播器 —— 每块屏一套目录和节奏，随机顺序不重复，缩略图胶片条能当播放历史读",
   "main": "src/main.js",
