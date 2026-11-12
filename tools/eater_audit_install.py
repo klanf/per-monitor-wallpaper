@@ -30,8 +30,8 @@ WRONG_GUID = '{0CCE9221-69AE-11D9-BED3-505054503030}'
 
 REPOS = [
     r'D:\workbuddy\projects\electron-wallpaper\electron-wallpaper\.git',
-    r'D:\workbuddy\tools\wd14-tagviewer\tag-viewer-electron\.git',
-    r'D:\workbuddy\music-player\.git',
+    r'D:\workbuddy\projects\tag-viewer-electron\.git',
+    r'D:\workbuddy\projects\music-player\.git',
     r'D:\workbuddy\tools\MoyuFloat\.git',
     r'D:\workbuddy\tools\ruankao-software-designer\kuabu_repo\.git',
 ]
