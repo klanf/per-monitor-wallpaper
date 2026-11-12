@@ -170,6 +170,8 @@ let scheduler = null;
 const depthService = require('./depthService');
 /** 分割模型按需下载（r73）：isnetis 176MB 不进安装包，开启双层视差时引导下载 */
 const segModel = require('./segModel');
+/** 深度模型按需下载（r88）：v2_small ONNX 99MB 缺包时引导自助补齐（Gitee issue IKQ6OH） */
+const depthModel = require('./depthModel');
 const debugLog = require('./debugLog');
 // 分割模型目录注入（r73）：worker 线程创建时快照 process.env，必须先于任何 depth job。
 // depthEngineJs 按候选顺序找 isnetis：仓库 models/segmentation/（dev）→ userData（下载落点）。
@@ -2115,6 +2117,29 @@ function registerIpc() {
   }));
   ipcMain.handle('file:transfer', (_e, imagePath, targetDir, mode) => performTransfer(imagePath, targetDir, mode));
 
+  /* ---- 深度模型按需下载（r88）：状态 / 下载 / 取消，进度推给渲染层弹窗 ----
+   * 下载成功即 configure 全新探测（resolveRuntime 吃进 userData 候选），视差自愈。 */
+  ipcMain.handle('model:depth-status', () => depthModel.status());
+  ipcMain.handle('model:depth-cancel', () => { depthModel.cancel(); return true; });
+  let depthProgressLast = 0;
+  ipcMain.handle('model:depth-download', async () => {
+    const r = await depthModel.download({
+      onStage: (stage) => send('model:depth-stage', { stage }),
+      onProgress: (bytes) => {
+        const now = Date.now();
+        if (now - depthProgressLast < 120) return;   // chunk 级回调限流到 ~8Hz
+        depthProgressLast = now;
+        send('model:depth-progress', {
+          bytes,
+          total: depthModel.DEPTH_MODEL.size,
+          pct: Math.min(100, Math.floor((bytes * 100) / depthModel.DEPTH_MODEL.size)),
+        });
+      },
+    });
+    depthService.configure({ userModelDir: depthModel.userModelDir() });   // 重新探测，恢复视差
+    return r;
+  });
+
   /* ---- 桌面右键菜单（注册表集成）---- */
 
   /** 现状：装在不在、命令行是不是我们期望的那条（换过安装目录会 stale） */
@@ -2406,6 +2431,8 @@ if (!gotLock) {
       modelDir: store.get().depthModelDir,
       depthDevice: store.get().depthDevice,   // 'cpu'=强制CPU；缺省=GPU(DML)优先（3070 Ti 实测快 5 倍）
       segBackend: store.get().segBackend,     // 分割后端：'fast'=u2netp 快速，缺省=isnetis 精准
+      // r88：深度模型按需下载落点（resolveRuntime 的 userData 候选）
+      userModelDir: depthModel.userModelDir(),
       // 分割产物消费方探测（现取，改配置即时生效）：
       //   wantSeg  = 双层视差要背景板；wantMask = 双层视差合成 / 人物生动要前景 mask。
       // 两者分开：只开人物生计时别顺带烧 CPU 生成背景板，但缺 mask 的老缓存必须补。

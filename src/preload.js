@@ -114,6 +114,16 @@ contextBridge.exposeInMainWorld('wp', {
   onSegModelStage: (cb) => {
     ipcRenderer.on('model:seg-stage', (_event, payload) => cb(payload));
   },
+  /** 深度模型按需下载（r88）：状态 / 下载（完成或失败时 resolve，进度走推送） / 取消 */
+  depthModelStatus: () => ipcRenderer.invoke('model:depth-status'),
+  depthModelDownload: () => ipcRenderer.invoke('model:depth-download'),
+  depthModelCancel: () => ipcRenderer.invoke('model:depth-cancel'),
+  onDepthModelProgress: (cb) => {
+    ipcRenderer.on('model:depth-progress', (_event, payload) => cb(payload));
+  },
+  onDepthModelStage: (cb) => {
+    ipcRenderer.on('model:depth-stage', (_event, payload) => cb(payload));
+  },
   transferFile: (imagePath, targetDir, mode) => ipcRenderer.invoke('file:transfer', imagePath, targetDir, mode),
   showImageMenu: (payload) => ipcRenderer.send('context:image-menu', payload),
   /** 取右键菜单的结构（不弹菜单），给验证脚本核对菜单项是否齐全 */

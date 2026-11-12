@@ -152,6 +152,8 @@ function resolveRuntime() {
       // 「2D 纸片原地转」观感是模型特性不是后处理），候选链还原 master 只认 V2。
       (overrideModelDir && path.join(overrideModelDir, 'depth_anything_v2_small.onnx')) || '',
       path.join(appRoot, 'models', 'depth-anything', 'depth_anything_v2_small.onnx'),
+      // r88：userData 按需下载落点（depthModel），打包缺模型时下载补齐走这条
+      (state.userModelDir && path.join(state.userModelDir, 'depth_anything_v2_small.onnx')) || '',
       LEGACY_PATHS.onnxModel,
     ],
   };
@@ -718,7 +720,7 @@ function lookup(entryPath) {
 
 function configure(patch) {
   const previousOnnx = state.onnxModel;
-  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'wantSeg', 'wantMask', 'segBackend', 'appRoot', 'depthDevice']) {
+  for (const k of ['python', 'workerScript', 'modelDir', 'onnxModel', 'cacheDir', 'cacheLimitBytes', 'onReady', 'wantSeg', 'wantMask', 'segBackend', 'appRoot', 'depthDevice', 'userModelDir']) {
     if (patch && patch[k] !== undefined && patch[k] !== null && patch[k] !== '') state[k] = patch[k];
   }
   // 设备偏好落 state（r33 起随每个任务下发到引擎线程；引擎线程存活时这里
@@ -888,6 +890,9 @@ function status() {
     workerFound: Boolean(state.workerScript) && fs.existsSync(state.workerScript),
     modelFound: Boolean(state.modelDir) && fs.existsSync(path.join(state.modelDir, 'model.safetensors')),
     onnxFound: Boolean(state.onnxModel) && fs.existsSync(state.onnxModel),
+    // r88：ONNX 缺失且非用户显式覆盖 → 状态行可发起按需下载（depthModel）
+    modelDownloadable: !state.enabled && !state.overrides.onnxModel
+      && Boolean(state.onnxModel) && !fs.existsSync(state.onnxModel),
   };
 }
 

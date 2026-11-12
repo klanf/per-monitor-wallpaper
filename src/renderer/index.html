@@ -333,6 +333,7 @@
       <div class="field" id="field-depth">
         <label class="field-label">深度视差 <span class="info-dot" tabindex="0" data-tip="有深度图的壁纸生效，没有深度图的自动走普通模式。镜头走电影感 DepthFlow 流动（替代左右平移）；鼠标在桌面移动会临时接管镜头。每屏开关在顶栏快捷开关组（绑定预览的那块屏）。改「进阶参数」后若画面怪异，把三个值调回 0.6 / 0.3 / 0.2 即可。"></span></label>
         <div class="field-hint mono" id="depth-status"></div>
+        <button type="button" class="btn sm" id="depth-model-btn" hidden>下载深度模型</button>
         <div class="cond">
           <div class="field-row sub">
             <span class="field-label" style="flex:0 0 84px">推理设备</span>
@@ -714,6 +715,24 @@
     <div class="modal-actions">
       <button class="btn primary sm" id="seg-model-ok" hidden>开始下载</button>
       <button class="btn sm" id="seg-model-cancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 88 轮：深度模型按需下载（外观页状态行发起，ONNX 缺包时自助补齐）—— 同 r73 三态遮罩 -->
+<div class="modal-overlay" id="depth-model-overlay" hidden>
+  <div class="modal-card">
+    <div class="modal-title" id="depth-model-title">需要下载深度模型</div>
+    <div class="modal-body">
+      <p id="depth-model-text">「深度视差」需要 depth_anything_v2_small 模型（95MB），本安装包里没有——从 hf-mirror.com 下载一次，之后不用再下。</p>
+      <div class="update-progress" id="depth-model-progress" hidden>
+        <div class="update-progress-fill" id="depth-model-progress-fill"></div>
+      </div>
+      <p class="muted" id="depth-model-stage" hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary sm" id="depth-model-ok" hidden>开始下载</button>
+      <button class="btn sm" id="depth-model-cancel">取消</button>
     </div>
   </div>
 </div>
