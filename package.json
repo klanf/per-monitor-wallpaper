@@ -58,6 +58,7 @@
     "productName": "壁纸切换器",
     "copyright": "MIT Licensed",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "afterPack": "tools/after-pack-check.js",
     "files": [
       "src/**/*",
       "assets/**/*",

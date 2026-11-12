@@ -175,6 +175,20 @@ function log(...args) {
   debugLog.dlog('depth', ...args);   // VBS 启动丢 stdout，关键诊断要落文件
 }
 
+/**
+ * JS 引擎失败原因的用户侧清洗（Gitee issue IKQ6OH）：模型候选全落空时
+ * resolved 路径会落到 LEGACY_PATHS 写死的作者开发机路径，原样甩给终端
+ * 用户既吓人又无从行动。规则：ONNX 缺失原因里报的是 legacy 兜底路径时
+ * 剥掉路径换成「未随本包附带」；其余原因（依赖加载失败等）原样保留。
+ */
+function friendlyJsReason(reason) {
+  const m = /^(ONNX 模型不存在) \((.*)\)$/.exec(String(reason || ''));
+  if (m && m[2] && path.resolve(m[2]) === path.resolve(LEGACY_PATHS.onnxModel)) {
+    return `${m[1]}——未随本包附带`;
+  }
+  return reason;
+}
+
 function modelFingerprint(engine = state.engine) {
   const target = engine === 'python'
     ? path.join(state.modelDir || '', 'model.safetensors')
@@ -776,8 +790,18 @@ function applyPythonAvailability(jsReason) {
   if (!fs.existsSync(path.join(state.modelDir, 'model.safetensors'))) missing.push(`深度模型（${state.modelDir}）`);
   if (missing.length) {
     state.enabled = false;
-    state.disabledReason = `JS 引擎不可用（${jsReason}），且缺少 ${missing.join('、')}`;
-    log('深度功能不可用 ——', state.disabledReason);
+    // 打包安装版连 ONNX 模型都没有时（源码自打包场景：models/ 不进 git，
+    // extraResources 无米下锅 —— Gitee issue IKQ6OH），Python 回落三件套
+    // 注定也缺（本就不随包发），缺项清单全是吓人的噪声路径。只给一条
+    // 可行动的修复指引；完整路径诊断留在日志里给作者自己看。
+    if (path.resolve(state.onnxModel || '') === path.resolve(LEGACY_PATHS.onnxModel)) {
+      state.disabledReason = '深度模型未随本安装包附带 —— 官方 Setup 安装包内含模型（推荐），'
+        + '或把 depth_anything_v2_small.onnx 放入安装目录 resources\\models\\depth-anything\\ 后重启应用';
+      log('深度功能不可用 ——', state.disabledReason, '（resolved onnx: ', state.onnxModel, '）');
+    } else {
+      state.disabledReason = `JS 引擎不可用（${friendlyJsReason(jsReason)}），且缺少 ${missing.join('、')}`;
+      log('深度功能不可用 ——', state.disabledReason);
+    }
   } else {
     log('深度功能就绪 [engine=python]: python=', state.python, ' model=', state.modelDir,
       '（JS 引擎回落原因:', jsReason, '）');
